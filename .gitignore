@@ -37,3 +37,6 @@ yarn-error.*
 *.tsbuildinfo
 
 app-example
+node_modules/
+.expo/
+.DS_Store
