@@ -6,7 +6,7 @@ export type ListenRow = {
   id: string;
   item_type: 'track' | 'album';
   provider: 'apple' | 'spotify';
-  provider_id: string; // Apple: trackId (for tracks) or collectionId (for albums)
+  provider_id: string; // Apple: trackId (track) or collectionId (album)
   title: string;
   artist_name: string;
   artwork_url: string | null;
@@ -80,34 +80,45 @@ export async function removeListen(id: string) {
 
 /* ---------------- Open helpers ---------------- */
 
-// Best guess storefront. (We can store a real one in user_prefs later.)
-const APPLE_STOREFRONT = 'us';
-
-/** Quick lookup to fetch the collectionId (album id) for a given Apple trackId. */
-async function lookupAppleCollectionId(trackId: string): Promise<string | null> {
+// Use Apple's official deep link from iTunes Lookup, not a handcrafted URL.
+// For tracks we open `trackViewUrl`; for albums, `collectionViewUrl`.
+async function appleDeepLinkForTrack(trackId: string): Promise<string | null> {
   try {
-    // iTunes Search API (public)
-    const url = `https://itunes.apple.com/lookup?id=${encodeURIComponent(trackId)}&entity=song`;
-    const res = await fetch(url);
+    const res = await fetch(
+      `https://itunes.apple.com/lookup?id=${encodeURIComponent(trackId)}&entity=song`
+    );
     if (!res.ok) return null;
     const json = (await res.json()) as { resultCount: number; results: any[] };
     if (!json?.results?.length) return null;
 
-    // The first result should be the track; it contains collectionId (album id)
-    const track = json.results.find((r) => r.trackId == trackId) ?? json.results[0];
-    const collectionId = track?.collectionId ? String(track.collectionId) : null;
-    return collectionId;
+    // Prefer the exact song record if present
+    const song =
+      json.results.find((r) => String(r.trackId) === String(trackId) && r.trackViewUrl) ??
+      json.results.find((r) => r.trackViewUrl);
+
+    const url: string | undefined = song?.trackViewUrl;
+    return url ?? null;
   } catch {
     return null;
   }
 }
 
-function appleAlbumUrl(albumId: string, trackId?: string) {
-  // Track deep-link requires ?i=<trackId>
-  if (trackId) {
-    return `https://music.apple.com/${APPLE_STOREFRONT}/album/${albumId}?i=${trackId}`;
+async function appleDeepLinkForAlbum(collectionId: string): Promise<string | null> {
+  try {
+    const res = await fetch(
+      `https://itunes.apple.com/lookup?id=${encodeURIComponent(collectionId)}&entity=album`
+    );
+    if (!res.ok) return null;
+    const json = (await res.json()) as { resultCount: number; results: any[] };
+    if (!json?.results?.length) return null;
+
+    // First result should be the collection
+    const album = json.results.find((r) => r.collectionViewUrl) ?? json.results[0];
+    const url: string | undefined = album?.collectionViewUrl;
+    return url ?? null;
+  } catch {
+    return null;
   }
-  return `https://music.apple.com/${APPLE_STOREFRONT}/album/${albumId}`;
 }
 
 function appleSearchUrl(title: string, artist: string) {
@@ -129,20 +140,14 @@ export async function openRowWith(
 
   if (player === 'apple') {
     if (row.item_type === 'track') {
-      // We only saved trackId — fetch its album (collectionId), then deep-link
-      const collectionId = await lookupAppleCollectionId(row.provider_id);
-      if (collectionId) {
-        url = appleAlbumUrl(collectionId, row.provider_id);
-      } else {
-        // Fallback to search if we couldn't fetch the album
-        url = appleSearchUrl(row.title, row.artist_name);
-      }
+      url = await appleDeepLinkForTrack(row.provider_id);
+      if (!url) url = appleSearchUrl(row.title, row.artist_name);
     } else {
-      // Album: provider_id already is the collectionId
-      url = appleAlbumUrl(row.provider_id);
+      url = await appleDeepLinkForAlbum(row.provider_id);
+      if (!url) url = appleSearchUrl(row.title, row.artist_name);
     }
   } else {
-    // Spotify: until we store spotify IDs, use search
+    // Spotify: still search until we store Spotify IDs
     url = spotifySearchUrl(row.title, row.artist_name);
   }
 
