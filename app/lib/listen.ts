@@ -2,7 +2,6 @@
 import type { AppleAlbum, AppleTrack } from './apple';
 import { supabase } from './supabaseClient';
 
-/** What a row in the user's listen list looks like in the app */
 export type ListenRow = {
   id: string;
   item_type: 'track' | 'album';
@@ -11,8 +10,8 @@ export type ListenRow = {
   title: string;
   artist_name: string;
   artwork_url: string | null;
-  release_date: string | null;
-  done_at: string | null;     // when the user marked it “done”
+  release_date: string | null; // Apple dates are ISO strings
+  done_at: string | null;      // when the user marked it “done”
   created_at: string;
 };
 
@@ -21,60 +20,98 @@ export async function addToListenList(
   itemType: 'track' | 'album',
   item: AppleTrack | AppleAlbum
 ): Promise<{ ok: true } | { ok: false; message: string }> {
-  // Normalise input from Apple types
-  const isTrack = itemType === 'track';
-  const provider_id = String(isTrack ? (item as AppleTrack).trackId : (item as AppleAlbum).collectionId);
+  try {
+    const isTrack = itemType === 'track';
 
-  const title = isTrack ? (item as AppleTrack).trackName : (item as AppleAlbum).collectionName;
-  const artist_name = isTrack ? (item as AppleTrack).artistName : (item as AppleAlbum).artistName;
-  const artwork_url = (item as any).artworkUrl ?? null;
-  const release_date = isTrack
-    ? ((item as AppleTrack).releaseDate ?? null)
-    : ((item as AppleAlbum).releaseDate ?? null);
+    // Apple IDs as strings
+    const provider_id = String(
+      isTrack ? (item as AppleTrack).trackId : (item as AppleAlbum).collectionId
+    );
 
-  const { error } = await supabase
+    const title = isTrack
+      ? (item as AppleTrack).trackName
+      : (item as AppleAlbum).collectionName;
+
+    const artist_name = isTrack
+      ? (item as AppleTrack).artistName
+      : (item as AppleAlbum).artistName;
+
+    const artwork_url = (item as any).artworkUrl ?? null;
+
+    // IMPORTANT: read via `any` to avoid TS error if your Apple types don’t include releaseDate
+    const release_date: string | null =
+      (item as any).releaseDate ?? null;
+
+    const { error } = await supabase
+      .from('listen_list')
+      .insert({
+        item_type: itemType,
+        provider: 'apple',
+        provider_id,
+        title,
+        artist_name,
+        artwork_url,
+        release_date,
+      });
+
+    if (error) {
+      console.error('addToListenList insert error', error);
+      return { ok: false, message: error.message ?? 'Insert failed' };
+    }
+    return { ok: true };
+  } catch (e: any) {
+    console.error('addToListenList exception', e);
+    return { ok: false, message: e?.message ?? 'Unknown error' };
+  }
+}
+
+/** Fetch current user's listen list (newest first) */
+export async function fetchListenList(): Promise<ListenRow[]> {
+  const { data, error } = await supabase
     .from('listen_list')
-    .insert({
-      item_type: itemType,
-      provider: 'apple',
+    .select(
+      `
+      id,
+      item_type,
+      provider,
       provider_id,
       title,
       artist_name,
       artwork_url,
       release_date,
-    })
-    .select()
-    .single();
-
-  if (error) {
-    return { ok: false, message: error.message };
-  }
-  return { ok: true };
-}
-
-/** Fetch the current user's listen list (newest first) */
-export async function fetchListenList(): Promise<ListenRow[]> {
-  const { data, error } = await supabase
-    .from('listen_list')
-    .select('*')
+      done_at,
+      created_at
+      `
+    )
     .order('created_at', { ascending: false });
 
-  if (error || !data) return [];
-  return data as unknown as ListenRow[];
+  if (error) {
+    console.error('fetchListenList error', error);
+    return [];
+  }
+  return (data ?? []) as ListenRow[];
 }
 
-/** Mark an item done/undone */
+/** Toggle mark done / undone */
 export async function markDone(id: string, done: boolean): Promise<boolean> {
   const { error } = await supabase
     .from('listen_list')
     .update({ done_at: done ? new Date().toISOString() : null })
     .eq('id', id);
 
-  return !error;
+  if (error) {
+    console.error('markDone error', error);
+    return false;
+  }
+  return true;
 }
 
-/** Remove an item from the list */
+/** Remove an item from the listen list */
 export async function removeListen(id: string): Promise<boolean> {
   const { error } = await supabase.from('listen_list').delete().eq('id', id);
-  return !error;
+  if (error) {
+    console.error('removeListen error', error);
+    return false;
+  }
+  return true;
 }
