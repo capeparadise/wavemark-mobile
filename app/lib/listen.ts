@@ -1,7 +1,8 @@
 // app/lib/listen.ts
-import type { AppleAlbum, AppleTrack } from './apple';
+import { Linking } from 'react-native';
 import { supabase } from './supabaseClient';
 
+// Keep this in sync with your table columns
 export type ListenRow = {
   id: string;
   item_type: 'track' | 'album';
@@ -10,79 +11,46 @@ export type ListenRow = {
   title: string;
   artist_name: string;
   artwork_url: string | null;
-  release_date: string | null; // Apple dates are ISO strings
+  release_date: string | null; // ISO or null
   done_at: string | null;      // when the user marked it “done”
-  created_at: string;
+  created_at: string;          // server default
 };
 
-/** Add a track OR an album from Apple to the user's listen list */
-export async function addToListenList(
-  itemType: 'track' | 'album',
-  item: AppleTrack | AppleAlbum
-): Promise<{ ok: true } | { ok: false; message: string }> {
-  try {
-    const isTrack = itemType === 'track';
+/**
+ * Add a new item into listen_list.
+ * You already call this from the Artist screen — keeping here for completeness.
+ */
+export async function addToListenList(itemType: 'track'|'album', item: {
+  provider_id: string;
+  title: string;
+  artist_name: string;
+  artwork_url?: string | null;
+  release_date?: string | null;
+}) {
+  const { error } = await supabase
+    .from('listen_list')
+    .insert({
+      item_type: itemType,
+      provider: 'apple',
+      provider_id: item.provider_id,
+      title: item.title,
+      artist_name: item.artist_name,
+      artwork_url: item.artwork_url ?? null,
+      release_date: item.release_date ?? null,
+    });
 
-    // Apple IDs as strings
-    const provider_id = String(
-      isTrack ? (item as AppleTrack).trackId : (item as AppleAlbum).collectionId
-    );
-
-    const title = isTrack
-      ? (item as AppleTrack).trackName
-      : (item as AppleAlbum).collectionName;
-
-    const artist_name = isTrack
-      ? (item as AppleTrack).artistName
-      : (item as AppleAlbum).artistName;
-
-    const artwork_url = (item as any).artworkUrl ?? null;
-
-    // IMPORTANT: read via `any` to avoid TS error if your Apple types don’t include releaseDate
-    const release_date: string | null =
-      (item as any).releaseDate ?? null;
-
-    const { error } = await supabase
-      .from('listen_list')
-      .insert({
-        item_type: itemType,
-        provider: 'apple',
-        provider_id,
-        title,
-        artist_name,
-        artwork_url,
-        release_date,
-      });
-
-    if (error) {
-      console.error('addToListenList insert error', error);
-      return { ok: false, message: error.message ?? 'Insert failed' };
-    }
-    return { ok: true };
-  } catch (e: any) {
-    console.error('addToListenList exception', e);
-    return { ok: false, message: e?.message ?? 'Unknown error' };
+  if (error) {
+    console.error('addToListenList error', error);
+    return { ok: false as const, message: error.message ?? 'Failed to add' };
   }
+  return { ok: true as const };
 }
 
-/** Fetch current user's listen list (newest first) */
+/** Fetch current user’s list (latest first). */
 export async function fetchListenList(): Promise<ListenRow[]> {
   const { data, error } = await supabase
     .from('listen_list')
-    .select(
-      `
-      id,
-      item_type,
-      provider,
-      provider_id,
-      title,
-      artist_name,
-      artwork_url,
-      release_date,
-      done_at,
-      created_at
-      `
-    )
+    .select('*')
     .order('created_at', { ascending: false });
 
   if (error) {
@@ -92,11 +60,11 @@ export async function fetchListenList(): Promise<ListenRow[]> {
   return (data ?? []) as ListenRow[];
 }
 
-/** Toggle mark done / undone */
-export async function markDone(id: string, done: boolean): Promise<boolean> {
+/** Toggle done_at (pass newDone=true to set now; false to clear) */
+export async function markDone(id: string, newDone: boolean) {
   const { error } = await supabase
     .from('listen_list')
-    .update({ done_at: done ? new Date().toISOString() : null })
+    .update({ done_at: newDone ? new Date().toISOString() : null })
     .eq('id', id);
 
   if (error) {
@@ -106,12 +74,64 @@ export async function markDone(id: string, done: boolean): Promise<boolean> {
   return true;
 }
 
-/** Remove an item from the listen list */
-export async function removeListen(id: string): Promise<boolean> {
-  const { error } = await supabase.from('listen_list').delete().eq('id', id);
+/** Remove row */
+export async function removeListen(id: string) {
+  const { error } = await supabase
+    .from('listen_list')
+    .delete()
+    .eq('id', id);
+
   if (error) {
     console.error('removeListen error', error);
     return false;
   }
+  return true;
+}
+
+/* ---------- Open-in-Spotify / Apple helpers ---------- */
+
+/** Safe query like "Title – Artist Name" */
+export function buildSearchQuery(row: Pick<ListenRow, 'title' | 'artist_name'>) {
+  const q = `${row.title} ${row.artist_name}`.trim();
+  // encode for URL fragments
+  return encodeURIComponent(q);
+}
+
+/** Try to open Spotify app search; fallback to web */
+export async function openInSpotify(row: Pick<ListenRow, 'title' | 'artist_name'>) {
+  const encoded = buildSearchQuery(row);
+  const appUrl = `spotify:search:${decodeURIComponent(encoded)}`; // spotify:search expects unencoded text
+  const webUrl = `https://open.spotify.com/search/${encoded}`;
+
+  try {
+    const supported = await Linking.canOpenURL('spotify:');
+    if (supported) {
+      await Linking.openURL(appUrl);
+      return true;
+    }
+  } catch (_) {
+    // ignore and try web
+  }
+  await Linking.openURL(webUrl);
+  return true;
+}
+
+/** Try to open Apple Music app search; fallback to web */
+export async function openInAppleMusic(row: Pick<ListenRow, 'title' | 'artist_name'>) {
+  const encoded = buildSearchQuery(row);
+  // Apple Music deep link search on iOS
+  const appUrl = `music://search?term=${encoded}`;
+  const webUrl = `https://music.apple.com/us/search?term=${encoded}`;
+
+  try {
+    const supported = await Linking.canOpenURL('music://');
+    if (supported) {
+      await Linking.openURL(appUrl);
+      return true;
+    }
+  } catch (_) {
+    // ignore and try web
+  }
+  await Linking.openURL(webUrl);
   return true;
 }
