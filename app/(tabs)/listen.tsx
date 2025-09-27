@@ -1,11 +1,10 @@
 // app/(tabs)/listen.tsx
-import React, { useCallback, useState } from 'react';
+import { useFocusEffect } from 'expo-router';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
-  ActionSheetIOS,
   ActivityIndicator,
   Alert,
   FlatList,
-  Platform,
   Pressable,
   RefreshControl,
   SafeAreaView,
@@ -14,28 +13,43 @@ import {
 } from 'react-native';
 import {
   fetchListenList,
+  getDefaultPlayer,
   markDone,
-  openInAppleMusic,
-  openInSpotify,
+  openRowWith,
   removeListen,
+  type DefaultPlayer,
   type ListenRow,
-} from '../lib/listen';
+} from '../lib/queries';
 
 export default function ListenTab() {
   const [rows, setRows] = useState<ListenRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [pref, setPref] = useState<DefaultPlayer>('apple');
 
+  // Load data + preference
   const load = useCallback(async () => {
     setLoading(true);
-    const data = await fetchListenList();
+    const [data, p] = await Promise.all([fetchListenList(), getDefaultPlayer()]);
     setRows(data);
+    setPref(p);
     setLoading(false);
   }, []);
 
-  React.useEffect(() => {
+  // Initial load
+  useEffect(() => {
     load();
   }, [load]);
+
+  // Re-read preference whenever this tab/screen gains focus
+  useFocusEffect(
+    useCallback(() => {
+      (async () => {
+        const p = await getDefaultPlayer();
+        setPref(p);
+      })();
+    }, [])
+  );
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -45,157 +59,117 @@ export default function ListenTab() {
 
   const toggleDone = async (row: ListenRow) => {
     const ok = await markDone(row.id, !row.done_at);
-    if (!ok) Alert.alert('Could not update item');
+    if (!ok.ok) Alert.alert('Could not update item', ok.message ?? '');
     await load();
   };
 
-  const onRemove = async (row: ListenRow) => {
-    Alert.alert('Remove from Listen List', row.title, [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Remove',
-        style: 'destructive',
-        onPress: async () => {
-          const ok = await removeListen(row.id);
-          if (!ok) Alert.alert('Could not remove item');
-          await load();
-        },
-      },
-    ]);
-  };
-
   const onOpen = async (row: ListenRow) => {
-    if (Platform.OS === 'ios') {
-      ActionSheetIOS.showActionSheetWithOptions(
-        {
-          title: row.title,
-          message: row.artist_name,
-          options: ['Open in Apple Music', 'Open in Spotify', 'Cancel'],
-          cancelButtonIndex: 2,
-        },
-        async (index) => {
-          if (index === 0) await openInAppleMusic(row);
-          if (index === 1) await openInSpotify(row);
-        }
+    // Just-in-time read to ensure we use the *latest* chosen player
+    const latest = await getDefaultPlayer();
+    setPref(latest);
+
+    const ok = await openRowWith(row, latest);
+    if (!ok) {
+      Alert.alert(
+        'Could not open',
+        'Your device could not open the URL. Long-press “Open” to choose a different app.'
       );
-      return;
     }
-
-    // Android or fallback
-    Alert.alert(
-      row.title,
-      row.artist_name,
-      [
-        { text: 'Apple Music', onPress: () => openInAppleMusic(row) },
-        { text: 'Spotify', onPress: () => openInSpotify(row) },
-        { text: 'Cancel', style: 'cancel' },
-      ],
-      { cancelable: true }
-    );
   };
 
-  const renderRow = ({ item }: { item: ListenRow }) => {
-    const when =
-      item.release_date
-        ? new Date(item.release_date).toLocaleDateString()
-        : '—';
+  const onRemove = async (row: ListenRow) => {
+    const res = await removeListen(row.id);
+    if (!res.ok) Alert.alert('Remove failed', res.message ?? '');
+    await load();
+  };
 
-    return (
-      <View
-        style={{
-          padding: 12,
-          marginHorizontal: 16,
-          marginVertical: 8,
-          borderRadius: 12,
-          backgroundColor: '#fff',
-          shadowColor: '#000',
-          shadowOpacity: 0.06,
-          shadowRadius: 8,
-          shadowOffset: { width: 0, height: 3 },
-          elevation: 2,
-        }}
-      >
-        <Text style={{ fontSize: 16, fontWeight: '600' }}>{item.title}</Text>
-        <Text style={{ color: '#555', marginTop: 2 }}>{item.artist_name}</Text>
-        <Text style={{ color: '#888', marginTop: 2 }}>
-          {item.item_type.toUpperCase()} · {when}
-        </Text>
+  const Row = ({ item }: { item: ListenRow }) => (
+    <View
+      style={{
+        borderRadius: 12,
+        padding: 12,
+        backgroundColor: '#fff',
+        marginBottom: 12,
+        shadowOpacity: 0.05,
+        shadowRadius: 6,
+      }}
+    >
+      <Text style={{ fontSize: 16, fontWeight: '700' }}>{item.title}</Text>
+      <Text style={{ color: '#6b7280', marginBottom: 8 }}>{item.artist_name}</Text>
+      <View style={{ flexDirection: 'row' }}>
+        <Pressable
+          onPress={() => onOpen(item)}
+          onLongPress={() =>
+            Alert.alert('Open with…', undefined, [
+              { text: 'Apple Music', onPress: () => openRowWith(item, 'apple') },
+              { text: 'Spotify', onPress: () => openRowWith(item, 'spotify') },
+              { text: 'Cancel', style: 'cancel' },
+            ])
+          }
+          style={{
+            paddingVertical: 10,
+            paddingHorizontal: 14,
+            backgroundColor: '#2563eb',
+            borderRadius: 10,
+            marginRight: 8,
+          }}
+        >
+          <Text style={{ color: 'white', fontWeight: '700' }}>Open</Text>
+        </Pressable>
 
-        <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
-          <Pressable
-            onPress={() => onOpen(item)}
-            style={({ pressed }) => ({
-              paddingVertical: 8,
-              paddingHorizontal: 12,
-              borderRadius: 10,
-              backgroundColor: pressed ? '#e8f0ff' : '#eef4ff',
-            })}
-          >
-            <Text style={{ color: '#1b5cff', fontWeight: '600' }}>Open</Text>
-          </Pressable>
+        <Pressable
+          onPress={() => toggleDone(item)}
+          style={{
+            paddingVertical: 10,
+            paddingHorizontal: 14,
+            backgroundColor: item.done_at ? '#10b981' : '#e5e7eb',
+            borderRadius: 10,
+            marginRight: 8,
+          }}
+        >
+          <Text style={{ color: item.done_at ? 'white' : '#111827', fontWeight: '700' }}>
+            {item.done_at ? 'Done' : 'Mark done'}
+          </Text>
+        </Pressable>
 
-          <Pressable
-            onPress={() => toggleDone(item)}
-            style={({ pressed }) => ({
-              paddingVertical: 8,
-              paddingHorizontal: 12,
-              borderRadius: 10,
-              backgroundColor: pressed ? '#e8ffe8' : '#efffed',
-            })}
-          >
-            <Text style={{ color: '#15803d', fontWeight: '600' }}>
-              {item.done_at ? 'Mark undone' : 'Mark done'}
-            </Text>
-          </Pressable>
-
-          <Pressable
-            onPress={() => onRemove(item)}
-            style={({ pressed }) => ({
-              paddingVertical: 8,
-              paddingHorizontal: 12,
-              borderRadius: 10,
-              backgroundColor: pressed ? '#ffe8e8' : '#ffefef',
-              marginLeft: 'auto',
-            })}
-          >
-            <Text style={{ color: '#b91c1c', fontWeight: '600' }}>Remove</Text>
-          </Pressable>
-        </View>
+        <Pressable
+          onPress={() => onRemove(item)}
+          style={{
+            paddingVertical: 10,
+            paddingHorizontal: 14,
+            backgroundColor: '#f3f4f6',
+            borderRadius: 10,
+          }}
+        >
+          <Text style={{ color: '#b91c1c', fontWeight: '700' }}>Remove</Text>
+        </Pressable>
       </View>
-    );
-  };
+    </View>
+  );
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: '#f7f7f7' }}>
-      <View style={{ paddingHorizontal: 16, paddingVertical: 12 }}>
-        <Text style={{ fontSize: 22, fontWeight: '800' }}>Listen</Text>
-      </View>
+    <SafeAreaView style={{ flex: 1 }}>
+      <View style={{ padding: 16, flex: 1 }}>
+        <Text style={{ fontSize: 28, fontWeight: '800', marginBottom: 12 }}>Listen</Text>
 
-      {loading ? (
-        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+        {loading ? (
           <ActivityIndicator />
-        </View>
-      ) : rows.length === 0 ? (
-        <View style={{ paddingHorizontal: 16 }}>
-          <Text style={{ fontSize: 18, fontWeight: '700', marginBottom: 8 }}>
-            Your Listen List
-          </Text>
-          <Text style={{ color: '#666' }}>
-            Nothing here yet. Find an artist in Search / Artist and tap “Add to
-            Listen List”.
-          </Text>
-        </View>
-      ) : (
-        <FlatList
-          data={rows}
-          keyExtractor={(r) => r.id}
-          renderItem={renderRow}
-          refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-          }
-          contentContainerStyle={{ paddingBottom: 24 }}
-        />
-      )}
+        ) : (
+          <FlatList
+            data={rows}
+            keyExtractor={(r) => r.id}
+            renderItem={Row}
+            refreshControl={
+              <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+            }
+            ListEmptyComponent={
+              <Text style={{ color: '#6b7280' }}>
+                Nothing here yet. Add something from an artist page.
+              </Text>
+            }
+          />
+        )}
+      </View>
     </SafeAreaView>
   );
 }

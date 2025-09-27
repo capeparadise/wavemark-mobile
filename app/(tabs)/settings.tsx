@@ -1,69 +1,60 @@
-// app/(tabs)/settings.tsx
+// app/settings.tsx
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, SafeAreaView, Text, View } from 'react-native';
-import { getDefaultPlayer, setDefaultPlayer } from '../lib/user';
+import { Alert, Pressable, SafeAreaView, Text, View } from 'react-native';
+import { getDefaultPlayer, setDefaultPlayer, type DefaultPlayer } from '../lib/queries';
 
 export default function SettingsScreen() {
-  const [loading, setLoading] = useState(true);
-  const [current, setCurrent] = useState<'apple' | 'spotify'>('apple');
+  const [current, setCurrent] = useState<DefaultPlayer>('apple');
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     (async () => {
       const p = await getDefaultPlayer();
       setCurrent(p);
-      setLoading(false);
     })();
   }, []);
 
-  const pick = async (p: 'apple' | 'spotify') => {
-    const ok = await setDefaultPlayer(p);
-    if (!ok) {
-      Alert.alert('Could not save preference');
+  const save = async (p: DefaultPlayer) => {
+    if (saving) return;
+    setSaving(true);
+    const res = await setDefaultPlayer(p);
+    setSaving(false);
+    if (!res.ok) {
+      Alert.alert('Could not save preference', res.message ?? 'Unknown error');
       return;
     }
     setCurrent(p);
   };
 
-  if (loading) {
-    return (
-      <SafeAreaView style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-        <ActivityIndicator />
-      </SafeAreaView>
-    );
-  }
+  const Btn = ({ value, label }: { value: DefaultPlayer; label: string }) => (
+    <Pressable
+      onPress={() => save(value)}
+      style={{
+        paddingVertical: 12,
+        paddingHorizontal: 16,
+        borderRadius: 12,
+        backgroundColor: current === value ? '#e7f0ff' : '#eef0f3',
+        marginRight: 12,
+      }}
+    >
+      <Text style={{ color: '#2563eb', fontWeight: '600' }}>
+        {label} {current === value ? '✓' : ''}
+      </Text>
+    </Pressable>
+  );
 
   return (
-    <SafeAreaView style={{ flex: 1, padding: 16 }}>
-      <Text style={{ fontSize: 22, fontWeight: '800', marginBottom: 16 }}>Settings</Text>
-      <Text style={{ fontSize: 16, marginBottom: 12 }}>Default player</Text>
-      <View style={{ flexDirection: 'row', gap: 10 }}>
-        <Pressable
-          onPress={() => pick('apple')}
-          style={{
-            paddingVertical: 10,
-            paddingHorizontal: 14,
-            borderRadius: 10,
-            backgroundColor: current === 'apple' ? '#e8f0ff' : '#f1f5f9',
-          }}
-        >
-          <Text style={{ fontWeight: '700', color: '#1b5cff' }}>
-            Apple Music {current === 'apple' ? '✓' : ''}
-          </Text>
-        </Pressable>
+    <SafeAreaView style={{ flex: 1 }}>
+      <View style={{ padding: 16 }}>
+        <Text style={{ fontSize: 32, fontWeight: '800', marginBottom: 16 }}>
+          Settings
+        </Text>
 
-        <Pressable
-          onPress={() => pick('spotify')}
-          style={{
-            paddingVertical: 10,
-            paddingHorizontal: 14,
-            borderRadius: 10,
-            backgroundColor: current === 'spotify' ? '#e8f0ff' : '#f1f5f9',
-          }}
-        >
-          <Text style={{ fontWeight: '700', color: '#1b5cff' }}>
-            Spotify {current === 'spotify' ? '✓' : ''}
-          </Text>
-        </Pressable>
+        <Text style={{ fontSize: 18, marginBottom: 12 }}>Default player</Text>
+        <View style={{ flexDirection: 'row' }}>
+          <Btn value="apple" label="Apple Music" />
+          <Btn value="spotify" label="Spotify" />
+        </View>
       </View>
     </SafeAreaView>
   );

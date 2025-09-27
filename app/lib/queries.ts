@@ -1,61 +1,58 @@
 // app/lib/queries.ts
-import type { AppleAlbum, AppleTrack } from './apple';
+import { Linking } from 'react-native';
 import { supabase } from './supabaseClient';
 
 export type ListenRow = {
   id: string;
-  user_id: string;
-  item_type: 'track' | 'album' | 'ep';
+  item_type: 'track' | 'album';
+  provider: 'apple' | 'spotify';
+  provider_id: string; // Apple trackId or collectionId
   title: string;
   artist_name: string;
   artwork_url: string | null;
-  external_id: string;                // Apple/Spotify ID (TEXT)
-  provider: 'apple' | 'spotify';
-  created_at: string;                 // when the row was added
-  done_at: string | null;             // when the user marked it done
+  release_date: string | null;
+  done_at: string | null;
+  created_at: string;
 };
 
-// ---------- Add to listen list (Apple search results) ----------
-export async function addToListenListFromApple(
-  item: AppleTrack | AppleAlbum,
-  itemType: 'track' | 'album' | 'ep'
-): Promise<{ ok: true } | { ok: false; message: string }> {
-  const { data: { user } = {} } = await supabase.auth.getUser();
-  if (!user) return { ok: false, message: 'Not signed in' };
+export type DefaultPlayer = 'apple' | 'spotify';
 
-  const isTrack = (i: any): i is AppleTrack => 'trackId' in i;
+/* ---------- Preferences ---------- */
+export async function getDefaultPlayer(): Promise<DefaultPlayer> {
+  const { data, error } = await supabase
+    .from('user_prefs')
+    .select('default_player')
+    .maybeSingle();
 
-  const externalId = String(isTrack(item) ? item.trackId : item.collectionId);
-  const title      = isTrack(item) ? item.trackName : item.collectionName;
-  const artistName = item.artistName;
-  const artworkUrl = (item as any).artworkUrl ?? null;
+  if (error) {
+    console.warn('getDefaultPlayer error', error);
+    return 'apple';
+  }
+  return (data?.default_player as DefaultPlayer) ?? 'apple';
+}
 
-  const { error } = await supabase.from('listen_list').insert({
-    user_id: user.id,
-    item_type: itemType,
-    title,
-    artist_name: artistName,
-    artwork_url: artworkUrl,
-    external_id: externalId,
-    provider: 'apple',
-  });
+export async function setDefaultPlayer(
+  player: DefaultPlayer
+): Promise<{ ok: boolean; message?: string }> {
+  const { error } = await supabase
+    .from('user_prefs')
+    .upsert(
+      {
+        default_player: player,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'user_id' }
+    );
 
   if (error) return { ok: false, message: error.message };
   return { ok: true };
 }
 
-// ---------- Fetch the user’s listen list ----------
+/* ---------- Listen list ---------- */
 export async function fetchListenList(): Promise<ListenRow[]> {
-  const { data: { user } = {} } = await supabase.auth.getUser();
-  if (!user) return [];
-
   const { data, error } = await supabase
     .from('listen_list')
-    .select(
-      'id,user_id,item_type,title,artist_name,artwork_url,external_id,provider,created_at,done_at'
-    )
-    .eq('user_id', user.id)
-    .order('done_at', { ascending: true, nullsFirst: true })
+    .select('*')
     .order('created_at', { ascending: false });
 
   if (error) {
@@ -65,26 +62,66 @@ export async function fetchListenList(): Promise<ListenRow[]> {
   return (data ?? []) as ListenRow[];
 }
 
-// ---------- Mark an item done/undone ----------
-export async function markDone(id: string, done: boolean): Promise<boolean> {
+export async function markDone(id: string, done: boolean) {
   const { error } = await supabase
     .from('listen_list')
     .update({ done_at: done ? new Date().toISOString() : null })
     .eq('id', id);
 
-  if (error) {
-    console.error('markDone error', error);
-    return false;
-  }
-  return true;
+  return { ok: !error, message: error?.message };
 }
 
-// ---------- Remove an item ----------
-export async function removeListen(id: string): Promise<boolean> {
+export async function removeListen(id: string) {
   const { error } = await supabase.from('listen_list').delete().eq('id', id);
-  if (error) {
-    console.error('removeListen error', error);
-    return false;
+  return { ok: !error, message: error?.message };
+}
+
+/* ---------- Open helpers ---------- */
+
+/** Apple Music deep links (best-effort). */
+function appleDeepLink(row: ListenRow, storefront = 'us') {
+  // If we only have the trackId, this generic pattern usually redirects to the song.
+  if (row.item_type === 'track') {
+    // Example: https://music.apple.com/us/album/?i=1440833139
+    return `https://music.apple.com/${storefront}/album/?i=${row.provider_id}`;
   }
+  // Album case: https://music.apple.com/us/album/{albumId}
+  return `https://music.apple.com/${storefront}/album/${row.provider_id}`;
+}
+
+/** Fallback search links */
+function appleSearchUrl(query: { title: string; artist: string }) {
+  const q = encodeURIComponent(`${query.title} ${query.artist}`);
+  return `https://music.apple.com/search?term=${q}`;
+}
+function spotifySearchUrl(query: { title: string; artist: string }) {
+  const q = encodeURIComponent(`${query.title} ${query.artist}`);
+  return `https://open.spotify.com/search/${q}`;
+}
+
+/** Open a row with a specified player; returns success boolean. */
+export async function openRowWith(
+  row: ListenRow,
+  player: DefaultPlayer
+): Promise<boolean> {
+  let url: string;
+
+  if (player === 'apple') {
+    // Try deep link first
+    const deep = appleDeepLink(row);
+    if (await Linking.canOpenURL(deep)) {
+      await Linking.openURL(deep);
+      return true;
+    }
+    // Fallback to search
+    url = appleSearchUrl({ title: row.title, artist: row.artist_name });
+  } else {
+    // Spotify: search until we store a spotify_id
+    url = spotifySearchUrl({ title: row.title, artist: row.artist_name });
+  }
+
+  const supported = await Linking.canOpenURL(url);
+  if (!supported) return false;
+  await Linking.openURL(url);
   return true;
 }
