@@ -194,3 +194,21 @@ export async function openInAppleMusic(row: ListenRow) {
 export async function openInSpotify(row: ListenRow) {
   return openRowWith(row, 'spotify');
 }
+
+export type PlayerPreference = 'apple' | 'spotify';
+
+export async function getDefaultPlayer(): Promise<PlayerPreference> {
+  // Fetch from Supabase user_prefs; default to 'apple' if missing
+  const { data, error } = await supabase
+    .from('user_prefs')
+    .select('default_player')
+    .single();
+  if (error || !data?.default_player) return 'apple';
+  return data.default_player as PlayerPreference;
+}
+
+/** Convenience: open this row with the saved default player */
+export async function openByDefaultPlayer(row: ListenRow) {
+  const pref = await getDefaultPlayer();
+  return openRowWith(row, pref);
+}

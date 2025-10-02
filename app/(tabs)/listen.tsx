@@ -2,21 +2,21 @@
 import { useFocusEffect } from '@react-navigation/native';
 import React, { useCallback, useState } from 'react';
 import {
-  ActivityIndicator,
-  Alert,
-  FlatList,
-  Pressable,
-  RefreshControl,
-  SafeAreaView,
-  Text,
-  View,
+    ActivityIndicator,
+    Alert,
+    FlatList,
+    Pressable,
+    RefreshControl,
+    SafeAreaView,
+    Text,
+    View,
 } from 'react-native';
 import {
-  fetchListenList,
-  markDone,
-  openRowWith,
-  removeListen,
-  type ListenRow,
+    fetchListenList,
+    markDone,
+    openByDefaultPlayer,
+    removeListen,
+    type ListenRow,
 } from '../lib/listen';
 
 export default function ListenTab() {
@@ -55,10 +55,11 @@ export default function ListenTab() {
     await load();
   };
 
-  const open = async (row: ListenRow) => {
-    // For now, always use Apple (your Settings screen can pass the chosen player to this)
-    const worked = await openRowWith(row, 'apple');
-    if (!worked) Alert.alert('Could not open this item');
+  const onOpen = async (item: ListenRow) => {
+    const ok = await openByDefaultPlayer(item);
+    if (!ok) {
+      Alert.alert('Could not open that item. Try the other player in Settings.');
+    }
   };
 
   return (
@@ -95,7 +96,7 @@ export default function ListenTab() {
               <Text style={{ color: '#666' }}>{item.artist_name}</Text>
 
               <View style={{ flexDirection: 'row', gap: 12, marginTop: 8 }}>
-                <Pressable onPress={() => open(item)}>
+                <Pressable onPress={() => onOpen(item)}>
                   <Text style={{ color: '#2f6' }}>Open</Text>
                 </Pressable>
                 <Pressable onPress={() => toggleDone(item)}>

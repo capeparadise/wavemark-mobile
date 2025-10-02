@@ -5,14 +5,12 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, FlatList, Pressable, SafeAreaView, Text, View } from 'react-native';
 
 import {
-  AppleAlbum,
   AppleArtist,
-  AppleTrack,
   fetchAlbumsByType,
   fetchArtistById,
   fetchTopTracks,
 } from '../lib/apple';
-import { addToListenListFromApple } from '../lib/queries';
+import { addToListenList, type AppleAlbum, type AppleTrack } from '../lib/listen';
 
 type SectionProps<T> = {
   title: string;
@@ -88,9 +86,10 @@ export default function ArtistScreen() {
           fetchAlbumsByType(Number(id), 'album'),
           fetchAlbumsByType(Number(id), 'ep'),
         ]);
-        setTracks(tops);
-        setAlbums(albumList);
-        setEps(epList);
+  // cast incoming apple types to the listen shapes
+  setTracks(tops as unknown as AppleTrack[]);
+  setAlbums(albumList as unknown as AppleAlbum[]);
+  setEps(epList as unknown as AppleAlbum[]);
       } catch (e) {
         console.error(e);
         Alert.alert('Error', 'Could not load artist.');
@@ -100,20 +99,24 @@ export default function ArtistScreen() {
     })();
   }, [id]);
 
-  const onAddTrack = async (t: AppleTrack) => {
-    const res = await addToListenListFromApple(t, 'track');
-    if (!res.ok) Alert.alert('Add failed', res.message);
-    else Alert.alert('Added', `${t.trackName} added to your Listen List`);
+  const onAddTrack = async (track: AppleTrack) => {
+    const res = await addToListenList('track', track);
+    if (!res.ok) {
+      console.warn('Add track failed:', res.message);
+      Alert.alert('Could not add', String(res.message));
+      return;
+    }
+    Alert.alert('Added', 'Added to Listen List');
   };
 
-  const onAddAlbum = async (a: AppleAlbum) => {
-    const type: 'album' | 'ep' = (a as any).collectionType
-      ? String((a as any).collectionType).toLowerCase().includes('ep') ? 'ep' : 'album'
-      : /\bEP\b/i.test(a.collectionName) ? 'ep' : 'album';
-
-    const res = await addToListenListFromApple(a, type);
-    if (!res.ok) Alert.alert('Add failed', res.message);
-    else Alert.alert('Added', `${a.collectionName} added to your Listen List`);
+  const onAddAlbum = async (album: AppleAlbum) => {
+    const res = await addToListenList('album', album);
+    if (!res.ok) {
+      console.warn('Add album failed:', res.message);
+      Alert.alert('Could not add', String(res.message));
+      return;
+    }
+    Alert.alert('Added', 'Added to Listen List');
   };
 
   const header = useMemo(
@@ -161,7 +164,7 @@ export default function ArtistScreen() {
         seeAllHref={{ pathname: '/artist/[id]/discography', params: { id: String(id), name: displayName, tab: 'tracks' } }}
         renderItem={({ item }) => (
           <View style={card}>
-            <Image source={{ uri: item.artworkUrl }} style={{ width: 200, height: 200, borderRadius: 12, backgroundColor: '#eee' }} contentFit="cover" />
+            <Image source={{ uri: (item as any).artworkUrl ?? (item as any).artworkUrl100 ?? null }} style={{ width: 200, height: 200, borderRadius: 12, backgroundColor: '#eee' }} contentFit="cover" />
             <Text style={{ marginTop: 8, fontSize: 16, fontWeight: '700' }} numberOfLines={2}>{item.trackName}</Text>
             <Text style={{ color: '#666' }} numberOfLines={1}>{item.artistName}</Text>
             <Pressable onPress={() => onAddTrack(item)} style={[pill, { marginTop: 8, alignSelf: 'flex-start' }]}>
@@ -178,7 +181,7 @@ export default function ArtistScreen() {
         seeAllHref={{ pathname: '/artist/[id]/discography', params: { id: String(id), name: displayName, tab: 'albums' } }}
         renderItem={({ item }) => (
           <View style={card}>
-            <Image source={{ uri: item.artworkUrl }} style={{ width: 200, height: 200, borderRadius: 12, backgroundColor: '#eee' }} contentFit="cover" />
+            <Image source={{ uri: (item as any).artworkUrl ?? (item as any).artworkUrl100 ?? null }} style={{ width: 200, height: 200, borderRadius: 12, backgroundColor: '#eee' }} contentFit="cover" />
             <Text style={{ marginTop: 8, fontSize: 16, fontWeight: '700' }} numberOfLines={2}>{item.collectionName}</Text>
             <Text style={{ color: '#666' }} numberOfLines={1}>{item.artistName}</Text>
             <Pressable onPress={() => onAddAlbum(item)} style={[pill, { marginTop: 8, alignSelf: 'flex-start' }]}>
@@ -195,7 +198,7 @@ export default function ArtistScreen() {
         seeAllHref={{ pathname: '/artist/[id]/discography', params: { id: String(id), name: displayName, tab: 'eps' } }}
         renderItem={({ item }) => (
           <View style={card}>
-            <Image source={{ uri: item.artworkUrl }} style={{ width: 200, height: 200, borderRadius: 12, backgroundColor: '#eee' }} contentFit="cover" />
+            <Image source={{ uri: (item as any).artworkUrl ?? (item as any).artworkUrl100 ?? null }} style={{ width: 200, height: 200, borderRadius: 12, backgroundColor: '#eee' }} contentFit="cover" />
             <Text style={{ marginTop: 8, fontSize: 16, fontWeight: '700' }} numberOfLines={2}>{item.collectionName}</Text>
             <Text style={{ color: '#666' }} numberOfLines={1}>{item.artistName}</Text>
             <Pressable onPress={() => onAddAlbum(item)} style={[pill, { marginTop: 8, alignSelf: 'flex-start' }]}>
