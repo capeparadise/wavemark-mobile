@@ -1,6 +1,5 @@
-// app/lib/queries.ts
 import { Linking } from 'react-native';
-import { supabase } from './supabaseClient';
+import { supabase } from './supabase';
 
 export type ListenRow = {
   id: string;
@@ -26,8 +25,7 @@ export async function getDefaultPlayer(): Promise<DefaultPlayer> {
     .maybeSingle();
 
   if (error) {
-    console.warn('getDefaultPlayer error', error);
-    return 'apple';
+  return 'apple';
   }
   return (data?.default_player as DefaultPlayer) ?? 'apple';
 }
@@ -80,8 +78,6 @@ export async function removeListen(id: string) {
 
 /* ---------------- Open helpers ---------------- */
 
-// Use Apple's official deep link from iTunes Lookup, not a handcrafted URL.
-// For tracks we open `trackViewUrl`; for albums, `collectionViewUrl`.
 async function appleDeepLinkForTrack(trackId: string): Promise<string | null> {
   try {
     const res = await fetch(
@@ -91,7 +87,6 @@ async function appleDeepLinkForTrack(trackId: string): Promise<string | null> {
     const json = (await res.json()) as { resultCount: number; results: any[] };
     if (!json?.results?.length) return null;
 
-    // Prefer the exact song record if present
     const song =
       json.results.find((r) => String(r.trackId) === String(trackId) && r.trackViewUrl) ??
       json.results.find((r) => r.trackViewUrl);
@@ -112,7 +107,6 @@ async function appleDeepLinkForAlbum(collectionId: string): Promise<string | nul
     const json = (await res.json()) as { resultCount: number; results: any[] };
     if (!json?.results?.length) return null;
 
-    // First result should be the collection
     const album = json.results.find((r) => r.collectionViewUrl) ?? json.results[0];
     const url: string | undefined = album?.collectionViewUrl;
     return url ?? null;
@@ -131,7 +125,6 @@ function spotifySearchUrl(title: string, artist: string) {
   return `https://open.spotify.com/search/${q}`;
 }
 
-/** Open a row with a specified player; returns success boolean. */
 export async function openRowWith(
   row: ListenRow,
   player: DefaultPlayer
@@ -147,7 +140,6 @@ export async function openRowWith(
       if (!url) url = appleSearchUrl(row.title, row.artist_name);
     }
   } else {
-    // Spotify: still search until we store Spotify IDs
     url = spotifySearchUrl(row.title, row.artist_name);
   }
 

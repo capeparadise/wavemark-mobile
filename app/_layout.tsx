@@ -1,8 +1,16 @@
 // app/_layout.tsx
 import { Stack } from 'expo-router';
-import { SessionProvider } from './lib/session';
+import { useEffect } from 'react';
+import { ensureDevSignIn } from '../lib/devAuth';
+import { SessionProvider } from '../lib/session';
 
 export default function RootLayout() {
+  useEffect(() => {
+    if (__DEV__) {
+      ensureDevSignIn();
+    }
+  }, []);
+
   return (
     <SessionProvider>
       <Stack screenOptions={{ headerShown: false }}>

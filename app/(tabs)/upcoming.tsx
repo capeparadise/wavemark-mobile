@@ -2,14 +2,14 @@
 import { Link } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import {
-  ActivityIndicator,
-  FlatList,
-  RefreshControl,
-  SafeAreaView,
-  Text,
-  View,
+    ActivityIndicator,
+    FlatList,
+    RefreshControl,
+    SafeAreaView,
+    Text,
+    View,
 } from 'react-native';
-import { supabase } from '../lib/supabaseClient';
+import { supabase } from '../../lib/supabase';
 
 type Row = {
   id: string;

@@ -1,7 +1,7 @@
 import type { Session, User } from '@supabase/supabase-js';
 import { createContext, useContext, useEffect, useState } from 'react';
 import { ActivityIndicator, View } from 'react-native';
-import { supabase } from './supabaseClient';
+import { supabase } from './supabase';
 
 type SessionCtx = {
   session: Session | null;
@@ -14,11 +14,11 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
+    supabase.auth.getSession().then(({ data }: { data: any }) => {
       setSession(data.session ?? null);
       setReady(true);
     });
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, sess) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((_event: any, sess: Session | null) => {
       setSession(sess ?? null);
     });
     return () => { sub.subscription.unsubscribe(); };

@@ -18,6 +18,9 @@ export type AppleArtist = {
   thumbUrl?: string | null; // we fill via getArtistThumb
 };
 
+// Legacy alias used by some app files
+export type ArtistResult = AppleArtist;
+
 /** Track (song) */
 export type AppleTrack = {
   trackId: number;
@@ -25,9 +28,13 @@ export type AppleTrack = {
   artistName: string;
   artistId: number;
   collectionName?: string | null;
+  releaseDate?: string;
   artworkUrl: string; // normalized to 100px URL
   previewUrl?: string | null;
 };
+
+// Some callers expect releaseDate and releaseType
+export type AppleTrackLegacy = AppleTrack & { releaseDate?: string; releaseType?: string };
 
 /** Album / collection */
 export type AppleAlbum = {
@@ -38,6 +45,9 @@ export type AppleAlbum = {
   releaseDate?: string;
   artworkUrl: string; // normalized to 100px URL
 };
+
+// Provide releaseType for compatibility (album vs ep)
+export type AppleAlbumLegacy = AppleAlbum & { releaseType?: 'album' | 'ep' };
 
 function normalizeArt(url?: string | null): string {
   // Apple returns artworkUrl100 / 60 / etc. Normalize to 100px if present.
@@ -66,7 +76,7 @@ export async function searchArtists(term: string): Promise<AppleArtist[]> {
 }
 
 /**
- * Quick “thumbnail”: take the first album’s artwork for an artist.
+ * Quick “thumbnail": take the first album’s artwork for an artist.
  */
 export async function getArtistThumb(artistId: number): Promise<string | null> {
   const url = `${ITUNES}/lookup?id=${artistId}&entity=album&limit=1`;
@@ -109,9 +119,19 @@ export async function fetchTopTracks(
       artistName: r.artistName,
       artistId: r.artistId,
       collectionName: r.collectionName ?? null,
+      releaseDate: r.releaseDate,
       artworkUrl: normalizeArt(r.artworkUrl100),
       previewUrl: r.previewUrl ?? null,
     }));
+}
+
+// Compatibility helpers expected by app/artist code
+export async function getArtistTracks(artistId: number): Promise<AppleTrack[]> {
+  return await fetchTopTracks(artistId, 50);
+}
+
+export async function getArtistAlbums(artistId: number): Promise<AppleAlbum[]> {
+  return await fetchAllAlbums(artistId);
 }
 
 /**

@@ -14,13 +14,13 @@ import {
     AppleTrack,
     getArtistAlbums,
     getArtistTracks,
-} from "../../lib/apple";
+} from "../../../lib/apple";
 
 type Params = { id?: string; name?: string; tab?: "tracks" | "albums" | "eps" };
 
 export default function DiscographyScreen() {
   const { id, name, tab } = useLocalSearchParams<Params>();
-  const [albums, setAlbums] = useState<AppleAlbum[]>([]);
+    const [albums, setAlbums] = useState<AppleAlbum[]>([]);
   const [tracks, setTracks] = useState<AppleTrack[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -29,9 +29,11 @@ export default function DiscographyScreen() {
     (async () => {
       if (!id) return;
       try {
+        const artistNum = Number(id);
+        if (Number.isNaN(artistNum)) return;
         const [albumsRes, tracksRes] = await Promise.all([
-          getArtistAlbums(id),
-          getArtistTracks(id),
+          getArtistAlbums(artistNum),
+          getArtistTracks(artistNum),
         ]);
         if (!mounted) return;
         setAlbums(albumsRes);
@@ -48,11 +50,11 @@ export default function DiscographyScreen() {
   }, [id]);
 
   const albumsOnly = useMemo(
-    () => albums.filter((a) => a.releaseType === "album"),
+    () => albums.filter((a) => !/\bEP\b/i.test(a.collectionName)),
     [albums]
   );
   const epsOnly = useMemo(
-    () => albums.filter((a) => a.releaseType === "ep"),
+    () => albums.filter((a) => /\bEP\b/i.test(a.collectionName)),
     [albums]
   );
 
@@ -81,19 +83,19 @@ export default function DiscographyScreen() {
               return (
                 <Section key="tracks" title="Tracks (recent)">
                   {tracks.map((t) => (
-                    <Row
-                      key={t.trackId}
-                      image={t.artworkUrl}
-                      title={t.trackName}
-                      subtitle={
-                        t.collectionName
-                          ? `${t.collectionName}${
-                              t.releaseDate ? ` • ${t.releaseDate}` : ""
-                            }`
-                          : t.releaseDate ?? ""
-                      }
-                    />
-                  ))}
+                      <Row
+                        key={t.trackId}
+                        image={t.artworkUrl}
+                        title={t.trackName}
+                        subtitle={
+                          t.collectionName
+                            ? `${t.collectionName}${
+                                t.releaseDate ? ` • ${t.releaseDate}` : ""
+                              }`
+                            : t.releaseDate ?? ""
+                        }
+                      />
+                    ))}
                 </Section>
               );
             if (section === "albums")

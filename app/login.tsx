@@ -1,8 +1,8 @@
 import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Alert, Pressable, SafeAreaView, Text, TextInput, View } from 'react-native';
-import { useSession } from './lib/session';
-import { supabase } from './lib/supabaseClient';
+import { useSession } from '../lib/session';
+import { supabase } from '../lib/supabase';
 
 const Button = ({
   title, onPress, variant = 'primary', disabled = false,

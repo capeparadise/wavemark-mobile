@@ -1,7 +1,7 @@
 import { router } from 'expo-router';
 import { useState } from 'react';
 import { Alert, Pressable, SafeAreaView, Text, TextInput, View } from 'react-native';
-import { supabase } from '../lib/supabase';
+import { supabase } from '../../lib/supabase';
 
 type ReleaseType = 'album' | 'ep' | 'single' | 'track';
 

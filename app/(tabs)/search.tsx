@@ -2,20 +2,20 @@
 import { Link } from "expo-router";
 import { useEffect, useState } from "react";
 import {
-  ActivityIndicator,
-  Image,
-  Pressable,
-  SafeAreaView,
-  ScrollView,
-  Text,
-  TextInput,
-  View,
+    ActivityIndicator,
+    Image,
+    Pressable,
+    SafeAreaView,
+    ScrollView,
+    Text,
+    TextInput,
+    View,
 } from "react-native";
 import {
-  ArtistResult,
-  getArtistThumb,
-  searchArtists,
-} from "../lib/apple"; // note: one level up from (tabs)
+    AppleArtist,
+    getArtistThumb,
+    searchArtists,
+} from "../../lib/apple"; // top-level lib
 
 type Mode = "artists" | "albums";
 
@@ -24,7 +24,7 @@ export default function SearchScreen() {
   const [q, setQ] = useState("justin bieber");
   const [loading, setLoading] = useState(false);
   const [artists, setArtists] = useState<
-    (ArtistResult & { thumb?: string | null })[]
+    (AppleArtist & { thumb?: string | null })[]
   >([]);
 
   async function runSearch(text: string) {
@@ -154,7 +154,9 @@ export default function SearchScreen() {
                   <Text style={{ fontSize: 16, fontWeight: "700" }}>
                     {a.name}
                   </Text>
-                  {!!a.genre && <Text style={{ opacity: 0.7 }}>{a.genre}</Text>}
+                  {!!a.primaryGenreName && (
+                    <Text style={{ opacity: 0.7 }}>{a.primaryGenreName}</Text>
+                  )}
                 </View>
                 <Text style={{ color: "#2f6" }}>View →</Text>
               </Pressable>

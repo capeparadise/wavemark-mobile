@@ -1,26 +1,26 @@
 // app/(tabs)/listen.tsx
 import React, { useCallback, useEffect, useState } from 'react';
 import {
-  ActionSheetIOS,
-  ActivityIndicator,
-  Alert,
-  FlatList,
-  Platform,
-  Pressable,
-  RefreshControl,
-  SafeAreaView,
-  Text,
-  View
+    ActionSheetIOS,
+    ActivityIndicator,
+    Alert,
+    FlatList,
+    Platform,
+    Pressable,
+    RefreshControl,
+    SafeAreaView,
+    Text,
+    View
 } from 'react-native';
 import {
-  fetchListenList,
-  markDone,
-  openInAppleMusic,
-  openInSpotify,
-  removeListen,
-  type ListenRow,
-} from '../lib/listen';
-import { getDefaultPlayer } from '../lib/user';
+    fetchListenList,
+    markDone,
+    openInAppleMusic,
+    openInSpotify,
+    removeListen,
+    type ListenRow,
+} from '../../lib/listen';
+import { getDefaultPlayer } from '../../lib/user';
 
 export default function ListenTab() {
   const [rows, setRows] = useState<ListenRow[]>([]);
@@ -83,7 +83,7 @@ export default function ListenTab() {
       ActionSheetIOS.showActionSheetWithOptions(
         {
           title: row.title,
-          message: row.artist_name,
+      message: row.artist_name ?? undefined,
           options: ['Open in Apple Music', 'Open in Spotify', 'Cancel'],
           cancelButtonIndex: 2,
         },
@@ -95,7 +95,7 @@ export default function ListenTab() {
     } else {
       Alert.alert(
         row.title,
-        row.artist_name,
+          row.artist_name ?? undefined,
         [
           { text: 'Apple Music', onPress: () => openInAppleMusic(row) },
           { text: 'Spotify', onPress: () => openInSpotify(row) },

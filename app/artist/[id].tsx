@@ -9,8 +9,8 @@ import {
   fetchAlbumsByType,
   fetchArtistById,
   fetchTopTracks,
-} from '../lib/apple';
-import { addToListenList, type AppleAlbum, type AppleTrack } from '../lib/listen';
+} from '../../lib/apple';
+import { addToListenList, type AppleAlbum, type AppleTrack } from '../../lib/listen';
 
 type SectionProps<T> = {
   title: string;

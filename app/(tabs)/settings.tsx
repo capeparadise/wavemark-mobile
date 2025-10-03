@@ -1,7 +1,7 @@
 // app/settings.tsx
 import React, { useEffect, useState } from 'react';
 import { Alert, Pressable, SafeAreaView, Text, View } from 'react-native';
-import { getDefaultPlayer, setDefaultPlayer, type DefaultPlayer } from '../lib/queries';
+import { getDefaultPlayer, setDefaultPlayer, type DefaultPlayer } from '../../lib/queries';
 
 export default function SettingsScreen() {
   const [current, setCurrent] = useState<DefaultPlayer>('apple');
