@@ -1,0 +1,23 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Deploy spotify-search edge function",
+			"type": "shell",
+			"command": "supabase functions deploy spotify-search --no-verify-jwt",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Deploy spotify-search edge function",
+			"type": "shell",
+			"command": "supabase functions deploy spotify-search --no-verify-jwt",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		}
+	]
+}

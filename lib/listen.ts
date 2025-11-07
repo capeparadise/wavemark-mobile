@@ -1,8 +1,13 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Linking } from 'react-native';
+import { debugNS } from './debug';
 import { supabase } from './supabase';
 
+const debug = debugNS('listen');
+
 export type ListenPlayer = 'apple' | 'spotify';
+
+export type RatingValue = number; // 0.5..5.0 in 0.5 steps
 
 export type ListenRow = {
   id: string;
@@ -13,6 +18,8 @@ export type ListenRow = {
   title: string;
   artist_name: string | null;
   release_date?: string | null;
+  // NEW:
+  upcoming?: boolean | null;
 
   apple_url: string | null;
   apple_id: string | null;
@@ -21,6 +28,10 @@ export type ListenRow = {
   spotify_id: string | null;
 
   done_at: string | null; // ISO string or null
+  rating?: RatingValue | null;
+  review?: string | null;
+  rated_at?: string | null; // ISO string
+  created_at?: string | null;
 };
 
 export type AppleTrack = {
@@ -46,12 +57,16 @@ const DEFAULT_PLAYER_KEY = 'default_player';
 export async function getDefaultPlayer(): Promise<ListenPlayer> {
   try {
     const v = await AsyncStorage.getItem(DEFAULT_PLAYER_KEY);
+  debug('pref:get', DEFAULT_PLAYER_KEY, v);
     if (v === 'apple' || v === 'spotify') return v;
-  } catch {}
+  } catch (e) {
+  debug('pref:get:error', e);
+  }
   return 'apple';
 }
 
 export async function setDefaultPlayer(p: ListenPlayer) {
+  debug('pref:set', DEFAULT_PLAYER_KEY, p);
   await AsyncStorage.setItem(DEFAULT_PLAYER_KEY, p);
 }
 
@@ -59,15 +74,20 @@ export async function addToListenList(
   type: 'track' | 'album',
   item: AppleTrack | AppleAlbum
 ): Promise<{ ok: true; row: ListenRow } | { ok: false; message: string }> {
-  // Ensure we have the signed-in user for RLS (user_id = auth.uid())
+  // Ensure we have an auth session & user id (RLS requires it)
+  const { data: sessionData } = await supabase.auth.getSession();
+  const session = sessionData?.session ?? null;
+  if (!session) {
+    return { ok: false, message: 'Not signed in. Please try again in a moment.' };
+  }
   const {
     data: { user },
     error: userErr,
   } = await supabase.auth.getUser();
   if (userErr) return { ok: false, message: userErr.message };
-  if (!user) return { ok: false, message: 'Not signed in' };
+  if (!user) return { ok: false, message: 'Could not determine user. Please try again.' };
 
-  const appleUrl =
+  let appleUrl =
     type === 'track'
       ? (item as any).trackViewUrl ?? null
       : (item as any).collectionViewUrl ?? null;
@@ -81,6 +101,26 @@ export async function addToListenList(
         ? String((item as any).collectionId)
         : null;
 
+  // If we don't have an Apple deep link yet, fetch it via iTunes Lookup by ID
+  if (!appleUrl && appleId) {
+    try {
+      const res = await fetch(`https://itunes.apple.com/lookup?id=${encodeURIComponent(appleId)}`);
+      if (res.ok) {
+        const j = (await res.json()) as any;
+        const r = j?.results?.[0];
+        if (r) {
+          // Prefer the correct view URL by type
+          appleUrl =
+            type === 'track'
+              ? (r.trackViewUrl ?? r.collectionViewUrl ?? null)
+              : (r.collectionViewUrl ?? r.trackViewUrl ?? null);
+        }
+      }
+    } catch {
+      // best-effort; fallback is search later
+    }
+  }
+
   const title =
     type === 'track'
       ? (item as any).trackName ?? ''
@@ -88,40 +128,281 @@ export async function addToListenList(
 
   const artist = (item as any).artistName ?? null;
 
+  // Resolve a Spotify ID/URL via our Supabase Edge Function (best-effort)
+  let spotifyId: string | null = null;
+  let spotifyUrl: string | null = null;
+  try {
+    const { data: spot } = await supabase.functions.invoke('spotify-resolve', {
+      body: {
+        type, // 'track' | 'album'
+        title,
+        artist: artist ?? undefined,
+      },
+    });
+    if (spot?.id) spotifyId = String(spot.id);
+    if (spot?.url) spotifyUrl = String(spot.url);
+  } catch {
+    // ignore resolver failures; we'll fall back to search later
+  }
+
   const insertPayload = {
     // IMPORTANT for RLS:
     user_id: user.id, // must equal auth.uid() under your policy
     item_type: type,
-    provider: 'apple' as const,
+  provider: 'apple' as ListenPlayer,
     provider_id: appleId,
     title,
     artist_name: artist,
     apple_url: appleUrl,
     apple_id: appleId,
-    // spotify_url/spotify_id remain null unless enriched later
+    spotify_id: spotifyId,
+    spotify_url: spotifyUrl,
   };
 
-  const { data, error } = await supabase
+  // Perform insert and handle Supabase’s { error } pattern (no exceptions)
+  const { data: inserted, error: insertErr } = await supabase
     .from('listen_list')
     .insert(insertPayload)
-    .select()
+    .select(
+      'id,item_type,provider,provider_id,title,artist_name,apple_url,apple_id,spotify_url,spotify_id,done_at'
+    )
     .single();
 
-  if (error) return { ok: false, message: error.message };
-  return { ok: true, row: data as ListenRow };
+  if (insertErr) {
+    // Surface the actual DB error message so callers can display it
+    debug('add:insertErr', {
+      code: (insertErr as any)?.code,
+      message: (insertErr as any)?.message,
+      details: (insertErr as any)?.details,
+      hint: (insertErr as any)?.hint,
+      payload: insertPayload,
+    });
+    // Diagnostic: list any rows under this user that match title/type or IDs
+    const cols = 'id,title,item_type,provider,provider_id,apple_id,spotify_id,done_at,created_at';
+  const { data: diag1, error: diagErr1 } = await supabase
+      .from('listen_list')
+      .select(cols)
+      .eq('user_id', user.id)
+      .eq('item_type', type)
+      .eq('title', title);
+  debug('add:diag:title', { error: diagErr1?.message, rows: diag1 });
+
+    const orParts: string[] = [];
+    if (appleId) orParts.push(`apple_id.eq.${appleId}`);
+    if (spotifyId) orParts.push(`spotify_id.eq.${spotifyId}`);
+    if (orParts.length) {
+      const { data: diag2, error: diagErr2 } = await supabase
+        .from('listen_list')
+        .select(cols)
+        .eq('user_id', user.id)
+        .eq('item_type', type)
+        .or(orParts.join(','));
+  debug('add:diag:ids', { error: diagErr2?.message, rows: diag2 });
+    }
+    // Return the raw DB error message to the caller
+    return { ok: false, message: (insertErr as any)?.message ?? 'Add failed' };
+  }
+
+  if (!insertErr && inserted) {
+    debug('add:inserted', { id: inserted.id });
+    return { ok: true, row: inserted as ListenRow };
+  }
+
+  // Duplicate key handling (unique constraint)
+  const code = (insertErr as any)?.code ?? '';
+  const msg = String((insertErr as any)?.message ?? '');
+  if (code === '23505' || /duplicate key value/i.test(msg)) {
+    const columns =
+      'id,item_type,provider,provider_id,title,artist_name,apple_url,apple_id,spotify_url,spotify_id,done_at';
+
+    // Build an OR filter using available identifiers
+    const ors: string[] = [];
+    if (appleId) {
+      ors.push(`apple_id.eq.${appleId}`);
+      // If your unique constraint is on provider_id for Apple
+      ors.push(`provider_id.eq.${appleId}`);
+    }
+    if (spotifyId) {
+      ors.push(`spotify_id.eq.${spotifyId}`);
+      ors.push(`provider_id.eq.${spotifyId}`);
+    }
+    // Fallback by normalized title (best-effort)
+    const normTitle = title.replace(/\s+/g, ' ').trim();
+    ors.push(`title.eq.${normTitle}`);
+
+    // Try ID-based lookup first (with OR), then fallback to title+type if needed
+    let existing = null as any;
+    if (ors.length > 0) {
+      const { data: byIds } = await supabase
+        .from('listen_list')
+        .select(columns)
+        .eq('user_id', user.id)
+        .eq('item_type', type)
+        .or(ors.join(','))
+        .maybeSingle();
+      existing = byIds ?? null;
+    }
+
+    if (!existing) {
+      const { data: byTitle } = await supabase
+        .from('listen_list')
+        .select(columns)
+        .eq('user_id', user.id)
+        .eq('item_type', type)
+        .eq('title', normTitle)
+        .maybeSingle();
+      existing = byTitle ?? null;
+    }
+
+  if (existing) {
+      // If the item already exists but is missing Spotify fields,
+      // and our resolver returned them, patch the row once.
+      if ((existing && (!existing.spotify_url || !existing.spotify_id)) && (spotifyUrl || spotifyId)) {
+        const patch: Partial<ListenRow> = {};
+        if (!existing.spotify_url && spotifyUrl) patch.spotify_url = spotifyUrl;
+        if (!existing.spotify_id && spotifyId) patch.spotify_id = spotifyId;
+        if (Object.keys(patch).length) {
+          const { data: updated } = await supabase
+            .from('listen_list')
+            .update(patch)
+            .eq('id', existing.id)
+            .select(
+              'id,item_type,provider,provider_id,title,artist_name,apple_url,apple_id,spotify_url,spotify_id,done_at'
+            )
+            .single();
+          if (updated) existing = updated;
+        }
+      }
+  debug('add:duplicate:return', { id: existing.id });
+      return { ok: true, row: existing as ListenRow };
+    }
+
+    return { ok: false, message: 'Item already exists in your list.' };
+  }
+
+ debug('add:failed', insertErr);
+ return { ok: false, message: msg || 'Failed to add item' };
 }
 
 export async function fetchListenList(): Promise<ListenRow[]> {
   const { data, error } = await supabase
     .from('listen_list')
+    // add created_at to the projection if present in your table
     .select(
-      'id,item_type,provider,provider_id,title,artist_name,apple_url,apple_id,spotify_url,spotify_id,done_at'
+  'id,item_type,provider,provider_id,title,artist_name,apple_url,apple_id,spotify_url,spotify_id,done_at,rating,rated_at,created_at'
     )
     .order('done_at', { ascending: true, nullsFirst: true })
     .order('id', { ascending: false });
 
   if (error || !data) return [];
   return data as ListenRow[];
+}
+
+export async function fetchHistory(): Promise<{ ok: true; rows: ListenRow[] } | { ok: false; message: string }> {
+  const { data: { user }, error: userErr } = await supabase.auth.getUser();
+  if (userErr) return { ok: false, message: userErr.message };
+  if (!user) return { ok: false, message: 'Not signed in' };
+
+  const { data, error } = await supabase
+    .from('listen_list')
+    .select('id,item_type,provider,provider_id,title,artist_name,apple_url,apple_id,spotify_url,spotify_id,done_at,rating,rated_at,created_at')
+    .eq('user_id', user.id)
+    .not('done_at', 'is', null)
+    .order('rated_at', { ascending: false, nullsFirst: false })
+    .order('done_at', { ascending: false, nullsFirst: false });
+
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, rows: (data ?? []) as ListenRow[] };
+}
+
+export async function fetchUpcoming(): Promise<{ ok: true; rows: ListenRow[] } | { ok: false; message: string }> {
+  const { data: { user }, error: userErr } = await supabase.auth.getUser();
+  if (userErr) return { ok: false, message: userErr.message };
+  if (!user) return { ok: false, message: 'Not signed in' };
+
+  const { data, error } = await supabase
+    .from('listen_list')
+    .select('id,item_type,title,artist_name,release_date,upcoming,apple_url,spotify_url,created_at')
+    .eq('user_id', user.id)
+    .eq('upcoming', true)
+    .order('release_date', { ascending: true, nullsFirst: false });
+
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, rows: (data ?? []) as ListenRow[] };
+}
+
+export async function reconcileReleased(): Promise<void> {
+  const res = await fetchUpcoming();
+  if (!('ok' in res) || !res.ok) return;
+  const today = new Date().toISOString().slice(0,10);
+  const toRelease = res.rows.filter(r => r.release_date && r.release_date <= today);
+  for (const r of toRelease) {
+    await supabase.from('listen_list').update({ upcoming: false }).eq('id', r.id);
+  }
+}
+
+export async function addToListFromSearch(input: {
+  type: 'track' | 'album',
+  title: string,
+  artist?: string | null,
+  releaseDate?: string | null,
+  appleUrl?: string | null,
+  spotifyUrl?: string | null,
+}): Promise<{ ok: boolean; id?: string; upcoming?: boolean; message?: string }> {
+  const { data: { user }, error: userErr } = await supabase.auth.getUser();
+  if (userErr) return { ok: false, message: userErr.message };
+  if (!user) return { ok: false, message: 'Not signed in' };
+
+  const today = new Date().toISOString().slice(0,10);
+  const upcoming = !!(input.releaseDate && input.releaseDate > today);
+
+  // Derive provider + provider_id to satisfy NOT NULL constraint
+  const extractSpotifyId = (url?: string | null): string | null => {
+    if (!url) return null;
+    try {
+      const m = url.match(/open\.spotify\.com\/(track|album)\/([A-Za-z0-9]+)/);
+      return m?.[2] ?? null;
+    } catch { return null; }
+  };
+  const extractAppleId = (url?: string | null): string | null => {
+    if (!url) return null;
+    try {
+      const u = new URL(url);
+      const qId = u.searchParams.get('i');
+      if (qId) return qId;
+      const m = u.pathname.match(/\/album\/[^/]+\/(\d+)/);
+      if (m?.[1]) return m[1];
+      return null;
+    } catch { return null; }
+  };
+
+  const spotifyId = extractSpotifyId(input.spotifyUrl);
+  const appleId = extractAppleId(input.appleUrl);
+  const provider: 'spotify' | 'apple' = spotifyId ? 'spotify' : 'apple';
+  // Fallback provider_id to a stable string if we couldn't parse an ID
+  const provider_id = (spotifyId || appleId || input.appleUrl || input.title).toString();
+
+  const { data, error } = await supabase
+    .from('listen_list')
+    .insert({
+      user_id: user.id,
+      item_type: input.type,
+      provider,
+      provider_id,
+      title: input.title,
+      artist_name: input.artist ?? null,
+      apple_url: input.appleUrl ?? null,
+      apple_id: appleId ?? null,
+      spotify_url: input.spotifyUrl ?? null,
+      spotify_id: spotifyId ?? null,
+      release_date: input.releaseDate ?? null,
+      upcoming,
+    })
+    .select('id, upcoming')
+    .single();
+
+  if (error) return { ok: false, message: error.message };
+  return { ok: true, id: (data as any)?.id, upcoming: (data as any)?.upcoming ?? upcoming };
 }
 
 export async function markDone(
@@ -147,6 +428,8 @@ export async function removeListen(
   return { ok: true };
 }
 
+
+
 function buildAppleSearchUrl(title: string, artist?: string | null) {
   const q = encodeURIComponent([title, artist].filter(Boolean).join(' '));
   return `https://music.apple.com/us/search?term=${q}`;
@@ -170,32 +453,78 @@ async function tryOpen(url: string | null | undefined) {
 }
 
 async function tryApple(item: ListenRow) {
+  debug('tryApple', 'url=', item.apple_url);
   if (await tryOpen(item.apple_url)) return true;
-  return await tryOpen(buildAppleSearchUrl(item.title, item.artist_name));
+  const search = buildAppleSearchUrl(item.title, item.artist_name);
+  debug('tryApple:fallback', search);
+  return await tryOpen(search);
 }
 
 async function trySpotify(item: ListenRow) {
-  if (await tryOpen(item.spotify_url)) return true;
-  if (item.spotify_id) {
-    const path = item.item_type === 'track' ? 'track' : 'album';
-    if (await tryOpen(`https://open.spotify.com/${path}/${item.spotify_id}`)) {
+  debug('trySpotify', 'url=', item.spotify_url, 'id=', item.spotify_id);
+
+  // If there's a stored spotify_url, try to open it directly (best-effort)
+  if (item.spotify_url) {
+    try {
+      await Linking.openURL(item.spotify_url);
+      debug('trySpotify:opened', item.spotify_url);
       return true;
+    } catch (e) {
+      debug('trySpotify:failedDeep', e);
     }
   }
-  return await tryOpen(buildSpotifySearchUrl(item.title, item.artist_name));
+
+  // 2) Deep link by ID if present
+  if (item.spotify_id) {
+    const path = item.item_type === 'track' ? 'track' : 'album';
+    const deep = `https://open.spotify.com/${path}/${item.spotify_id}`;
+  debug('trySpotify:idDeep', deep);
+    if (await tryOpen(deep)) return true;
+  }
+
+  // Build query once
+  const q = [item.title, item.artist_name].filter(Boolean).join(' ');
+
+  // 3) Preferred iOS app-scheme search (most reliable)
+  const appSearchQ = `spotify://search?q=${encodeURIComponent(q)}`;
+  debug('trySpotify:appSearch', appSearchQ);
+  if (await tryOpen(appSearchQ)) return true;
+
+  // 4) Legacy scheme fallback
+  const legacySearch = `spotify:search:${encodeURIComponent(q)}`;
+  debug('trySpotify:legacySearch', legacySearch);
+  if (await tryOpen(legacySearch)) return true;
+
+  // 5) Web universal link (may still route into app)
+  const webSearch = buildSpotifySearchUrl(item.title, item.artist_name);
+  debug('trySpotify:webSearch', webSearch);
+  return await tryOpen(webSearch);
 }
 
-export async function openByDefaultPlayer(item: ListenRow): Promise<boolean> {
-  const preferred = await getDefaultPlayer();
+export async function openByDefaultPlayer(
+  item: ListenRow,
+  preferredOverride?: ListenPlayer
+): Promise<boolean> {
+  const preferred = preferredOverride ?? (await getDefaultPlayer());
+
+  // DEBUG START
+  debug('openByDefaultPlayer', 'preferred =', preferred, 'title =', item.title);
+  // DEBUG END
 
   if (preferred === 'apple') {
-    if (await tryApple(item)) return true;
-    if (await trySpotify(item)) return true;
-    return false;
+    const a = await tryApple(item);
+  debug('openByDefaultPlayer:apple', { success: a });
+    if (a) return true;
+  const s = await trySpotify(item);
+  debug('openByDefaultPlayer:fallbackSpotify', { success: s });
+    return s;
   } else {
-    if (await trySpotify(item)) return true;
-    if (await tryApple(item)) return true;
-    return false;
+  const s = await trySpotify(item);
+  debug('openByDefaultPlayer:spotify', { success: s });
+    if (s) return true;
+  const a = await tryApple(item);
+  debug('openByDefaultPlayer:fallbackApple', { success: a });
+    return a;
   }
 }
 
@@ -206,4 +535,87 @@ export async function openInAppleMusic(item: ListenRow): Promise<boolean> {
 
 export async function openInSpotify(item: ListenRow): Promise<boolean> {
   return await trySpotify(item);
+}
+
+function normalizeRating(r: number): RatingValue {
+  // Clamp 0.5..5.0 and snap to nearest 0.5
+  const snapped = Math.round(r * 2) / 2;
+  const clamped = Math.min(5, Math.max(0.5, snapped));
+  return clamped as RatingValue;
+}
+
+export async function setRating(id: string, rating: number, review?: string) {
+  try {
+    const { data: auth } = await supabase.auth.getUser();
+    const user = auth?.user;
+    if (!user) return { ok: false, message: 'Not signed in' };
+
+    const r = normalizeRating(rating);
+    const payload = {
+      rating: r,
+      review: review ?? null,
+      rated_at: new Date().toISOString(),
+    };
+
+    const { data, error } = await supabase
+      .from('listen_list')
+      .update(payload)
+      .eq('id', id)
+      .eq('user_id', user.id)
+      .select('id, rating, review, rated_at')
+      .maybeSingle();
+
+    if (error) {
+      debug('rate:set:error', error);
+      return { ok: false, message: 'Could not save rating', error };
+    }
+    debug('rate:set:ok', data);
+    return { ok: true, row: data };
+  } catch (e) {
+    debug('rate:set:catch', e);
+    return { ok: false, message: 'Unexpected error', error: e };
+  }
+}
+
+export async function clearRating(id: string) {
+  try {
+    const { data: auth } = await supabase.auth.getUser();
+    const user = auth?.user;
+    if (!user) return { ok: false, message: 'Not signed in' };
+
+    const { data, error } = await supabase
+      .from('listen_list')
+      .update({ rating: null, review: null, rated_at: null })
+      .eq('id', id)
+      .eq('user_id', user.id)
+      .select('id, rating, review, rated_at')
+      .maybeSingle();
+
+    if (error) {
+      debug('rate:clear:error', error);
+      return { ok: false, message: 'Could not clear rating', error };
+    }
+    debug('rate:clear:ok', data);
+    return { ok: true, row: data };
+  } catch (e) {
+    debug('rate:clear:catch', e);
+    return { ok: false, message: 'Unexpected error', error: e };
+  }
+}
+
+export async function fetchRatedHistory(limit = 50, offset = 0) {
+  const { data: auth } = await supabase.auth.getUser();
+  const user = auth?.user;
+  if (!user) return { ok: false, message: 'Not signed in' };
+
+  const { data, error } = await supabase
+    .from('listen_list')
+    .select('*')
+    .eq('user_id', user.id)
+    .not('rating', 'is', null)
+    .order('rated_at', { ascending: false })
+    .range(offset, offset + limit - 1);
+
+  if (error) return { ok: false, message: 'Fetch failed', error };
+  return { ok: true, rows: data };
 }

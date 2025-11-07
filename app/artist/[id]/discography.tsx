@@ -15,6 +15,7 @@ import {
     getArtistAlbums,
     getArtistTracks,
 } from "../../../lib/apple";
+import { formatDate } from "../../../lib/date";
 
 type Params = { id?: string; name?: string; tab?: "tracks" | "albums" | "eps" };
 
@@ -90,9 +91,9 @@ export default function DiscographyScreen() {
                         subtitle={
                           t.collectionName
                             ? `${t.collectionName}${
-                                t.releaseDate ? ` • ${t.releaseDate}` : ""
+                                t.releaseDate ? ` • ${formatDate(t.releaseDate)}` : ""
                               }`
-                            : t.releaseDate ?? ""
+                            : (t.releaseDate ? formatDate(t.releaseDate) : "")
                         }
                       />
                     ))}
@@ -106,7 +107,7 @@ export default function DiscographyScreen() {
                       key={a.collectionId}
                       image={a.artworkUrl}
                       title={a.collectionName}
-                      subtitle={a.releaseDate ?? ""}
+                      subtitle={a.releaseDate ? formatDate(a.releaseDate) : ""}
                     />
                   ))}
                 </Section>
@@ -118,7 +119,7 @@ export default function DiscographyScreen() {
                     key={a.collectionId}
                     image={a.artworkUrl}
                     title={a.collectionName}
-                    subtitle={a.releaseDate ?? ""}
+                    subtitle={a.releaseDate ? formatDate(a.releaseDate) : ""}
                   />
                 ))}
               </Section>

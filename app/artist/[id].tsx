@@ -2,15 +2,16 @@
 import { Image } from 'expo-image';
 import { Link, useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, Pressable, SafeAreaView, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, FlatList, Pressable, SafeAreaView, ScrollView, Text, View } from 'react-native';
 
 import {
-  AppleArtist,
-  fetchAlbumsByType,
-  fetchArtistById,
-  fetchTopTracks,
+    AppleArtist,
+    fetchAlbumsByType,
+    fetchArtistById,
+    fetchTopTracks,
 } from '../../lib/apple';
 import { addToListenList, type AppleAlbum, type AppleTrack } from '../../lib/listen';
+import { toast } from '../../lib/toast';
 
 type SectionProps<T> = {
   title: string;
@@ -102,21 +103,19 @@ export default function ArtistScreen() {
   const onAddTrack = async (track: AppleTrack) => {
     const res = await addToListenList('track', track);
     if (!res.ok) {
-      console.warn('Add track failed:', res.message);
-      Alert.alert('Could not add', String(res.message));
+      Alert.alert('Could not add', res.message ?? 'Please try again.');
       return;
     }
-    Alert.alert('Added', 'Added to Listen List');
+    toast('Added to Listen List');
   };
 
   const onAddAlbum = async (album: AppleAlbum) => {
     const res = await addToListenList('album', album);
     if (!res.ok) {
-      console.warn('Add album failed:', res.message);
-      Alert.alert('Could not add', String(res.message));
+      Alert.alert('Could not add', res.message ?? 'Please try again.');
       return;
     }
-    Alert.alert('Added', 'Added to Listen List');
+    toast('Added to Listen List');
   };
 
   const header = useMemo(
@@ -153,60 +152,68 @@ export default function ArtistScreen() {
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: 'white' }}>
       {header}
-      <View style={{ paddingHorizontal: 16, marginBottom: 4 }}>
-        <Text style={{ color: '#666' }}>{(artist as any).primaryGenreName ?? ''}</Text>
-      </View>
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={{ paddingBottom: 80, flexGrow: 1 }}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={true}
+        contentInsetAdjustmentBehavior="automatic"
+      >
+        <View style={{ paddingHorizontal: 16, marginBottom: 4 }}>
+          <Text style={{ color: '#666' }}>{(artist as any).primaryGenreName ?? ''}</Text>
+        </View>
 
-      {/* Top tracks */}
-      <Section<AppleTrack>
-        title="Top tracks"
-        data={tracks.slice(0, 12)}
-        seeAllHref={{ pathname: '/artist/[id]/discography', params: { id: String(id), name: displayName, tab: 'tracks' } }}
-        renderItem={({ item }) => (
-          <View style={card}>
-            <Image source={{ uri: (item as any).artworkUrl ?? (item as any).artworkUrl100 ?? null }} style={{ width: 200, height: 200, borderRadius: 12, backgroundColor: '#eee' }} contentFit="cover" />
-            <Text style={{ marginTop: 8, fontSize: 16, fontWeight: '700' }} numberOfLines={2}>{item.trackName}</Text>
-            <Text style={{ color: '#666' }} numberOfLines={1}>{item.artistName}</Text>
-            <Pressable onPress={() => onAddTrack(item)} style={[pill, { marginTop: 8, alignSelf: 'flex-start' }]}>
-              <Text style={{ fontWeight: '700' }}>Add to Listen List</Text>
-            </Pressable>
-          </View>
-        )}
-      />
+        {/* Top tracks */}
+        <Section<AppleTrack>
+          title="Top tracks"
+          data={tracks.slice(0, 12)}
+          seeAllHref={{ pathname: '/artist/[id]/discography', params: { id: String(id), name: displayName, tab: 'tracks' } }}
+          renderItem={({ item }) => (
+            <View style={card}>
+              <Image source={{ uri: (item as any).artworkUrl ?? (item as any).artworkUrl100 ?? null }} style={{ width: 200, height: 200, borderRadius: 12, backgroundColor: '#eee' }} contentFit="cover" />
+              <Text style={{ marginTop: 8, fontSize: 16, fontWeight: '700' }} numberOfLines={2}>{item.trackName}</Text>
+              <Text style={{ color: '#666' }} numberOfLines={1}>{item.artistName}</Text>
+              <Pressable onPress={() => onAddTrack(item)} style={[pill, { marginTop: 8, alignSelf: 'flex-start' }]}>
+                <Text style={{ fontWeight: '700' }}>Add to Listen List</Text>
+              </Pressable>
+            </View>
+          )}
+        />
 
-      {/* Albums */}
-      <Section<AppleAlbum>
-        title="Albums"
-        data={albums.slice(0, 12)}
-        seeAllHref={{ pathname: '/artist/[id]/discography', params: { id: String(id), name: displayName, tab: 'albums' } }}
-        renderItem={({ item }) => (
-          <View style={card}>
-            <Image source={{ uri: (item as any).artworkUrl ?? (item as any).artworkUrl100 ?? null }} style={{ width: 200, height: 200, borderRadius: 12, backgroundColor: '#eee' }} contentFit="cover" />
-            <Text style={{ marginTop: 8, fontSize: 16, fontWeight: '700' }} numberOfLines={2}>{item.collectionName}</Text>
-            <Text style={{ color: '#666' }} numberOfLines={1}>{item.artistName}</Text>
-            <Pressable onPress={() => onAddAlbum(item)} style={[pill, { marginTop: 8, alignSelf: 'flex-start' }]}>
-              <Text style={{ fontWeight: '700' }}>Add to Listen List</Text>
-            </Pressable>
-          </View>
-        )}
-      />
+        {/* Albums */}
+        <Section<AppleAlbum>
+          title="Albums"
+          data={albums.slice(0, 12)}
+          seeAllHref={{ pathname: '/artist/[id]/discography', params: { id: String(id), name: displayName, tab: 'albums' } }}
+          renderItem={({ item }) => (
+            <View style={card}>
+              <Image source={{ uri: (item as any).artworkUrl ?? (item as any).artworkUrl100 ?? null }} style={{ width: 200, height: 200, borderRadius: 12, backgroundColor: '#eee' }} contentFit="cover" />
+              <Text style={{ marginTop: 8, fontSize: 16, fontWeight: '700' }} numberOfLines={2}>{item.collectionName}</Text>
+              <Text style={{ color: '#666' }} numberOfLines={1}>{item.artistName}</Text>
+              <Pressable onPress={() => onAddAlbum(item)} style={[pill, { marginTop: 8, alignSelf: 'flex-start' }]}>
+                <Text style={{ fontWeight: '700' }}>Add to Listen List</Text>
+              </Pressable>
+            </View>
+          )}
+        />
 
-      {/* EPs */}
-      <Section<AppleAlbum>
-        title="EPs"
-        data={eps.slice(0, 12)}
-        seeAllHref={{ pathname: '/artist/[id]/discography', params: { id: String(id), name: displayName, tab: 'eps' } }}
-        renderItem={({ item }) => (
-          <View style={card}>
-            <Image source={{ uri: (item as any).artworkUrl ?? (item as any).artworkUrl100 ?? null }} style={{ width: 200, height: 200, borderRadius: 12, backgroundColor: '#eee' }} contentFit="cover" />
-            <Text style={{ marginTop: 8, fontSize: 16, fontWeight: '700' }} numberOfLines={2}>{item.collectionName}</Text>
-            <Text style={{ color: '#666' }} numberOfLines={1}>{item.artistName}</Text>
-            <Pressable onPress={() => onAddAlbum(item)} style={[pill, { marginTop: 8, alignSelf: 'flex-start' }]}>
-              <Text style={{ fontWeight: '700' }}>Add to Listen List</Text>
-            </Pressable>
-          </View>
-        )}
-      />
+        {/* EPs */}
+        <Section<AppleAlbum>
+          title="EPs"
+          data={eps.slice(0, 12)}
+          seeAllHref={{ pathname: '/artist/[id]/discography', params: { id: String(id), name: displayName, tab: 'eps' } }}
+          renderItem={({ item }) => (
+            <View style={card}>
+              <Image source={{ uri: (item as any).artworkUrl ?? (item as any).artworkUrl100 ?? null }} style={{ width: 200, height: 200, borderRadius: 12, backgroundColor: '#eee' }} contentFit="cover" />
+              <Text style={{ marginTop: 8, fontSize: 16, fontWeight: '700' }} numberOfLines={2}>{item.collectionName}</Text>
+              <Text style={{ color: '#666' }} numberOfLines={1}>{item.artistName}</Text>
+              <Pressable onPress={() => onAddAlbum(item)} style={[pill, { marginTop: 8, alignSelf: 'flex-start' }]}>
+                <Text style={{ fontWeight: '700' }}>Add to Listen List</Text>
+              </Pressable>
+            </View>
+          )}
+        />
+      </ScrollView>
     </SafeAreaView>
   );
 }

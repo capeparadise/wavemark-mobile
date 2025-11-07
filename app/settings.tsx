@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Alert, Pressable, SafeAreaView, Text, View } from 'react-native';
-import { getDefaultPlayer, setDefaultPlayer } from '../lib/listen';
+import { getDefaultPlayer, setDefaultPlayer } from '../lib/listen'; // <-- path must be ../lib/listen
 
 type Player = 'apple' | 'spotify';
 
@@ -55,6 +55,7 @@ function RadioRow({
 }
 
 export default function SettingsScreen() {
+  console.log('[settings] screen mounted');
   const [player, setPlayer] = useState<Player>('apple');
 
   useEffect(() => {
@@ -69,11 +70,12 @@ export default function SettingsScreen() {
   }, []);
 
   const choose = async (p: Player) => {
+    console.log('[settings] tap choose =', p);
     setPlayer(p); // instant UI update
     try {
-      await setDefaultPlayer(p);
-      // Optional UX note:
-      // Alert.alert('Saved', `Default player set to ${p === 'apple' ? 'Apple Music' : 'Spotify'}.`);
+      await setDefaultPlayer(p);                      // writes AsyncStorage
+      const confirmed = await getDefaultPlayer();     // read-back to verify
+      console.log('[settings] wrote =', p, 'confirmed =', confirmed);
     } catch (e: any) {
       Alert.alert('Could not save preference', String(e?.message ?? e));
     }
