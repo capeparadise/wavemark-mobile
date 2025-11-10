@@ -23,7 +23,13 @@ async function appleSearchAlbums(artist: string, country: string) {
 serve(async (req) => {
   try {
     const url = new URL(req.url);
-    const country = (url.searchParams.get('country') ?? 'GB').toUpperCase();
+  const country = (url.searchParams.get('country') ?? 'GB').toUpperCase();
+  // Multi-country sweep: always try requested country PLUS US & GB (if not already) to catch storefront-specific preorders.
+  const countries: string[] = [];
+  const addC = (c: string) => { if (!countries.includes(c)) countries.push(c); };
+  addC(country);
+  addC('US');
+  addC('GB');
     const horizonDays = Math.max(1, Math.min(90, Number(url.searchParams.get('days') ?? '60')));
     const limitArtists = Math.max(1, Math.min(200, Number(url.searchParams.get('limitArtists') ?? '100')));
 
@@ -58,8 +64,25 @@ serve(async (req) => {
       for (const f of sample) {
         const name = f.artist_name || '';
         if (!name) continue;
-        const results = await appleSearchAlbums(name, country);
-        for (const it of results) {
+        // Aggregate Apple results across storefronts, dedupe by collectionId
+        const appleMerged: Record<string, any> = {};
+        for (const c of countries) {
+          const results = await appleSearchAlbums(name, c);
+          for (const it of results) {
+            if (!it.collectionId) continue;
+            const key = String(it.collectionId);
+            // Prefer earlier releaseDate if multiple storefronts differ
+            if (!appleMerged[key]) {
+              appleMerged[key] = it;
+            } else {
+              const existing = appleMerged[key];
+              const rdNew = it.releaseDate ? String(it.releaseDate).slice(0,10) : null;
+              const rdOld = existing.releaseDate ? String(existing.releaseDate).slice(0,10) : null;
+              if (rdNew && rdOld && rdNew < rdOld) appleMerged[key] = it;
+            }
+          }
+        }
+        for (const it of Object.values(appleMerged)) {
           const rd = it.releaseDate ? String(it.releaseDate).slice(0, 10) : null;
           if (!rd || rd <= today.toISOString().slice(0,10) || rd > cutoffIso) continue;
           const title = stripDecorations(it.collectionName || '');
