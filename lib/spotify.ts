@@ -13,6 +13,8 @@ export type SpotifyResult = {
   spotifyUrl?: string | null;
   imageUrl?: string | null;
   albumType?: 'album' | 'single' | 'compilation';
+  albumId?: string | null;   // for tracks (parent album), for albums (same as id)
+  artistId?: string | null;  // primary artist id when available
 };
 
 // Use centralized base (with safe fallback)
@@ -71,6 +73,8 @@ export async function spotifyLookup(id: string, lookupType: 'album' | 'track'): 
       spotifyUrl: data.external_urls?.spotify ?? null,
   imageUrl: data.images?.[0]?.url ?? null,
   albumType: (data.album_type ?? null) as any,
+  albumId: data.id ?? null,
+  artistId: data.artists?.[0]?.id ?? null,
     }];
   } else {
     return [{
@@ -83,6 +87,8 @@ export async function spotifyLookup(id: string, lookupType: 'album' | 'track'): 
       releaseDate: data.album?.release_date ?? null,
       spotifyUrl: data.external_urls?.spotify ?? null,
   imageUrl: data.album?.images?.[0]?.url ?? null,
+  albumId: data.album?.id ?? null,
+  artistId: data.artists?.[0]?.id ?? null,
     }];
   }
 }
@@ -123,6 +129,8 @@ export async function spotifySearch(q: string): Promise<SpotifyResult[]> {
       releaseDate: t.album?.release_date ?? null,
       spotifyUrl: t.external_urls?.spotify ?? null,
   imageUrl: t.album?.images?.[0]?.url ?? null,
+  albumId: t.album?.id ?? null,
+  artistId: t.artists?.[0]?.id ?? null,
     });
   }
   for (const a of data.albums?.items ?? []) {
@@ -134,6 +142,8 @@ export async function spotifySearch(q: string): Promise<SpotifyResult[]> {
       spotifyUrl: a.external_urls?.spotify ?? null,
   imageUrl: a.images?.[0]?.url ?? null,
   albumType: (a.album_type ?? null) as any,
+  albumId: a.id ?? null,
+  artistId: a.artists?.[0]?.id ?? null,
     });
   }
   for (const ar of data.artists?.items ?? []) {
@@ -141,6 +151,7 @@ export async function spotifySearch(q: string): Promise<SpotifyResult[]> {
       id: ar.id, providerId: ar.id, provider: 'spotify',
       type: 'artist', title: ar.name,
       spotifyUrl: ar.external_urls?.spotify ?? null,
+  artistId: ar.id ?? null,
     });
   }
   return out;

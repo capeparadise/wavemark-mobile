@@ -40,6 +40,11 @@ serve(async (req) => {
     }
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
+    // Cleanup: purge any manually added upcoming rows (source='manual') to reduce clutter now that manual adds are removed.
+    try {
+      await supabase.from('upcoming_releases').delete().eq('source', 'manual');
+    } catch {}
+
     // Get followed artists per user
     const { data: follows, error } = await supabase
       .from('followed_artists')

@@ -1,16 +1,17 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
 import { router } from 'expo-router';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, AppState, FlatList, Image, Pressable, Text, TextInput, View } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, Animated, AppState, FlatList, Image, Pressable, Text, TextInput, View } from 'react-native';
 import FollowButton from '../../components/FollowButton';
 import { H } from '../../components/haptics';
 import Screen from '../../components/Screen';
 import { formatDate } from '../../lib/date';
-import { fetchFeed, type FeedItem } from '../../lib/follow';
+import { fetchFeed, listFollowedArtists, type FeedItem } from '../../lib/follow';
 import { addToListFromSearch } from '../../lib/listen';
 import { getNewReleases } from '../../lib/recommend';
 import { getMarket, parseSpotifyUrlOrId, spotifyLookup, spotifySearch, type SpotifyResult } from '../../lib/spotify';
-import { artistAlbums, artistSearch, artistTopTracks } from '../../lib/spotifyArtist';
+import { artistAlbums, artistSearch, artistTopTracks, fetchArtistDetails } from '../../lib/spotifyArtist';
 
 type Row = { kind: 'section-title'; title: string }
   | { kind: 'new'; id: string; title: string; artist: string; releaseDate?: string | null; spotifyUrl?: string | null; imageUrl?: string | null; type?: 'album' | 'single' | 'ep' }
@@ -32,21 +33,176 @@ export default function DiscoverTab() {
   const [debounceTimer, setDebounceTimer] = useState<any>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [fallbackFeed, setFallbackFeed] = useState<FeedItem[]>([]);
+  const [picked, setPicked] = useState<Array<{ id: string; artistId: string; title: string; artist: string; releaseDate?: string | null; spotifyUrl?: string | null; imageUrl?: string | null; type?: 'album' | 'single' | 'ep' }>>([]);
+  const [pickedLoading, setPickedLoading] = useState(false);
+  // Clean-bubble data: details (name/photo) and latest recent release per followed artist
+  const [followedDetails, setFollowedDetails] = useState<Record<string, { name: string; imageUrl?: string | null }>>({});
+  const [recentByArtist, setRecentByArtist] = useState<Record<string, { latestId?: string; latestDate?: string | null }>>({});
+  // Cache for artist profile images used in the "picked for you" lane
+  const [artistImageMap, setArtistImageMap] = useState<Record<string, string>>({});
+  const [artistNameMap, setArtistNameMap] = useState<Record<string, string>>({});
+  const artistImgPending = useRef<Set<string>>(new Set());
+  // Artist profile image cache (V2 adds kind to avoid album art contamination). We'll read V1 as legacy fallback.
+  const IMAGE_CACHE_KEY_V2 = 'artistImagesCacheV2';
+  const IMAGE_CACHE_KEY_V1 = 'artistImagesCacheV1';
+  const PICKED_CACHE_KEY = 'pickedCacheV1';
+  const [pickedDebug, setPickedDebug] = useState<{ followed: number; feedRecents: number; albumRecents: number; trackRecents: number; final: number; missing: number } | null>(null);
+  // Known canonical IDs to disambiguate same-name artists (minimal, surgical fix)
+  const CANONICAL_BY_NAME: Record<string, string> = useMemo(() => ({
+    // use lowercase keys
+    'dave': '2wY79sveU1sp5g7SokKOiI', // UK rapper (Santandave)
+  }), []);
+  const canonicalize = useCallback((name: string, id: string | null | undefined) => {
+    const key = (name || '').toString().trim().toLowerCase();
+    const target = CANONICAL_BY_NAME[key];
+    return target ? target : (id || '');
+  }, [CANONICAL_BY_NAME]);
+
+  // Load persistent cache (24h TTL)
+  useEffect(() => {
+    (async () => {
+      try {
+        const DAY_MS = 24*60*60*1000; const now = Date.now();
+        const loadKey = async (key: string) => {
+          try {
+            const raw = await AsyncStorage.getItem(key);
+            if (!raw) return {} as Record<string, string>;
+            const parsed = JSON.parse(raw);
+            const out: Record<string, string> = {};
+            Object.entries(parsed || {}).forEach(([id, v]: any) => {
+              const tsOk = typeof v?.ts === 'number' && (now - v.ts) < DAY_MS;
+              const kindOk = key === IMAGE_CACHE_KEY_V2 ? (v?.k === 'artist') : true;
+              if (v && v.url && tsOk && kindOk) out[id] = v.url;
+            });
+            return out;
+          } catch { return {} as Record<string, string>; }
+        };
+        const v2 = await loadKey(IMAGE_CACHE_KEY_V2);
+        const v1 = await loadKey(IMAGE_CACHE_KEY_V1);
+        const merged = { ...v1, ...v2 };
+        if (Object.keys(merged).length) setArtistImageMap(merged);
+      } catch {}
+    })();
+  }, []);
+
+  // One-time: clear any stale alias storage introduced previously
+  useEffect(() => {
+    (async () => {
+      try { await AsyncStorage.removeItem('artistIdAliasV1'); } catch {}
+    })();
+  }, []);
+
+  // Hydrate cached picked-for-you so UI shows immediately while refreshing
+  useEffect(() => {
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(PICKED_CACHE_KEY);
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        let arr = Array.isArray(parsed?.items) ? parsed.items : [];
+        // Drop entries missing valid artistId to avoid broken navigation
+        arr = arr.filter((it: any) => typeof it?.artistId === 'string' && /^[A-Za-z0-9]{22}$/.test(it.artistId));
+        const ts = typeof parsed?.ts === 'number' ? parsed.ts : 0;
+        const DAY_MS = 24*60*60*1000;
+        if (!arr.length) return;
+        // Use cache if within 24h; otherwise still use but will be replaced after load
+        setPicked(arr);
+      } catch {}
+    })();
+  }, []);
+
+  // Shimmer component for loading avatars
+  const Shimmer = ({ size = 80, borderRadius = 40 }: { size?: number; borderRadius?: number }) => {
+    const anim = useRef(new Animated.Value(0)).current;
+    useEffect(() => {
+      const loop = Animated.loop(
+        Animated.sequence([
+          Animated.timing(anim, { toValue: 1, duration: 800, useNativeDriver: true }),
+          Animated.timing(anim, { toValue: 0, duration: 800, useNativeDriver: true }),
+        ])
+      );
+      loop.start();
+      return () => { loop.stop(); };
+    }, [anim]);
+    const opacity = anim.interpolate({ inputRange: [0,1], outputRange: [0.45, 0.9] });
+    return (
+      <Animated.View style={{ position: 'absolute', top: 0, left: 0, width: size, height: size, borderRadius, backgroundColor: '#e5e7eb', opacity }} />
+    );
+  };
 
   // Loader
   const load = useCallback(async () => {
     const DAYS = 28;
+  const thisRun = Symbol('load');
+  const ACTIVE_KEY = '__discover_active_load';
     try {
       const [nr] = await Promise.all([
         getNewReleases(DAYS),
       ]);
-      setNewReleases(nr);
-      // Fallback: if new releases empty (e.g., rate limit), show followed feed
-      if ((!nr || nr.length === 0)) {
-        try { setFallbackFeed((await fetchFeed()).slice(0, 20)); } catch {}
+  setNewReleases(nr);
+      if (!nr || nr.length === 0) {
+        try {
+          const feed = await fetchFeed();
+          setFallbackFeed(feed.slice(0, 20));
+        } catch {
+          setFallbackFeed([]);
+        }
       } else {
         setFallbackFeed([]);
       }
+
+      // Build clean bubbles from followed artists only
+      try {
+        setPickedLoading(true);
+        const followed = await listFollowedArtists();
+        if (!followed || followed.length === 0) {
+          setFollowedDetails({});
+          setRecentByArtist({});
+        } else {
+          const market = getMarket();
+          const cutoffTs = Date.now() - DAYS * 24 * 60 * 60 * 1000;
+          const normalizeDate = (s?: string | null): string | null => {
+            if (!s) return null;
+            let x = String(s);
+            if (/^\d{4}$/.test(x)) x = `${x}-07-01`;
+            else if (/^\d{4}-\d{2}$/.test(x)) x = `${x}-15`;
+            return x;
+          };
+          const isRecent = (s?: string | null) => {
+            const n = normalizeDate(s);
+            if (!n) return false;
+            const t = Date.parse(n);
+            return !Number.isNaN(t) && t >= cutoffTs;
+          };
+          const details: Record<string, { name: string; imageUrl?: string | null }> = {};
+          const recents: Record<string, { latestId?: string; latestDate?: string | null }> = {};
+          await Promise.all(followed.map(async (fa) => {
+            const id = fa.id;
+            // details (name/photo)
+            try {
+              const det = await fetchArtistDetails(id);
+              if (det) details[id] = { name: det.name || fa.name, imageUrl: det.imageUrl ?? null };
+              else details[id] = { name: fa.name, imageUrl: null };
+            } catch { details[id] = { name: fa.name, imageUrl: null }; }
+            // albums and recent pick
+            try {
+              const tryMk = Array.from(new Set([market, 'GB', 'US'].filter(Boolean)));
+              let albs: Awaited<ReturnType<typeof artistAlbums>> = [];
+              for (const mk of tryMk) {
+                try { albs = await artistAlbums(id, mk); if (albs?.length) break; } catch {}
+              }
+              const recent = (albs || []).filter(a => isRecent(a.releaseDate));
+              if (recent.length) {
+                recent.sort((a,b) => Date.parse(normalizeDate(b.releaseDate) ?? '1970-01-01') - Date.parse(normalizeDate(a.releaseDate) ?? '1970-01-01'));
+                recents[id] = { latestId: recent[0].id, latestDate: recent[0].releaseDate ?? null };
+              }
+            } catch {}
+          }));
+          setFollowedDetails(details);
+          setRecentByArtist(recents);
+        }
+      } catch {}
+      finally { setPickedLoading(false); }
     } catch {}
   }, []);
 
@@ -65,6 +221,8 @@ export default function DiscoverTab() {
     const sub = AppState.addEventListener('change', (s) => { if (s === 'active') load(); });
     return () => sub.remove();
   }, [load]);
+
+  // No extra image fetching; bubbles use details fetched during load()
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -292,6 +450,94 @@ export default function DiscoverTab() {
 
   const ReleasesHeader = (
     <View style={{ marginTop: 8 }}>
+      {/* Picked for you lane */}
+      {(() => {
+        if (pickedLoading) {
+          const skeletons = Array.from({ length: 6 }).map((_, i) => ({ key: `sk-${i}` }));
+          return (
+            <View style={{ marginBottom: 16 }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                <Text style={{ fontSize: 18, fontWeight: '800' }}>New releases picked for you</Text>
+              </View>
+              <FlatList
+                data={skeletons}
+                keyExtractor={(it) => it.key}
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={{ gap: 16, paddingRight: 12 }}
+                renderItem={() => (
+                  <View style={{ width: 100, alignItems: 'center' }}>
+                    <View style={{ width: 80, height: 80, borderRadius: 40, backgroundColor: '#e5e7eb' }} />
+                    <View style={{ width: 70, height: 12, backgroundColor: '#f3f4f6', borderRadius: 6, marginTop: 6 }} />
+                  </View>
+                )}
+              />
+            </View>
+          );
+        }
+        // Build clean lane from followedDetails + recentByArtist
+        const items = Object.keys(recentByArtist || {}).map((id) => {
+          const det = followedDetails[id] || { name: 'Unknown', imageUrl: null };
+          const rec = recentByArtist[id] || {} as { latestId?: string; latestDate?: string | null };
+          return { id, name: det.name, imageUrl: det.imageUrl ?? null, latestId: rec.latestId, latestDate: rec.latestDate ?? null };
+        })
+        .filter(it => it.latestId && /^[A-Za-z0-9]{22}$/.test(it.id));
+
+        items.sort((a,b) => {
+          const ta = a.latestDate ? Date.parse(a.latestDate) : 0;
+          const tb = b.latestDate ? Date.parse(b.latestDate) : 0;
+          return tb - ta;
+        });
+
+        if (items.length === 0) {
+          // No recent releases from followed artists – show informative header
+          return (
+            <View style={{ marginBottom: 16 }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                <Text style={{ fontSize: 18, fontWeight: '800' }}>New releases picked for you</Text>
+              </View>
+              <Text style={{ color: '#6b7280', fontSize: 12 }}>No new releases from artists you follow in the last few weeks.</Text>
+            </View>
+          );
+        }
+
+        return (
+          <View style={{ marginBottom: 16 }}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+              <Text style={{ fontSize: 18, fontWeight: '800' }}>New releases picked for you</Text>
+            </View>
+            <FlatList
+              data={items.slice(0, 16)}
+              keyExtractor={(it) => `pfy-${it.id}`}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ gap: 16, paddingRight: 12 }}
+              renderItem={({ item }) => (
+                <Pressable
+                  onPress={() => {
+                    const path = `/artist/${encodeURIComponent(item.id)}/mini?name=${encodeURIComponent(item.name)}${item.latestId ? `&highlight=${encodeURIComponent(item.latestId)}` : ''}`;
+                    router.navigate(path as any);
+                  }}
+                  style={{ width: 100, alignItems: 'center' }}
+                >
+                  <View style={{ width: 80, height: 80 }}>
+                    {item.imageUrl ? (
+                      <Image source={{ uri: item.imageUrl }} style={{ width: 80, height: 80, borderRadius: 40, backgroundColor: '#e5e7eb' }} />
+                    ) : (
+                      <View style={{ width: 80, height: 80, borderRadius: 40, backgroundColor: '#e5e7eb', alignItems: 'center', justifyContent: 'center' }}>
+                        <Text style={{ fontWeight: '800', color: '#6b7280', fontSize: 20 }}>
+                          {(item.name || '?').slice(0,1).toUpperCase()}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                  <Text style={{ fontWeight: '600', marginTop: 6, fontSize: 12 }} numberOfLines={1}>{item.name}</Text>
+                </Pressable>
+              )}
+            />
+          </View>
+        );
+      })()}
       {(() => {
         if (newReleases.length) {
           // Keep server/client computed order (popularity-first with recency lift)
@@ -318,14 +564,9 @@ export default function DiscoverTab() {
       }
           return (
             <View style={{ marginBottom: 16 }}>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-        <Text style={{ fontSize: 18, fontWeight: '800' }}>Latest</Text>
-                <View style={{ flexDirection: 'row', gap: 12 }}>
-                  <Pressable onPress={() => router.push('/new-releases-all')}>
-                    <Text style={{ color: '#2563eb', fontWeight: '700' }}>See all</Text>
-                  </Pressable>
-                </View>
-              </View>
+      <View style={{ flexDirection: 'row', justifyContent: 'flex-start', alignItems: 'center', marginBottom: 8 }}>
+    <Text style={{ fontSize: 18, fontWeight: '800' }}>Latest</Text>
+      </View>
               <FlatList
                 data={preview}
                 keyExtractor={(a) => `nr-${a.id}`}
@@ -413,25 +654,6 @@ export default function DiscoverTab() {
 
   return (
     <Screen>
-      <Text style={{ color: '#9ca3af', fontSize: 11, marginTop: 4 }}>
-        {(() => {
-          const base = (process.env.EXPO_PUBLIC_FN_BASE || 'https://jvojjtjklqtmdtmeqqyy.functions.supabase.co');
-          const on = base.includes('functions.supabase.co');
-          const n = newReleases.length;
-          return `fn:${on ? 'on' : 'off'}  market:${getMarket()}  new:${n}`;
-        })()}
-      </Text>
-  <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginTop: 6, alignItems: 'center' }}>
-        <Pressable onPress={onRefresh} style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, backgroundColor: '#e5e7eb' }}>
-          <Text style={{ fontWeight: '700', color: '#111827' }}>Refresh</Text>
-        </Pressable>
-      </View>
-      {/* Quick link to full new releases list */}
-      <View style={{ flexDirection: 'row', gap: 12, justifyContent: 'flex-end', marginTop: 8 }}>
-        <Pressable onPress={() => router.push('/new-releases-all')}>
-          <Text style={{ color: '#2563eb', fontWeight: '700' }}>See all</Text>
-        </Pressable>
-      </View>
       <View style={{ marginTop: 8, marginBottom: 8, flexDirection: 'row', gap: 8, alignItems: 'center' }}>
         <TextInput
           value={q}
@@ -440,11 +662,8 @@ export default function DiscoverTab() {
           onSubmitEditing={onSearch}
           style={{ flex: 1, borderWidth: 1, borderColor: '#ddd', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8 }}
         />
-        <Pressable onPress={onSearch} disabled={busy} style={{ paddingHorizontal: 12, paddingVertical: 10 }}>
-          <Text style={{ color: 'white', fontWeight: '700' }}>Search</Text>
-        </Pressable>
       </View>
-      {/* Suggestions panel */}
+  {/* Suggestions panel */}
       {(suggestions.length > 0 || suggesting) && (
         <View style={{
           marginTop: 6, borderWidth: 1, borderColor: '#e5e7eb', borderRadius: 10,
@@ -526,10 +745,7 @@ export default function DiscoverTab() {
           ))}
         </View>
       )}
-  {/* Filter chips removed (upcoming feature deprecated) */}
-      <Text style={{ color: '#6b7280', marginBottom: 8 }}>
-        Tip: paste a Spotify album/track URL for unreleased items that don’t appear in text search.
-      </Text>
+  {/* Tip removed */}
       {busy && (
         <View style={{ paddingVertical: 8 }}>
           <ActivityIndicator />

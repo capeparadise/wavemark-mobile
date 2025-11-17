@@ -61,3 +61,15 @@ export async function fetchFeed(): Promise<FeedItem[]> {
   if (error) return [];
   return data as FeedItem[];
 }
+
+export type FollowedArtist = { id: string; name: string };
+export async function listFollowedArtists(): Promise<FollowedArtist[]> {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return [];
+  const { data, error } = await supabase
+    .from('followed_artists')
+    .select('artist_id, artist_name')
+    .eq('user_id', user.id);
+  if (error || !Array.isArray(data)) return [];
+  return (data as any[]).map((r) => ({ id: r.artist_id as string, name: (r.artist_name as string) || '' }));
+}

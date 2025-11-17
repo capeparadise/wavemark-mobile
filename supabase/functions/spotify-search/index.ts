@@ -46,6 +46,36 @@ serve(async (req) => {
 
     const hdrs = { Authorization: `Bearer ${token}` };
 
+    // Generic search (albums, tracks, artists)
+    if (pathname.endsWith("/spotify-search")) {
+      if (!q) return new Response("q required", { status: 400 });
+      const typeParam = type || "album,track,artist";
+      const r = await fetch(
+        `${API}/search?` + new URLSearchParams({ q, type: typeParam, market, limit: "25" }),
+        { headers: hdrs },
+      );
+      return new Response(await r.text(), { headers: { "Content-Type": "application/json" } });
+    }
+
+    // Lookup by id (album/track)
+    if (pathname.endsWith("/lookup")) {
+      if (!id || !lookupType) return new Response("id and lookupType required", { status: 400 });
+      const kind = lookupType.toLowerCase();
+      if (kind !== "album" && kind !== "track") return new Response("lookupType must be album or track", { status: 400 });
+      const url2 = kind === "album"
+        ? `${API}/albums/${id}?` + new URLSearchParams({ market })
+        : `${API}/tracks/${id}?` + new URLSearchParams({ market });
+      const r = await fetch(url2, { headers: hdrs });
+      return new Response(await r.text(), { headers: { "Content-Type": "application/json" } });
+    }
+
+    // Artist details
+    if (pathname.endsWith("/artist")) {
+      if (!artistId) return new Response("artistId required", { status: 400 });
+      const r = await fetch(`${API}/artists/${artistId}`, { headers: hdrs });
+      return new Response(await r.text(), { headers: { "Content-Type": "application/json" } });
+    }
+
     // NEW: artist precise/loose search
     if (pathname.endsWith("/artist-search")) {
       if (!q) return new Response("q required", { status: 400 });
@@ -62,9 +92,10 @@ serve(async (req) => {
     // NEW: artist albums (recent first)
     if (pathname.endsWith("/artist-albums")) {
       if (!artistId) return new Response("artistId required", { status: 400 });
+      // Include appears_on to surface features
       const r = await fetch(
         `https://api.spotify.com/v1/artists/${artistId}/albums?` +
-          new URLSearchParams({ include_groups: "album,single", market, limit: "50" }),
+          new URLSearchParams({ include_groups: "album,single,appears_on", market, limit: "50" }),
         { headers: hdrs }
       );
       return new Response(await r.text(), { headers: { "Content-Type": "application/json" } });

@@ -34,6 +34,68 @@ export type ListenRow = {
   created_at?: string | null;
 };
 
+export type UpcomingItem = {
+  id: string;
+  artist_id: string;
+  artist_name: string | null;
+  title: string;
+  release_date: string; // ISO YYYY-MM-DD
+  apple_url?: string | null;
+  // Source of the upcoming item: 'apple' or 'musicbrainz'
+  source?: string | null;
+};
+
+export async function fetchUpcomingClient(): Promise<UpcomingItem[]> {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return [];
+  const { data, error } = await supabase
+    .from('upcoming_releases')
+  .select('id,artist_id,artist_name,title,release_date,apple_url,source')
+    .eq('user_id', user.id)
+    .order('release_date', { ascending: true });
+  if (error || !data) return [];
+  return data as any as UpcomingItem[];
+}
+
+export async function addUpcomingToListen(item: UpcomingItem): Promise<{ ok: boolean; id?: string; message?: string }> {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false, message: 'Not signed in' };
+  const { data, error } = await supabase
+    .from('listen_list')
+    .insert({
+      user_id: user.id,
+      item_type: 'album',
+      provider: 'apple',
+      provider_id: item.apple_url ?? item.title,
+      title: item.title,
+      artist_name: item.artist_name,
+      apple_url: item.apple_url ?? null,
+      apple_id: null,
+      spotify_url: null,
+      spotify_id: null,
+      release_date: item.release_date,
+      upcoming: true,
+    })
+    .select('id')
+    .single();
+  if (error) return { ok: false, message: error.message };
+  // Link back to upcoming row (best-effort)
+  try { await supabase.from('upcoming_releases').update({ resolved_listen_id: data?.id ?? null }).eq('id', item.id); } catch {}
+  return { ok: true, id: data?.id as string };
+}
+
+// Manual upcoming insertion (when external sources miss a preorder)
+
+// Reconcile: when a row's release_date has passed, mark upcoming=false
+export async function reconcileListenUpcoming(): Promise<void> {
+  const today = new Date().toISOString().slice(0,10);
+  await supabase
+    .from('listen_list')
+    .update({ upcoming: false })
+    .lte('release_date', today)
+    .eq('upcoming', true);
+}
+
 export type AppleTrack = {
   trackId: number;
   trackName: string;
