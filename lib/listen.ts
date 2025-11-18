@@ -503,6 +503,24 @@ function buildSpotifySearchUrl(title: string, artist?: string | null) {
   return `https://open.spotify.com/search/${q}`;
 }
 
+function slugifyApple(s?: string | null) {
+  const t = (s || '').toString().normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().replace(/[^a-z0-9\s-]/g, '').trim().replace(/\s+/g, '-').replace(/-+/g, '-');
+  return t || 'music';
+}
+
+function normalizeToMusicApple(url?: string | null): string | null {
+  if (!url) return null;
+  try {
+    const u = new URL(url);
+    const host = 'music.apple.com';
+    if (u.hostname === host) return url; // already universal
+    if (!/itunes\.apple\.com|music\.apple\.com/.test(u.hostname)) return url; // leave other domains
+    u.hostname = host;
+    return u.toString();
+  } catch { return url ?? null; }
+}
+
 function buildAppleUniversalLinkFromIds(
   itemType: ListenRow['item_type'],
   ids: { trackId?: string | null; albumId?: string | null },
@@ -557,18 +575,22 @@ async function tryApple(item: ListenRow) {
       const albumId = lu.collectionId ? String(lu.collectionId) : null;
       const trackView = lu.trackViewUrl ?? null;
       const collView = lu.collectionViewUrl ?? null;
+      const artistSlug = slugifyApple(lu.artistName);
+      const albumSlug = slugifyApple(lu.collectionName);
 
       // Try Music universal link constructed from IDs first
-      const deep = buildAppleUniversalLinkFromIds(item.item_type, { trackId, albumId }, market);
+      const deep = buildAppleUniversalLinkFromIds(item.item_type, { trackId, albumId }, market)
+        || (albumId ? `https://music.apple.com/${(market||'US').toLowerCase()}/album/${albumSlug}/${albumId}` : null)
+        || (trackId && albumId ? `https://music.apple.com/${(market||'US').toLowerCase()}/album/${albumSlug}/${albumId}?i=${trackId}` : null);
       if (deep) {
         debug('tryApple:universalFromLookup', deep);
         if (await tryOpen(deep)) return true;
       }
       // Then try the view URLs returned by lookup
-      if (item.item_type === 'track' && (await tryOpen(trackView))) return true;
-      if (item.item_type === 'album' && (await tryOpen(collView))) return true;
+      if (item.item_type === 'track' && (await tryOpen(normalizeToMusicApple(trackView)))) return true;
+      if (item.item_type === 'album' && (await tryOpen(normalizeToMusicApple(collView)))) return true;
       // As a last attempt from lookup, try whichever exists
-      if (await tryOpen(trackView || collView)) return true;
+      if (await tryOpen(normalizeToMusicApple(trackView || collView))) return true;
     }
   }
 
@@ -582,9 +604,23 @@ async function tryApple(item: ListenRow) {
     const res = await fetch(url);
     if (res.ok) {
       const j = (await res.json()) as any;
-      const best = Array.isArray(j?.results) ? j.results.find((r: any) => (
-        item.item_type === 'track' ? r.trackViewUrl : r.collectionViewUrl
-      )) : null;
+      const norm = (s: string | null | undefined) => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+      const wantTitle = norm(item.title);
+      const wantArtist = norm(item.artist_name || '');
+      const candidates = Array.isArray(j?.results) ? j.results : [];
+      // Strict: prefer exact normalized title and artist
+      let best = candidates.find((r: any) => {
+        const t = norm(item.item_type === 'track' ? r.trackName : r.collectionName);
+        const a = norm(r.artistName);
+        return t === wantTitle && (!!wantArtist ? a === wantArtist : true);
+      });
+      // Fallback: partial match on title
+      if (!best) {
+        best = candidates.find((r: any) => {
+          const t = norm(item.item_type === 'track' ? r.trackName : r.collectionName);
+          return t === wantTitle || t.includes(wantTitle);
+        });
+      }
       const view = best ? (item.item_type === 'track' ? best.trackViewUrl : best.collectionViewUrl) : null;
       if (await tryOpen(view)) return true;
     }
