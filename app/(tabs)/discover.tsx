@@ -35,6 +35,8 @@ export default function DiscoverTab() {
   const [fallbackFeed, setFallbackFeed] = useState<FeedItem[]>([]);
   const [picked, setPicked] = useState<Array<{ id: string; artistId: string; title: string; artist: string; releaseDate?: string | null; spotifyUrl?: string | null; imageUrl?: string | null; type?: 'album' | 'single' | 'ep' }>>([]);
   const [pickedLoading, setPickedLoading] = useState(false);
+  // Track items saved during this session to show a ✓ instead of Save/Add
+  const [addedIds, setAddedIds] = useState<Record<string, true>>({});
   // Clean-bubble data: details (name/photo) and latest recent release per followed artist
   const [followedDetails, setFollowedDetails] = useState<Record<string, { name: string; imageUrl?: string | null }>>({});
   const [recentByArtist, setRecentByArtist] = useState<Record<string, { latestId?: string; latestDate?: string | null }>>({});
@@ -302,10 +304,9 @@ export default function DiscoverTab() {
       spotifyUrl: a.spotifyUrl ?? null,
       appleUrl: null,
     });
-    if (!res.ok) { H.error(); Alert.alert(res.message || 'Could not save'); return; }
-    H.success();
-  // Always navigate to Listen (upcoming removed)
-  router.navigate('/(tabs)/listen');
+  if (!res.ok) { H.error(); Alert.alert(res.message || 'Could not save'); return; }
+  H.success();
+  setAddedIds(prev => ({ ...prev, [a.id]: true }));
   };
 
   const onSaveSearch = async (r: SpotifyResult) => {
@@ -318,9 +319,9 @@ export default function DiscoverTab() {
       spotifyUrl: r.spotifyUrl ?? null,
       appleUrl: null,
     });
-    if (!res.ok) { H.error(); Alert.alert(res.message || 'Could not save'); return; }
-    H.success();
-  router.navigate('/(tabs)/listen');
+  if (!res.ok) { H.error(); Alert.alert(res.message || 'Could not save'); return; }
+  H.success();
+  setAddedIds(prev => ({ ...prev, [r.id]: true }));
   };
 
   // Build rows: carousel (Latest) shows first N; list shows remainder labeled 'More new releases'
@@ -378,11 +379,13 @@ export default function DiscoverTab() {
       );
     }
     if (item.kind === 'new') {
-      const presave = !!(item.releaseDate && item.releaseDate > today);
+    const presave = !!(item.releaseDate && item.releaseDate > today);
+    const isAdded = !!addedIds[item.id];
       return (
         <Pressable
-          onPress={() => onAddNew(item)}
-          style={{ paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#eee' }}
+      onPress={() => onAddNew(item)}
+      disabled={isAdded}
+      style={{ paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#eee', opacity: isAdded ? 0.7 : 1 }}
         >
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
             <Image source={{ uri: item.imageUrl ?? undefined }} style={{ width: 60, height: 60, borderRadius: 6, backgroundColor: '#e5e7eb' }} />
@@ -402,7 +405,9 @@ export default function DiscoverTab() {
                 </Text>
               )}
             </View>
-            <Text style={{ color: '#0a7', fontWeight: '600' }}>Save</Text>
+            <Text style={{ color: isAdded ? '#16a34a' : '#0a7', fontWeight: '600' }}>
+              {isAdded ? '✓ Added' : 'Save'}
+            </Text>
           </View>
         </Pressable>
       );
@@ -415,7 +420,7 @@ export default function DiscoverTab() {
     return (
       <Pressable
         onPress={() => onSaveSearch(r)}
-        disabled={r.type === 'artist'}
+        disabled={r.type === 'artist' || !!addedIds[r.id]}
         style={{ paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#eee', opacity: r.type === 'artist' ? 0.6 : 1 }}
       >
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
@@ -433,7 +438,11 @@ export default function DiscoverTab() {
               </Text>
             )}
           </View>
-          {r.type !== 'artist' && <Text style={{ color: '#0a7', fontWeight: '600' }}>Save</Text>}
+          {r.type !== 'artist' && (
+            <Text style={{ color: addedIds[r.id] ? '#16a34a' : '#0a7', fontWeight: '600' }}>
+              {addedIds[r.id] ? '✓ Added' : 'Save'}
+            </Text>
+          )}
         </View>
       </Pressable>
     );
@@ -585,20 +594,13 @@ export default function DiscoverTab() {
                       {!!item.releaseDate && <Text style={{ color: '#6b7280' }}>{formatDate(item.releaseDate)}</Text>}
                     </View>
                     <Pressable
-                      onPress={async () => {
-                        const res = await addToListFromSearch({
-                          type: 'album',
-                          title: item.title,
-                          artist: item.artist,
-                          releaseDate: item.releaseDate ?? null,
-                          spotifyUrl: item.spotifyUrl ?? null,
-                          appleUrl: null,
-                        });
-                        if (res.ok) { H.success(); } else { H.error(); Alert.alert(res.message || 'Could not save'); }
-                      }}
-                      style={{ marginTop: 6 }}
+                      onPress={() => onAddNew({ id: item.id, title: item.title, artist: item.artist, releaseDate: item.releaseDate ?? null, spotifyUrl: item.spotifyUrl ?? null })}
+                      disabled={!!addedIds[item.id]}
+                      style={{ marginTop: 6, opacity: addedIds[item.id] ? 0.6 : 1 }}
                     >
-                      <Text style={{ fontWeight: '700' }}>Add to Listen</Text>
+                      <Text style={{ fontWeight: '700', color: addedIds[item.id] ? '#16a34a' : undefined }}>
+                        {addedIds[item.id] ? '✓ Added' : 'Add to Listen'}
+                      </Text>
                     </Pressable>
                   </View>
                 )}
@@ -626,20 +628,13 @@ export default function DiscoverTab() {
                     {!!item.artist_name && <Text style={{ color: '#666' }} numberOfLines={1}>{item.artist_name}</Text>}
                     {!!item.release_date && <Text style={{ color: '#6b7280' }}>{formatDate(item.release_date)}</Text>}
                     <Pressable
-                      onPress={async () => {
-                        const res = await addToListFromSearch({
-                          type: 'album',
-                          title: item.title,
-                          artist: item.artist_name || '',
-                          releaseDate: item.release_date,
-                          spotifyUrl: item.spotify_url,
-                          appleUrl: null,
-                        });
-                        if (res.ok) { H.success(); } else { H.error(); Alert.alert(res.message || 'Could not save'); }
-                      }}
-                      style={{ marginTop: 6 }}
+                      onPress={() => onAddNew({ id: item.id, title: item.title, artist: item.artist_name || '', releaseDate: item.release_date, spotifyUrl: item.spotify_url ?? null })}
+                      disabled={!!addedIds[item.id]}
+                      style={{ marginTop: 6, opacity: addedIds[item.id] ? 0.6 : 1 }}
                     >
-                      <Text style={{ fontWeight: '700' }}>Add to Listen</Text>
+                      <Text style={{ fontWeight: '700', color: addedIds[item.id] ? '#16a34a' : undefined }}>
+                        {addedIds[item.id] ? '✓ Added' : 'Add to Listen'}
+                      </Text>
                     </Pressable>
                   </View>
                 )}
