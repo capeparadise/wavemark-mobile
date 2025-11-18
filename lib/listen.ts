@@ -553,6 +553,18 @@ function normalizeToMusicApple(url?: string | null): string | null {
   } catch { return url ?? null; }
 }
 
+function preferMusicApp(url?: string | null): string | null {
+  if (!url) return null;
+  try {
+    const u = new URL(url);
+    if (u.hostname.endsWith('music.apple.com')) {
+      if (!u.searchParams.has('app')) u.searchParams.set('app', 'music');
+      return u.toString();
+    }
+    return url;
+  } catch { return url; }
+}
+
 function buildAppleUniversalLinkFromIds(
   itemType: ListenRow['item_type'],
   ids: { trackId?: string | null; albumId?: string | null },
@@ -631,7 +643,8 @@ async function tryApple(item: ListenRow) {
       // Finally: app-scheme search
       candidates.push(`music://search?term=${encodeURIComponent([item.title, item.artist_name].filter(Boolean).join(' '))}`);
 
-      for (const url of candidates) {
+      for (const url0 of candidates) {
+        const url = preferMusicApp(url0);
         if (await tryOpen(url)) {
           // Best-effort: persist improved URL back to the row for future opens
           try { await supabase.from('listen_list').update({ apple_url: url }).eq('id', item.id); } catch {}
@@ -689,7 +702,8 @@ async function tryApple(item: ListenRow) {
         const view = item.item_type === 'track' ? best.trackViewUrl : best.collectionViewUrl;
         candidates.push(normalizeToMusicApple(view));
         candidates.push(`music://search?term=${encodeURIComponent([item.title, item.artist_name].filter(Boolean).join(' '))}`);
-        for (const url of candidates) {
+        for (const url0 of candidates) {
+          const url = preferMusicApp(url0);
           if (await tryOpen(url)) {
             try { await supabase.from('listen_list').update({ apple_url: url, apple_id: albumId ?? trackId ?? item.apple_id }).eq('id', item.id); } catch {}
             return true;
