@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Linking } from 'react-native';
 import { debugNS } from './debug';
 import { supabase } from './supabase';
+import { getMarket } from './spotify';
 
 const debug = debugNS('listen');
 
@@ -502,6 +503,17 @@ function buildSpotifySearchUrl(title: string, artist?: string | null) {
   return `https://open.spotify.com/search/${q}`;
 }
 
+function buildAppleUniversalLink(item: ListenRow, country?: string | null) {
+  const cc = (country || '').toLowerCase() || 'us';
+  // If we have a specific Apple ID, prefer a canonical entity route
+  if (item.apple_id) {
+    // For tracks, Apple supports `/song/<id>`; for albums: `/album/<id>`
+    const entity = item.item_type === 'track' ? 'song' : 'album';
+    return `https://music.apple.com/${cc}/${entity}/${item.apple_id}`;
+  }
+  return null;
+}
+
 async function tryOpen(url: string | null | undefined) {
   if (!url) return false;
   try {
@@ -515,10 +527,41 @@ async function tryOpen(url: string | null | undefined) {
 }
 
 async function tryApple(item: ListenRow) {
-  debug('tryApple', 'url=', item.apple_url);
+  debug('tryApple', 'url=', item.apple_url, 'id=', item.apple_id);
+  // 1) Try stored deep link first
   if (await tryOpen(item.apple_url)) return true;
+
+  // 2) Try a canonical universal link from Apple ID (if present)
+  const market = getMarket() || 'US';
+  const uni = buildAppleUniversalLink(item, market);
+  if (uni) {
+    debug('tryApple:universal', uni);
+    if (await tryOpen(uni)) return true;
+  }
+
+  // 3) Resolve via iTunes Search API to get a proper view URL
+  try {
+    const cc = (market || 'US').toUpperCase();
+    const term = encodeURIComponent([item.title, item.artist_name].filter(Boolean).join(' '));
+    const entity = item.item_type === 'track' ? 'musicTrack' : 'album';
+    const url = `https://itunes.apple.com/search?term=${term}&country=${cc}&entity=${entity}&limit=5`;
+    debug('tryApple:itunesSearch', url);
+    const res = await fetch(url);
+    if (res.ok) {
+      const j = (await res.json()) as any;
+      const best = Array.isArray(j?.results) ? j.results.find((r: any) => (
+        item.item_type === 'track' ? r.trackViewUrl : r.collectionViewUrl
+      )) : null;
+      const view = best ? (item.item_type === 'track' ? best.trackViewUrl : best.collectionViewUrl) : null;
+      if (await tryOpen(view)) return true;
+    }
+  } catch (e) {
+    debug('tryApple:itunesSearch:error', e);
+  }
+
+  // 4) Final fallback: web search (may open Safari or app homepage)
   const search = buildAppleSearchUrl(item.title, item.artist_name);
-  debug('tryApple:fallback', search);
+  debug('tryApple:fallbackSearch', search);
   return await tryOpen(search);
 }
 
