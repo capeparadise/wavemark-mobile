@@ -3,7 +3,8 @@
    PURPOSE: Quick toggle between Apple ↔ Spotify using lib/listen helpers.
    ======================================================================== */
 import React, { useEffect, useState } from 'react';
-import { Pressable, Text, View } from 'react-native';
+import { Pressable, View } from 'react-native';
+import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { getDefaultPlayer, setDefaultPlayer } from '../lib/listen';
 
 type Player = 'apple' | 'spotify';
@@ -28,20 +29,19 @@ export default function PlayerToggle() {
     <Pressable onPress={onToggle}>
       <View
         style={{
-          flexDirection: 'row',
-          gap: 8,
-          paddingHorizontal: 10,
+          paddingHorizontal: 6,
           paddingVertical: 6,
-          borderRadius: 12,
+          borderRadius: 10,
           borderWidth: 1,
-          borderColor: '#dbeafe',
-          backgroundColor: '#eef2ff',
+          borderColor: '#e5e7eb',
+          backgroundColor: '#fff',
         }}
       >
-        <Text style={{ fontSize: 12, fontWeight: '700' }}>
-          {player === 'apple' ? ' Music' : 'Spotify'}
-        </Text>
-        <Text style={{ fontSize: 12, opacity: 0.7 }}>(tap to switch)</Text>
+        {player === 'apple' ? (
+          <FontAwesome name="apple" size={22} color="#111827" accessibilityLabel="Apple Music" />
+        ) : (
+          <FontAwesome name="spotify" size={22} color="#1DB954" accessibilityLabel="Spotify" />
+        )}
       </View>
     </Pressable>
   );

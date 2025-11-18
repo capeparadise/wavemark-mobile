@@ -598,7 +598,7 @@ export default function DiscoverTab() {
                       disabled={!!addedIds[item.id]}
                       style={{ marginTop: 6, opacity: addedIds[item.id] ? 0.6 : 1 }}
                     >
-                      <Text style={{ fontWeight: '700', color: addedIds[item.id] ? '#16a34a' : undefined }}>
+                      <Text style={{ fontWeight: '700', color: addedIds[item.id] ? '#16a34a' : '#0a7' }}>
                         {addedIds[item.id] ? '✓ Added' : 'Save'}
                       </Text>
                     </Pressable>
@@ -632,7 +632,7 @@ export default function DiscoverTab() {
                       disabled={!!addedIds[item.id]}
                       style={{ marginTop: 6, opacity: addedIds[item.id] ? 0.6 : 1 }}
                     >
-                      <Text style={{ fontWeight: '700', color: addedIds[item.id] ? '#16a34a' : undefined }}>
+                      <Text style={{ fontWeight: '700', color: addedIds[item.id] ? '#16a34a' : '#0a7' }}>
                         {addedIds[item.id] ? '✓ Added' : 'Save'}
                       </Text>
                     </Pressable>
