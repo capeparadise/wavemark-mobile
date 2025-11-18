@@ -578,19 +578,21 @@ async function tryApple(item: ListenRow) {
       const artistSlug = slugifyApple(lu.artistName);
       const albumSlug = slugifyApple(lu.collectionName);
 
-      const cc = (market || 'US').toLowerCase();
-      // Build a rich set of candidates in preferred order
+      const storefronts = Array.from(new Set([(market || 'US').toLowerCase(), 'gb', 'us']));
+      // Build a rich set of candidates across storefronts
       const candidates: Array<string | null | undefined> = [];
-      if (item.item_type === 'track') {
-        if (trackId) candidates.push(`https://music.apple.com/${cc}/song/${trackId}`);
-        if (albumId && trackId) candidates.push(`https://music.apple.com/${cc}/album/${albumSlug}/${albumId}?i=${trackId}`);
-        if (albumId && trackId) candidates.push(`https://geo.music.apple.com/${cc}/album/${albumSlug}/${albumId}?i=${trackId}`);
-      } else {
-        if (albumId) candidates.push(`https://music.apple.com/${cc}/album/${albumSlug}/${albumId}`);
-        if (albumId) candidates.push(`https://geo.music.apple.com/${cc}/album/${albumSlug}/${albumId}`);
+      for (const cc of storefronts) {
+        if (item.item_type === 'track') {
+          if (trackId) candidates.push(`https://music.apple.com/${cc}/song/${trackId}`);
+          if (albumId && trackId) candidates.push(`https://music.apple.com/${cc}/album/${albumSlug}/${albumId}?i=${trackId}`);
+          if (albumId && trackId) candidates.push(`https://geo.music.apple.com/${cc}/album/${albumSlug}/${albumId}?i=${trackId}`);
+          if (albumId && trackId) candidates.push(`itmss://itunes.apple.com/${cc}/album/id${albumId}?i=${trackId}`);
+        } else {
+          if (albumId) candidates.push(`https://music.apple.com/${cc}/album/${albumSlug}/${albumId}`);
+          if (albumId) candidates.push(`https://geo.music.apple.com/${cc}/album/${albumSlug}/${albumId}`);
+          if (albumId) candidates.push(`itmss://itunes.apple.com/${cc}/album/id${albumId}`);
+        }
       }
-      // Legacy iTunes album route sometimes works better
-      if (albumId) candidates.push(`https://itunes.apple.com/album/id${albumId}`);
       // View URLs from lookup
       candidates.push(normalizeToMusicApple(item.item_type === 'track' ? trackView : collView));
       candidates.push(normalizeToMusicApple(trackView || collView));
@@ -634,17 +636,20 @@ async function tryApple(item: ListenRow) {
         const albumId = best.collectionId ? String(best.collectionId) : null;
         const trackId = best.trackId ? String(best.trackId) : null;
         const albumSlug = slugifyApple(best.collectionName);
-        const cc = (market || 'US').toLowerCase();
+        const storefronts = Array.from(new Set([(market || 'US').toLowerCase(), 'gb', 'us']));
         const candidates: Array<string | null | undefined> = [];
-        if (item.item_type === 'track') {
-          if (trackId) candidates.push(`https://music.apple.com/${cc}/song/${trackId}`);
-          if (albumId && trackId) candidates.push(`https://music.apple.com/${cc}/album/${albumSlug}/${albumId}?i=${trackId}`);
-          if (albumId && trackId) candidates.push(`https://geo.music.apple.com/${cc}/album/${albumSlug}/${albumId}?i=${trackId}`);
-        } else {
-          if (albumId) candidates.push(`https://music.apple.com/${cc}/album/${albumSlug}/${albumId}`);
-          if (albumId) candidates.push(`https://geo.music.apple.com/${cc}/album/${albumSlug}/${albumId}`);
+        for (const cc of storefronts) {
+          if (item.item_type === 'track') {
+            if (trackId) candidates.push(`https://music.apple.com/${cc}/song/${trackId}`);
+            if (albumId && trackId) candidates.push(`https://music.apple.com/${cc}/album/${albumSlug}/${albumId}?i=${trackId}`);
+            if (albumId && trackId) candidates.push(`https://geo.music.apple.com/${cc}/album/${albumSlug}/${albumId}?i=${trackId}`);
+            if (albumId && trackId) candidates.push(`itmss://itunes.apple.com/${cc}/album/id${albumId}?i=${trackId}`);
+          } else {
+            if (albumId) candidates.push(`https://music.apple.com/${cc}/album/${albumSlug}/${albumId}`);
+            if (albumId) candidates.push(`https://geo.music.apple.com/${cc}/album/${albumSlug}/${albumId}`);
+            if (albumId) candidates.push(`itmss://itunes.apple.com/${cc}/album/id${albumId}`);
+          }
         }
-        if (albumId) candidates.push(`https://itunes.apple.com/album/id${albumId}`);
         const view = item.item_type === 'track' ? best.trackViewUrl : best.collectionViewUrl;
         candidates.push(normalizeToMusicApple(view));
         candidates.push(`music://search?term=${encodeURIComponent([item.title, item.artist_name].filter(Boolean).join(' '))}`);
