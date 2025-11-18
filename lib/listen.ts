@@ -439,11 +439,43 @@ export async function addToListFromSearch(input: {
     } catch { return null; }
   };
 
-  const spotifyId = extractSpotifyId(input.spotifyUrl);
-  const appleId = extractAppleId(input.appleUrl);
+  let spotifyId = extractSpotifyId(input.spotifyUrl);
+  let appleId = extractAppleId(input.appleUrl);
+  let appleUrl = input.appleUrl ?? null;
+
+  // If we're saving without Apple fields, resolve them now via iTunes Search for better deep linking later
+  if (!appleId || !appleUrl) {
+    try {
+      const cc = (getMarket() || 'US').toUpperCase();
+      const term = encodeURIComponent([input.title, input.artist].filter(Boolean).join(' '));
+      const entity = input.type === 'track' ? 'musicTrack' : 'album';
+      const url = `https://itunes.apple.com/search?term=${term}&country=${cc}&entity=${entity}&limit=5`;
+      const res = await fetch(url);
+      if (res.ok) {
+        const j = (await res.json()) as any;
+        const norm = (s: any) => String(s ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+        const wantTitle = norm(input.title);
+        const wantArtist = norm(input.artist || '');
+        const picks = Array.isArray(j?.results) ? j.results : [];
+        let best = picks.find((r: any) => {
+          const t = norm(input.type === 'track' ? r.trackName : r.collectionName);
+          const a = norm(r.artistName);
+          return t === wantTitle && (!!wantArtist ? a === wantArtist : true);
+        }) || picks.find((r: any) => {
+          const t = norm(input.type === 'track' ? r.trackName : r.collectionName);
+          return t === wantTitle || t.includes(wantTitle);
+        });
+        if (best) {
+          if (!appleId) appleId = String(input.type === 'track' ? (best.trackId ?? best.collectionId) : best.collectionId);
+          if (!appleUrl) appleUrl = String(input.type === 'track' ? (best.trackViewUrl ?? best.collectionViewUrl) : best.collectionViewUrl);
+        }
+      }
+    } catch {}
+  }
+
   const provider: 'spotify' | 'apple' = spotifyId ? 'spotify' : 'apple';
   // Fallback provider_id to a stable string if we couldn't parse an ID
-  const provider_id = (spotifyId || appleId || input.appleUrl || input.title).toString();
+  const provider_id = (spotifyId || appleId || appleUrl || input.title).toString();
 
   const { data, error } = await supabase
     .from('listen_list')
@@ -454,8 +486,8 @@ export async function addToListFromSearch(input: {
       provider_id,
       title: input.title,
       artist_name: input.artist ?? null,
-      apple_url: input.appleUrl ?? null,
-      apple_id: appleId ?? null,
+  apple_url: appleUrl ?? null,
+  apple_id: appleId ?? null,
       spotify_url: input.spotifyUrl ?? null,
       spotify_id: spotifyId ?? null,
       release_date: input.releaseDate ?? null,
@@ -600,7 +632,11 @@ async function tryApple(item: ListenRow) {
       candidates.push(`music://search?term=${encodeURIComponent([item.title, item.artist_name].filter(Boolean).join(' '))}`);
 
       for (const url of candidates) {
-        if (await tryOpen(url)) return true;
+        if (await tryOpen(url)) {
+          // Best-effort: persist improved URL back to the row for future opens
+          try { await supabase.from('listen_list').update({ apple_url: url }).eq('id', item.id); } catch {}
+          return true;
+        }
       }
     }
   }
@@ -654,7 +690,10 @@ async function tryApple(item: ListenRow) {
         candidates.push(normalizeToMusicApple(view));
         candidates.push(`music://search?term=${encodeURIComponent([item.title, item.artist_name].filter(Boolean).join(' '))}`);
         for (const url of candidates) {
-          if (await tryOpen(url)) return true;
+          if (await tryOpen(url)) {
+            try { await supabase.from('listen_list').update({ apple_url: url, apple_id: albumId ?? trackId ?? item.apple_id }).eq('id', item.id); } catch {}
+            return true;
+          }
         }
       }
     }
