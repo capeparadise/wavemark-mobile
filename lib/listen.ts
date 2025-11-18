@@ -578,19 +578,28 @@ async function tryApple(item: ListenRow) {
       const artistSlug = slugifyApple(lu.artistName);
       const albumSlug = slugifyApple(lu.collectionName);
 
-      // Try Music universal link constructed from IDs first
-      const deep = buildAppleUniversalLinkFromIds(item.item_type, { trackId, albumId }, market)
-        || (albumId ? `https://music.apple.com/${(market||'US').toLowerCase()}/album/${albumSlug}/${albumId}` : null)
-        || (trackId && albumId ? `https://music.apple.com/${(market||'US').toLowerCase()}/album/${albumSlug}/${albumId}?i=${trackId}` : null);
-      if (deep) {
-        debug('tryApple:universalFromLookup', deep);
-        if (await tryOpen(deep)) return true;
+      const cc = (market || 'US').toLowerCase();
+      // Build a rich set of candidates in preferred order
+      const candidates: Array<string | null | undefined> = [];
+      if (item.item_type === 'track') {
+        if (trackId) candidates.push(`https://music.apple.com/${cc}/song/${trackId}`);
+        if (albumId && trackId) candidates.push(`https://music.apple.com/${cc}/album/${albumSlug}/${albumId}?i=${trackId}`);
+        if (albumId && trackId) candidates.push(`https://geo.music.apple.com/${cc}/album/${albumSlug}/${albumId}?i=${trackId}`);
+      } else {
+        if (albumId) candidates.push(`https://music.apple.com/${cc}/album/${albumSlug}/${albumId}`);
+        if (albumId) candidates.push(`https://geo.music.apple.com/${cc}/album/${albumSlug}/${albumId}`);
       }
-      // Then try the view URLs returned by lookup
-      if (item.item_type === 'track' && (await tryOpen(normalizeToMusicApple(trackView)))) return true;
-      if (item.item_type === 'album' && (await tryOpen(normalizeToMusicApple(collView)))) return true;
-      // As a last attempt from lookup, try whichever exists
-      if (await tryOpen(normalizeToMusicApple(trackView || collView))) return true;
+      // Legacy iTunes album route sometimes works better
+      if (albumId) candidates.push(`https://itunes.apple.com/album/id${albumId}`);
+      // View URLs from lookup
+      candidates.push(normalizeToMusicApple(item.item_type === 'track' ? trackView : collView));
+      candidates.push(normalizeToMusicApple(trackView || collView));
+      // Finally: app-scheme search
+      candidates.push(`music://search?term=${encodeURIComponent([item.title, item.artist_name].filter(Boolean).join(' '))}`);
+
+      for (const url of candidates) {
+        if (await tryOpen(url)) return true;
+      }
     }
   }
 
@@ -625,14 +634,23 @@ async function tryApple(item: ListenRow) {
         const albumId = best.collectionId ? String(best.collectionId) : null;
         const trackId = best.trackId ? String(best.trackId) : null;
         const albumSlug = slugifyApple(best.collectionName);
-        const cc = (cc => (cc || 'US').toLowerCase())(market);
-        // Prefer universal deep link constructed from IDs
-        const deep = buildAppleUniversalLinkFromIds(item.item_type, { trackId, albumId }, cc)
-          || (albumId ? `https://music.apple.com/${cc}/album/${albumSlug}/${albumId}` : null)
-          || (trackId && albumId ? `https://music.apple.com/${cc}/album/${albumSlug}/${albumId}?i=${trackId}` : null);
-        if (deep && (await tryOpen(deep))) return true;
+        const cc = (market || 'US').toLowerCase();
+        const candidates: Array<string | null | undefined> = [];
+        if (item.item_type === 'track') {
+          if (trackId) candidates.push(`https://music.apple.com/${cc}/song/${trackId}`);
+          if (albumId && trackId) candidates.push(`https://music.apple.com/${cc}/album/${albumSlug}/${albumId}?i=${trackId}`);
+          if (albumId && trackId) candidates.push(`https://geo.music.apple.com/${cc}/album/${albumSlug}/${albumId}?i=${trackId}`);
+        } else {
+          if (albumId) candidates.push(`https://music.apple.com/${cc}/album/${albumSlug}/${albumId}`);
+          if (albumId) candidates.push(`https://geo.music.apple.com/${cc}/album/${albumSlug}/${albumId}`);
+        }
+        if (albumId) candidates.push(`https://itunes.apple.com/album/id${albumId}`);
         const view = item.item_type === 'track' ? best.trackViewUrl : best.collectionViewUrl;
-        if (await tryOpen(normalizeToMusicApple(view))) return true;
+        candidates.push(normalizeToMusicApple(view));
+        candidates.push(`music://search?term=${encodeURIComponent([item.title, item.artist_name].filter(Boolean).join(' '))}`);
+        for (const url of candidates) {
+          if (await tryOpen(url)) return true;
+        }
       }
     }
   } catch (e) {
