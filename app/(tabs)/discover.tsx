@@ -599,7 +599,7 @@ export default function DiscoverTab() {
                       style={{ marginTop: 6, opacity: addedIds[item.id] ? 0.6 : 1 }}
                     >
                       <Text style={{ fontWeight: '700', color: addedIds[item.id] ? '#16a34a' : undefined }}>
-                        {addedIds[item.id] ? '✓ Added' : 'Add to Listen'}
+                        {addedIds[item.id] ? '✓ Added' : 'Save'}
                       </Text>
                     </Pressable>
                   </View>
@@ -633,7 +633,7 @@ export default function DiscoverTab() {
                       style={{ marginTop: 6, opacity: addedIds[item.id] ? 0.6 : 1 }}
                     >
                       <Text style={{ fontWeight: '700', color: addedIds[item.id] ? '#16a34a' : undefined }}>
-                        {addedIds[item.id] ? '✓ Added' : 'Add to Listen'}
+                        {addedIds[item.id] ? '✓ Added' : 'Save'}
                       </Text>
                     </Pressable>
                   </View>
