@@ -621,8 +621,19 @@ async function tryApple(item: ListenRow) {
           return t === wantTitle || t.includes(wantTitle);
         });
       }
-      const view = best ? (item.item_type === 'track' ? best.trackViewUrl : best.collectionViewUrl) : null;
-      if (await tryOpen(view)) return true;
+      if (best) {
+        const albumId = best.collectionId ? String(best.collectionId) : null;
+        const trackId = best.trackId ? String(best.trackId) : null;
+        const albumSlug = slugifyApple(best.collectionName);
+        const cc = (cc => (cc || 'US').toLowerCase())(market);
+        // Prefer universal deep link constructed from IDs
+        const deep = buildAppleUniversalLinkFromIds(item.item_type, { trackId, albumId }, cc)
+          || (albumId ? `https://music.apple.com/${cc}/album/${albumSlug}/${albumId}` : null)
+          || (trackId && albumId ? `https://music.apple.com/${cc}/album/${albumSlug}/${albumId}?i=${trackId}` : null);
+        if (deep && (await tryOpen(deep))) return true;
+        const view = item.item_type === 'track' ? best.trackViewUrl : best.collectionViewUrl;
+        if (await tryOpen(normalizeToMusicApple(view))) return true;
+      }
     }
   } catch (e) {
     debug('tryApple:itunesSearch:error', e);
