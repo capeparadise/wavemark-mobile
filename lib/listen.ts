@@ -503,15 +503,32 @@ function buildSpotifySearchUrl(title: string, artist?: string | null) {
   return `https://open.spotify.com/search/${q}`;
 }
 
-function buildAppleUniversalLink(item: ListenRow, country?: string | null) {
+function buildAppleUniversalLinkFromIds(
+  itemType: ListenRow['item_type'],
+  ids: { trackId?: string | null; albumId?: string | null },
+  country?: string | null
+) {
   const cc = (country || '').toLowerCase() || 'us';
-  // If we have a specific Apple ID, prefer a canonical entity route
-  if (item.apple_id) {
-    // For tracks, Apple supports `/song/<id>`; for albums: `/album/<id>`
-    const entity = item.item_type === 'track' ? 'song' : 'album';
-    return `https://music.apple.com/${cc}/${entity}/${item.apple_id}`;
+  if (itemType === 'track' && ids.trackId && ids.albumId) {
+    // Canonical track deep link pattern
+    return `https://music.apple.com/${cc}/album/${ids.albumId}?i=${ids.trackId}`;
+  }
+  if (itemType === 'album' && ids.albumId) {
+    return `https://music.apple.com/${cc}/album/${ids.albumId}`;
   }
   return null;
+}
+
+async function itunesLookupById(id: string, country?: string | null): Promise<any | null> {
+  try {
+    const cc = (country || 'US').toUpperCase();
+    const url = `https://itunes.apple.com/lookup?id=${encodeURIComponent(id)}&country=${cc}`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const j = (await res.json()) as any;
+    const r = (j && Array.isArray(j.results)) ? j.results[0] : null;
+    return r ?? null;
+  } catch { return null; }
 }
 
 async function tryOpen(url: string | null | undefined) {
@@ -531,15 +548,31 @@ async function tryApple(item: ListenRow) {
   // 1) Try stored deep link first
   if (await tryOpen(item.apple_url)) return true;
 
-  // 2) Try a canonical universal link from Apple ID (if present)
+  // 2) If we have an Apple ID, do a direct iTunes lookup to get precise URLs and album id
   const market = getMarket() || 'US';
-  const uni = buildAppleUniversalLink(item, market);
-  if (uni) {
-    debug('tryApple:universal', uni);
-    if (await tryOpen(uni)) return true;
+  if (item.apple_id) {
+    const lu = await itunesLookupById(item.apple_id, market);
+    if (lu) {
+      const trackId = lu.trackId ? String(lu.trackId) : null;
+      const albumId = lu.collectionId ? String(lu.collectionId) : null;
+      const trackView = lu.trackViewUrl ?? null;
+      const collView = lu.collectionViewUrl ?? null;
+
+      // Try Music universal link constructed from IDs first
+      const deep = buildAppleUniversalLinkFromIds(item.item_type, { trackId, albumId }, market);
+      if (deep) {
+        debug('tryApple:universalFromLookup', deep);
+        if (await tryOpen(deep)) return true;
+      }
+      // Then try the view URLs returned by lookup
+      if (item.item_type === 'track' && (await tryOpen(trackView))) return true;
+      if (item.item_type === 'album' && (await tryOpen(collView))) return true;
+      // As a last attempt from lookup, try whichever exists
+      if (await tryOpen(trackView || collView)) return true;
+    }
   }
 
-  // 3) Resolve via iTunes Search API to get a proper view URL
+  // 3) Resolve via iTunes Search API to get a proper view URL when IDs are missing
   try {
     const cc = (market || 'US').toUpperCase();
     const term = encodeURIComponent([item.title, item.artist_name].filter(Boolean).join(' '));
