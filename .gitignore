@@ -41,3 +41,11 @@ app-example
 node_modules/
 .expo/
 .DS_Store
+
+
+.env
+.env.*
+*.env
+*.backup
+.env.backup
+.vscode/settings.json
