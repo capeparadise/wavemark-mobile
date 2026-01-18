@@ -1,43 +1,39 @@
 import React from 'react';
 import { View, Text, Image, StyleSheet, TouchableOpacity } from 'react-native';
+import GlassCard from './GlassCard';
+import { ui } from '../constants/ui';
+import { useTheme } from '../theme/useTheme';
 
 export default function ReleaseCard({ title, artist, image, onPress }: any) {
+  const { colors } = useTheme();
+
   return (
-    <TouchableOpacity style={styles.card} onPress={onPress}>
-      {image && <Image source={{ uri: image }} style={styles.image} />}
-      <View style={styles.info}>
-        <Text style={styles.title}>{title}</Text>
-        <Text style={styles.artist}>{artist}</Text>
-      </View>
-    </TouchableOpacity>
+    <GlassCard asChild>
+      <TouchableOpacity onPress={onPress} activeOpacity={0.9} style={{ flexDirection: 'row', alignItems: 'center', gap: ui.spacing.md }}>
+        {image && <Image source={{ uri: image }} style={styles.image} />}
+        <View style={styles.info}>
+          <Text style={[styles.title, { color: colors.text.secondary }]} numberOfLines={1}>{title}</Text>
+          <Text style={[styles.artist, { color: colors.text.muted }]} numberOfLines={1}>{artist}</Text>
+        </View>
+      </TouchableOpacity>
+    </GlassCard>
   );
 }
 
 const styles = StyleSheet.create({
-  card: {
-    flexDirection: 'row',
-    backgroundColor: '#111',
-    padding: 12,
-    marginBottom: 10,
-    borderRadius: 8,
-    alignItems: 'center'
-  },
   image: {
     width: 60,
     height: 60,
-    borderRadius: 6,
-    marginRight: 12
+    borderRadius: 12,
   },
   info: {
     flex: 1
   },
   title: {
-    color: '#fff',
     fontSize: 16,
     fontWeight: 'bold'
   },
   artist: {
-    color: '#aaa',
     fontSize: 14
   }
 });

@@ -6,6 +6,7 @@
 import React, { useMemo, useRef } from 'react';
 import { Animated, Text, View } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
+import { useTheme } from '../theme/useTheme';
 
 type MaybePromise = void | Promise<void>;
 
@@ -25,15 +26,17 @@ type Props = {
 function Pill({
   text,
   bg,
+  textColor,
   align = 'left',
   progress,
   icon,
 }: {
   text: string;
-  bg: string;
+    bg: string;
+  textColor: string;
   align?: 'left' | 'right';
   progress: Animated.AnimatedInterpolation<string | number>;
-  icon?: string;
+    icon?: string;
 }) {
   // Scale and fade the chip as you drag
   const scale = progress.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1] });
@@ -44,7 +47,7 @@ function Pill({
       style={{
         transform: [{ scale }],
         opacity,
-        backgroundColor: bg,
+          backgroundColor: bg,
         paddingHorizontal: 14,
         paddingVertical: 8,
         borderRadius: 12,
@@ -53,9 +56,7 @@ function Pill({
         marginRight: align === 'right' ? 12 : 0,
       }}
     >
-      <Text style={{ color: 'white', fontWeight: '800' }}>
-        {icon ? `${icon}  ${text}` : text}
-      </Text>
+        <Text style={{ color: textColor, fontWeight: '800' }}>{text}</Text>
     </Animated.View>
   );
 }
@@ -72,6 +73,7 @@ export default function SwipeRow({
   onHapticTap,
   onHapticError,
 }: Props) {
+  const { colors } = useTheme();
   const ref = useRef<Swipeable>(null);
 
   const close = () => {
@@ -81,32 +83,32 @@ export default function SwipeRow({
   // Renderers receive "progress" (0..1) and "dragX". We animate the pill.
   const left = useMemo(
     () => (progress: Animated.AnimatedInterpolation<number>) => (
-      <View style={{ flex: 1, justifyContent: 'center', backgroundColor: '#dcfce7' /* soft green */ }}>
+      <View style={{ flex: 1, justifyContent: 'center', backgroundColor: colors.bg.muted }}>
         <Pill
           text={isDone ? 'Not listened' : 'Listened'}
-          icon={isDone ? '↩︎' : '✓'}
-          bg={isDone ? '#334155' /* slate for revert */ : '#22c55e' /* green */}
+          bg={colors.accent.primary}
+          textColor={colors.text.inverted}
           align="left"
           progress={progress}
         />
       </View>
     ),
-    [isDone]
+    [colors, isDone]
   );
 
   const right = useMemo(
     () => (progress: Animated.AnimatedInterpolation<number>) => (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'flex-end', backgroundColor: '#fee2e2' /* soft red */ }}>
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'flex-end', backgroundColor: colors.bg.muted }}>
         <Pill
           text="Remove"
-          icon="🗑"
-          bg="#ef4444"
+          bg={colors.accent.primary}
+          textColor={colors.text.inverted}
           align="right"
           progress={progress}
         />
       </View>
     ),
-    []
+    [colors]
   );
 
   return (

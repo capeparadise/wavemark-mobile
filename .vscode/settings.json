@@ -3,5 +3,21 @@
     "source.fixAll": "explicit",
     "source.organizeImports": "explicit",
     "source.sortMembers": "explicit"
-  }
+  },
+  // Hide YAML diagnostics for GitHub Actions from Problems (keeps file intact)
+  "problems.exclude": {
+    "**/.github/workflows/**": true
+  },
+  "search.exclude": {
+    ".github/workflows/**": true
+  },
+  // Treat workflow YAML files as plaintext to avoid YAML validation noise in this folder only
+  "files.associations": {
+    "**/.github/workflows/*.yml": "plaintext",
+    "**/.github/workflows/*.yaml": "plaintext"
+  },
+  // If you want to hide these files from the Explorer too, set files.exclude to true
+  // "files.exclude": { "**/.github/workflows/**": true },
+  // Disable YAML validation entirely (optional):
+  // "yaml.validate": false
 }

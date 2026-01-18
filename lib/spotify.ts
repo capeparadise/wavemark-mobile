@@ -15,6 +15,7 @@ export type SpotifyResult = {
   albumType?: 'album' | 'single' | 'compilation';
   albumId?: string | null;   // for tracks (parent album), for albums (same as id)
   artistId?: string | null;  // primary artist id when available
+  popularity?: number;
 };
 
 // Use centralized base (with safe fallback)
@@ -93,7 +94,7 @@ export async function spotifyLookup(id: string, lookupType: 'album' | 'track'): 
   }
 }
 
-export async function spotifySearch(q: string): Promise<SpotifyResult[]> {
+export async function spotifySearch(q: string, types: string = 'album,track,artist'): Promise<SpotifyResult[]> {
   const direct = parseSpotifyUrlOrId(q);
   if (direct) {
     try {
@@ -109,9 +110,10 @@ export async function spotifySearch(q: string): Promise<SpotifyResult[]> {
   }
 
   const market = getMarket();
-  const res = await fetch(`${FN}/spotify-search?` + new URLSearchParams({
-    q, type: 'album,track,artist', market
-  }));
+  const params = new URLSearchParams({ q, type: types, market });
+  // eslint-disable-next-line no-console
+  console.log('[spotifySearch:req]', { q, types, url: `${FN}/spotify-search?${params.toString()}` });
+  const res = await fetch(`${FN}/spotify-search?` + params);
   if (!res.ok) {
     const t = await res.text().catch(()=> '');
     // eslint-disable-next-line no-console
@@ -119,6 +121,13 @@ export async function spotifySearch(q: string): Promise<SpotifyResult[]> {
     throw new Error('Spotify search failed');
   }
   const data: any = await res.json();
+  // eslint-disable-next-line no-console
+  console.log('[spotifySearch:resp]', {
+    keys: Object.keys(data || {}),
+    artists: data?.artists?.items?.length ?? 0,
+    tracks: data?.tracks?.items?.length ?? 0,
+    albums: data?.albums?.items?.length ?? 0,
+  });
 
   const out: SpotifyResult[] = [];
   for (const t of data.tracks?.items ?? []) {
@@ -128,9 +137,10 @@ export async function spotifySearch(q: string): Promise<SpotifyResult[]> {
       artist: t.artists?.[0]?.name ?? '',
       releaseDate: t.album?.release_date ?? null,
       spotifyUrl: t.external_urls?.spotify ?? null,
-  imageUrl: t.album?.images?.[0]?.url ?? null,
-  albumId: t.album?.id ?? null,
-  artistId: t.artists?.[0]?.id ?? null,
+      imageUrl: t.album?.images?.[0]?.url ?? null,
+      albumId: t.album?.id ?? null,
+      artistId: t.artists?.[0]?.id ?? null,
+      popularity: t.popularity ?? 0,
     });
   }
   for (const a of data.albums?.items ?? []) {
@@ -140,18 +150,20 @@ export async function spotifySearch(q: string): Promise<SpotifyResult[]> {
       artist: a.artists?.[0]?.name ?? '',
       releaseDate: a.release_date ?? null,
       spotifyUrl: a.external_urls?.spotify ?? null,
-  imageUrl: a.images?.[0]?.url ?? null,
-  albumType: (a.album_type ?? null) as any,
-  albumId: a.id ?? null,
-  artistId: a.artists?.[0]?.id ?? null,
+      imageUrl: a.images?.[0]?.url ?? null,
+      albumType: (a.album_type ?? null) as any,
+      albumId: a.id ?? null,
+      artistId: a.artists?.[0]?.id ?? null,
+      popularity: a.popularity ?? 0,
     });
   }
   for (const ar of data.artists?.items ?? []) {
     out.push({
       id: ar.id, providerId: ar.id, provider: 'spotify',
       type: 'artist', title: ar.name,
+      imageUrl: ar.images?.[0]?.url ?? null,
       spotifyUrl: ar.external_urls?.spotify ?? null,
-  artistId: ar.id ?? null,
+      artistId: ar.id ?? null,
     });
   }
   return out;

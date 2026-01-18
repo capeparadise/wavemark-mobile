@@ -48,9 +48,16 @@ export type FeedItem = {
   title: string;
   release_date: string | null;
   spotify_url: string | null;
+  apple_url?: string | null;
   created_at: string;
   image_url?: string | null;
-  release_type?: 'album' | 'single' | 'compilation' | null;
+  artwork_url?: string | null;
+  release_type?: 'album' | 'single' | 'compilation' | null; // legacy feed field
+  item_type?: 'album' | 'single' | null; // normalized type for listen_list
+  provider_id?: string | null;
+  spotify_id?: string | null;
+  apple_id?: string | null;
+  external_id?: string | null;
 };
 export async function fetchFeed(): Promise<FeedItem[]> {
   const { data, error } = await supabase
@@ -58,6 +65,21 @@ export async function fetchFeed(): Promise<FeedItem[]> {
     .select('*')
     .order('release_date', { ascending: false, nullsFirst: false })
     .order('created_at', { ascending: false });
+  if (error) return [];
+  return data as FeedItem[];
+}
+
+export async function fetchFeedForArtists(input: { artistIds: string[]; limit?: number }): Promise<FeedItem[]> {
+  const artistIds = Array.from(new Set((input.artistIds || []).filter(Boolean)));
+  if (!artistIds.length) return [];
+  const limit = typeof input.limit === 'number' && Number.isFinite(input.limit) ? Math.max(1, Math.min(500, input.limit)) : 200;
+  const { data, error } = await supabase
+    .from('new_release_feed')
+    .select('*')
+    .in('artist_id', artistIds)
+    .order('release_date', { ascending: false, nullsFirst: false })
+    .order('created_at', { ascending: false })
+    .limit(limit);
   if (error) return [];
   return data as FeedItem[];
 }

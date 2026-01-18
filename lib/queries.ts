@@ -50,9 +50,15 @@ export async function setDefaultPlayer(
 /* ---------------- Listen list ---------------- */
 
 export async function fetchListenList(): Promise<ListenRow[]> {
+  const { data: auth } = await supabase.auth.getUser();
+  const user = auth?.user;
+  if (!user) return [];
+
   const { data, error } = await supabase
     .from('listen_list')
-    .select('*')
+    .select('id,item_type,provider,provider_id,title,artist_name,artwork_url,release_date,apple_url,apple_id,spotify_url,spotify_id,rating,review,rated_at,done_at,upcoming,created_at')
+    .eq('user_id', user.id)
+    .is('done_at', null)
     .order('created_at', { ascending: false });
 
   if (error) {

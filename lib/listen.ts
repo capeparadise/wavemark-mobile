@@ -1,35 +1,50 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Localization from 'expo-localization';
 import { Linking } from 'react-native';
+import { resolveAppleUrl } from './appleResolver';
 import { debugNS } from './debug';
+import { openInApple } from './openApple';
+import { getMarket, spotifyLookup } from './spotify';
 import { supabase } from './supabase';
-import { getMarket } from './spotify';
 
 const debug = debugNS('listen');
+const APPLE_ENABLED = process.env.EXPO_PUBLIC_ENABLE_APPLE === 'true';
 
 export type ListenPlayer = 'apple' | 'spotify';
 
-export type RatingValue = number; // 0.5..5.0 in 0.5 steps
+export type RatingValue = number; // 1..10 (integer)
 
 export type ListenRow = {
   id: string;
-  item_type: 'track' | 'album';
-  provider: ListenPlayer; // source provider saved at insert time
-  provider_id: string | null;
+  item_type: 'track' | 'album' | 'single';
+  provider?: ListenPlayer; // source provider saved at insert time
+  provider_id?: string | null;
 
   title: string;
   artist_name: string | null;
+  artwork_url?: string | null;
   release_date?: string | null;
   // NEW:
   upcoming?: boolean | null;
 
   apple_url: string | null;
   apple_id: string | null;
+  apple_track_id?: string | null;
+  apple_album_id?: string | null;
+  apple_storefront?: string | null;
 
   spotify_url: string | null;
   spotify_id: string | null;
 
   done_at: string | null; // ISO string or null
   rating?: RatingValue | null;
+  rating_details?: {
+    production?: number;
+    vocals?: number;
+    lyrics?: number;
+    replay?: number;
+    [k: string]: number | undefined;
+  } | null;
   review?: string | null;
   rated_at?: string | null; // ISO string
   created_at?: string | null;
@@ -119,18 +134,20 @@ const DEFAULT_PLAYER_KEY = 'default_player';
 
 export async function getDefaultPlayer(): Promise<ListenPlayer> {
   try {
+    if (!APPLE_ENABLED) return 'spotify';
     const v = await AsyncStorage.getItem(DEFAULT_PLAYER_KEY);
   debug('pref:get', DEFAULT_PLAYER_KEY, v);
     if (v === 'apple' || v === 'spotify') return v;
   } catch (e) {
   debug('pref:get:error', e);
   }
-  return 'apple';
+  return APPLE_ENABLED ? 'apple' : 'spotify';
 }
 
 export async function setDefaultPlayer(p: ListenPlayer) {
-  debug('pref:set', DEFAULT_PLAYER_KEY, p);
-  await AsyncStorage.setItem(DEFAULT_PLAYER_KEY, p);
+  const final = APPLE_ENABLED ? p : 'spotify';
+  debug('pref:set', DEFAULT_PLAYER_KEY, final);
+  await AsyncStorage.setItem(DEFAULT_PLAYER_KEY, final);
 }
 
 export async function addToListenList(
@@ -155,7 +172,7 @@ export async function addToListenList(
       ? (item as any).trackViewUrl ?? null
       : (item as any).collectionViewUrl ?? null;
 
-  const appleId =
+  let appleId =
     type === 'track'
       ? (item as any).trackId != null
         ? String((item as any).trackId)
@@ -190,6 +207,22 @@ export async function addToListenList(
       : (item as any).collectionName ?? '';
 
   const artist = (item as any).artistName ?? null;
+
+  // Attempt canonical resolution via apple-resolve edge function now that title/artist are known
+  try {
+    const needCanonical = !appleUrl || !appleId || !/music\.apple\.com\//.test(String(appleUrl));
+    if (needCanonical) {
+      const { data: appleResolved } = await supabase.functions.invoke('apple-resolve', {
+        body: { type, title, artist },
+      });
+      if (appleResolved) {
+        if (appleResolved.id) appleId = String(appleResolved.id);
+        if (appleResolved.url) appleUrl = String(appleResolved.url);
+      }
+    }
+  } catch (e) {
+    debug('add:appleResolve:error', e);
+  }
 
   // Resolve a Spotify ID/URL via our Supabase Edge Function (best-effort)
   let spotifyId: string | null = null;
@@ -348,13 +381,13 @@ export async function addToListenList(
 }
 
 export async function fetchListenList(): Promise<ListenRow[]> {
+  const { data: { user }, error: userErr } = await supabase.auth.getUser();
+  if (userErr || !user) return [];
   const { data, error } = await supabase
     .from('listen_list')
-    // add created_at to the projection if present in your table
-    .select(
-  'id,item_type,provider,provider_id,title,artist_name,apple_url,apple_id,spotify_url,spotify_id,done_at,rating,rated_at,created_at'
-    )
-    .order('done_at', { ascending: true, nullsFirst: true })
+    .select('id,item_type,provider,provider_id,title,artist_name,artwork_url,release_date,apple_url,apple_id,spotify_url,spotify_id,rating,review,rated_at,done_at,upcoming,created_at')
+    .eq('user_id', user.id)
+    .is('done_at', null)
     .order('id', { ascending: false });
 
   if (error || !data) return [];
@@ -368,7 +401,7 @@ export async function fetchHistory(): Promise<{ ok: true; rows: ListenRow[] } | 
 
   const { data, error } = await supabase
     .from('listen_list')
-    .select('id,item_type,provider,provider_id,title,artist_name,apple_url,apple_id,spotify_url,spotify_id,done_at,rating,rated_at,created_at')
+  .select('*')
     .eq('user_id', user.id)
     .not('done_at', 'is', null)
     .order('rated_at', { ascending: false, nullsFirst: false })
@@ -404,14 +437,42 @@ export async function reconcileReleased(): Promise<void> {
   }
 }
 
+/**
+ * Count unique listened rows (done_at IS NOT NULL) for the current user.
+ * This is the single source of truth for "total songs listened".
+ */
+export async function getUniqueListenedCount(): Promise<number> {
+  try {
+    const { data: auth } = await supabase.auth.getUser();
+    const user = auth?.user;
+    if (!user) return 0;
+    const { count, error } = await supabase
+      .from('listen_list')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', user.id)
+      .not('done_at', 'is', null);
+    if (error) return 0;
+    const n = count ?? 0;
+    // Debug log; easy to remove later
+    // eslint-disable-next-line no-console
+    console.log('[stats] unique_listened_count:', n);
+    return n;
+  } catch {
+    return 0;
+  }
+}
+
 export async function addToListFromSearch(input: {
-  type: 'track' | 'album',
+  type: 'track' | 'album' | 'single',
   title: string,
   artist?: string | null,
   releaseDate?: string | null,
   appleUrl?: string | null,
   spotifyUrl?: string | null,
-}): Promise<{ ok: boolean; id?: string; upcoming?: boolean; message?: string }> {
+  imageUrl?: string | null,
+  artworkUrl?: string | null,
+  providerId?: string | null,
+}): Promise<{ ok: boolean; id?: string; upcoming?: boolean; message?: string; row?: any }> {
   const { data: { user }, error: userErr } = await supabase.auth.getUser();
   if (userErr) return { ok: false, message: userErr.message };
   if (!user) return { ok: false, message: 'Not signed in' };
@@ -473,46 +534,268 @@ export async function addToListFromSearch(input: {
     } catch {}
   }
 
-  const provider: 'spotify' | 'apple' = spotifyId ? 'spotify' : 'apple';
-  // Fallback provider_id to a stable string if we couldn't parse an ID
-  const provider_id = (spotifyId || appleId || appleUrl || input.title).toString();
+  // Attempt canonical Apple Music resolution via edge function if still missing or legacy iTunes link
+  try {
+    const needCanonical = !appleId || !appleUrl || !/music\.apple\.com\//.test(String(appleUrl));
+    if (needCanonical) {
+      const { data: appleResolved } = await supabase.functions.invoke('apple-resolve', {
+        body: { type: input.type, title: input.title, artist: input.artist ?? undefined },
+      });
+      if (appleResolved) {
+        if (appleResolved.id) appleId = String(appleResolved.id);
+        if (appleResolved.url) appleUrl = String(appleResolved.url);
+      }
+    }
+  } catch (e) {
+    debug('search:add:appleResolve:error', e);
+  }
 
-  const { data, error } = await supabase
+  const provider: 'spotify' | 'apple' = spotifyId ? 'spotify' : 'apple';
+  // Required fields with safe fallbacks
+  const artistName = input.artist ?? 'Unknown artist';
+  const title = input.title || 'Untitled';
+  // Consistent provider_id: always pair with provider
+  const provider_id = provider === 'spotify'
+    ? (input.providerId || spotifyId || input.spotifyUrl || title).toString()
+    : (input.providerId || appleId || appleUrl || title).toString();
+
+  // Map UI "single" to DB-supported item_type "track"
+  const dbItemType: 'track' | 'album' = input.type === 'album' ? 'album' : 'track';
+
+  const payload = {
+    user_id: user.id,
+    item_type: dbItemType,
+    provider,
+    provider_id,
+    title,
+    artist_name: artistName,
+    apple_url: appleUrl ?? null,
+    apple_id: appleId ?? null,
+    spotify_url: input.spotifyUrl ?? null,
+    spotify_id: spotifyId ?? null,
+    release_date: input.releaseDate ?? null,
+    upcoming,
+    artwork_url: input.artworkUrl ?? input.imageUrl ?? null,
+  };
+
+  const normalizeRow = (row: any) => row ? { ...row, rating_details: row.rating_details ?? null } : row;
+
+  // If the item already exists for this user+provider+id, reuse it to avoid UNIQUE violations.
+  try {
+    const { data: existing, error: existingErr } = await supabase
+      .from('listen_list')
+      .select('id, upcoming, rating, rating_details, done_at')
+      .eq('user_id', user.id)
+      .eq('provider', provider)
+      .eq('provider_id', provider_id)
+      .maybeSingle();
+    if (!existingErr && existing) {
+      // Patch missing fields (artwork/title/artist/release_date) if we have fresh data
+      const patch: Record<string, any> = {};
+      if (!(existing as any).artwork_url && payload.artwork_url) patch.artwork_url = payload.artwork_url;
+      if ((!(existing as any).artist_name || (existing as any).artist_name === 'Unknown artist') && payload.artist_name) patch.artist_name = payload.artist_name;
+      if ((!(existing as any).title || (existing as any).title === 'Untitled') && payload.title) patch.title = payload.title;
+      if (!(existing as any).release_date && payload.release_date) patch.release_date = payload.release_date;
+      if (Object.keys(patch).length) {
+        try { await supabase.from('listen_list').update(patch).eq('id', existing.id).eq('user_id', user.id); } catch {}
+      }
+      // If it was marked done and we're re-adding, clear done_at so UI can treat it as active again.
+      if (existing.done_at) {
+        const { data: updated } = await supabase
+          .from('listen_list')
+          .update({ done_at: null })
+          .eq('id', existing.id)
+          .eq('user_id', user.id)
+          .select('id, upcoming, rating, rating_details, done_at')
+          .maybeSingle();
+        if (updated) {
+          const normalized = normalizeRow(updated);
+          return { ok: true, id: normalized.id, upcoming: normalized.upcoming ?? upcoming, message: 'Already on your list', row: normalized };
+        }
+      }
+      const normalized = normalizeRow(existing);
+      return { ok: true, id: normalized.id, upcoming: normalized.upcoming ?? upcoming, message: 'Already on your list', row: normalized };
+    }
+  } catch {}
+
+  let { data, error } = await supabase
     .from('listen_list')
-    .insert({
-      user_id: user.id,
-      item_type: input.type,
-      provider,
-      provider_id,
-      title: input.title,
-      artist_name: input.artist ?? null,
-  apple_url: appleUrl ?? null,
-  apple_id: appleId ?? null,
-      spotify_url: input.spotifyUrl ?? null,
-      spotify_id: spotifyId ?? null,
-      release_date: input.releaseDate ?? null,
-      upcoming,
-    })
-    .select('id, upcoming')
+    .insert(payload)
+    .select('id, upcoming, rating, rating_details, done_at')
     .single();
 
-  if (error) return { ok: false, message: error.message };
-  return { ok: true, id: (data as any)?.id, upcoming: (data as any)?.upcoming ?? upcoming };
+  if (error && ((error as any)?.code === '42703' || (error as any)?.code === 'PGRST204')) {
+    const fallback = await supabase
+      .from('listen_list')
+      .insert(payload)
+      .select('id, upcoming, rating, done_at')
+      .single();
+    data = fallback.data ? normalizeRow(fallback.data) : null;
+    error = fallback.error;
+  }
+
+  if (error) {
+    // Treat unique constraint as "already added" and return existing row id
+    if ((error as any)?.code === '23505') {
+      const { data: existing } = await supabase
+        .from('listen_list')
+        .select('id, upcoming, rating, rating_details, done_at')
+        .eq('user_id', user.id)
+        .eq('provider', provider)
+        .eq('provider_id', provider_id)
+        .maybeSingle();
+      if (existing?.id) {
+        const normalized = normalizeRow(existing);
+        const patch: Record<string, any> = {};
+        if (!(existing as any)?.artwork_url && payload.artwork_url) patch.artwork_url = payload.artwork_url;
+        if ((!(existing as any)?.artist_name || (existing as any).artist_name === 'Unknown artist') && payload.artist_name) patch.artist_name = payload.artist_name;
+        if ((!(existing as any)?.title || (existing as any).title === 'Untitled') && payload.title) patch.title = payload.title;
+        if (!(existing as any)?.release_date && payload.release_date) patch.release_date = payload.release_date;
+        if (Object.keys(patch).length) {
+          try { await supabase.from('listen_list').update(patch).eq('id', existing.id).eq('user_id', user.id); } catch {}
+        }
+        return { ok: true, id: normalized.id, upcoming: normalized.upcoming ?? upcoming, message: 'Already on your list', row: normalized };
+      }
+      // Retry select without rating_details if column missing
+      if ((error as any)?.code === '42703' || (error as any)?.code === 'PGRST204') {
+        const { data: existingNoDetails } = await supabase
+          .from('listen_list')
+          .select('id, upcoming, rating, done_at')
+          .eq('user_id', user.id)
+          .eq('provider', provider)
+          .eq('provider_id', provider_id)
+          .maybeSingle();
+        if (existingNoDetails?.id) {
+          const normalized = normalizeRow(existingNoDetails);
+          return { ok: true, id: normalized.id, upcoming: normalized.upcoming ?? upcoming, message: 'Already on your list', row: normalized };
+        }
+      }
+    }
+    return { ok: false, message: error.message };
+  }
+  const normalized = normalizeRow(data);
+  // eslint-disable-next-line no-console
+  console.log('[listen] addToListFromSearch', { id: normalized?.id, provider, provider_id, artwork_url: payload.artwork_url });
+  return { ok: true, id: (normalized as any)?.id, upcoming: (normalized as any)?.upcoming ?? upcoming, row: normalized };
+}
+
+// Helper: ensure a listen_list row exists for a search result-like item, returning the row
+export async function ensureListenRowForSearch(
+  input: Partial<ListenRow> & { title?: string | null; artist_name?: string | null; item_type?: 'track' | 'album' | 'single'; spotify_url?: string | null; release_date?: string | null; }
+): Promise<{ ok: boolean; row?: ListenRow; message?: string }> {
+  // If we already have a UUID id, attempt to hydrate from DB first
+  if (input.id && isUuid(input.id)) {
+    try {
+      const { data, error } = await supabase.from('listen_list').select('*').eq('id', input.id).maybeSingle();
+      if (!error && data) return { ok: true, row: data as ListenRow };
+    } catch {}
+  }
+
+  const res = await addToListFromSearch({
+    type: input.item_type === 'album' ? 'album' : 'single',
+    title: input.title || 'Untitled',
+    artist: input.artist_name || (input as any).artist || 'Unknown artist',
+    releaseDate: (input as any).releaseDate ?? input.release_date ?? null,
+    appleUrl: (input as any).apple_url ?? null,
+    spotifyUrl: input.spotify_url ?? (input as any).spotifyUrl ?? null,
+    artworkUrl: (input as any).artwork_url ?? (input as any).image_url ?? (input as any).imageUrl ?? null,
+  });
+  if (!res.ok || !res.id) return { ok: false, message: res.message || 'Could not add item' };
+  // Return minimal row
+  const providerGuess: 'spotify' | 'apple' =
+    (input as any).provider === 'apple' || (!!(input as any).apple_url && !(input as any).spotify_url) ? 'apple' : 'spotify';
+  const providerIdGuess = providerGuess === 'spotify'
+    ? (input.spotify_id || input.spotify_url || res.id)
+    : ((input as any).apple_id || (input as any).apple_url || res.id);
+
+  return {
+    ok: true,
+    row: {
+      id: res.id,
+      item_type: input.item_type === 'album' ? 'album' : 'track',
+      provider: providerGuess,
+      provider_id: providerIdGuess || res.id,
+      title: input.title || 'Untitled',
+      artist_name: input.artist_name || 'Unknown artist',
+      artwork_url: (input as any).artwork_url ?? (input as any).image_url ?? (input as any).imageUrl ?? null,
+      release_date: (input as any).releaseDate ?? input.release_date ?? null,
+      done_at: null,
+      created_at: new Date().toISOString(),
+      rating: null,
+    } as any,
+  };
 }
 
 export async function markDone(
   id: string,
   makeDone: boolean
 ): Promise<{ ok: boolean; message?: string }> {
+  const { data: auth, error: authErr } = await supabase.auth.getUser();
+  const user = auth?.user;
+  if (authErr) return { ok: false, message: authErr.message };
+  if (!user) return { ok: false, message: 'Not signed in' };
+
   const patch = { done_at: makeDone ? new Date().toISOString() : null };
 
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from('listen_list')
     .update(patch)
-    .eq('id', id);
+    .eq('id', id)
+    .eq('user_id', user.id)
+    .select('id, done_at')
+    .maybeSingle();
+
+  // Debug log to trace Supabase response
+  // eslint-disable-next-line no-console
+  console.log('[markDone]', { id, makeDone, patch, data, error });
 
   if (error) return { ok: false, message: error.message };
   return { ok: true };
+}
+
+export async function markDoneByProvider(
+  params: { provider_id: string; provider: 'spotify' | 'apple'; makeDone: boolean }
+): Promise<{ data: any; error: any }> {
+  const { data: auth, error: authErr } = await supabase.auth.getUser();
+  const user = auth?.user;
+  if (authErr || !user) return { data: null, error: authErr ?? new Error('Not signed in') };
+
+  const patch = params.makeDone ? { done_at: new Date().toISOString() } : { done_at: null };
+  const q = supabase
+    .from('listen_list')
+    .update(patch)
+    .eq('user_id', user.id)
+    .eq('provider', params.provider)
+    .eq('provider_id', params.provider_id);
+  const { data, error } = await q
+    .select('id, done_at, provider_id, item_type')
+    .maybeSingle();
+
+  // eslint-disable-next-line no-console
+  console.log('[markDoneByProvider]', { provider: params.provider, provider_id: params.provider_id, makeDone: params.makeDone, patch, data, error });
+
+  return { data, error };
+}
+
+export async function removeListenByProvider(
+  params: { provider_id: string; provider: 'spotify' | 'apple' }
+): Promise<{ ok: boolean; removed: number; message?: string }> {
+  const { data: auth, error: authErr } = await supabase.auth.getUser();
+  const user = auth?.user;
+  if (authErr) return { ok: false, removed: 0, message: authErr.message };
+  if (!user) return { ok: false, removed: 0, message: 'Not signed in' };
+
+  const { data, error } = await supabase
+    .from('listen_list')
+    .delete()
+    .eq('user_id', user.id)
+    .eq('provider', params.provider)
+    .eq('provider_id', params.provider_id)
+    .select('id');
+
+  if (error) return { ok: false, removed: 0, message: error.message };
+  const removed = Array.isArray(data) ? data.length : 0;
+  return { ok: true, removed };
 }
 
 export async function removeListen(
@@ -565,6 +848,33 @@ function preferMusicApp(url?: string | null): string | null {
   } catch { return url; }
 }
 
+function isUuid(v?: string | null): boolean {
+  return !!v && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
+}
+
+function getAppleStorefront(): string {
+  const region = (Localization as any)?.region;
+  if (region && typeof region === 'string' && region.length === 2) return region.toLowerCase();
+  const locale = (Localization as any)?.locale || '';
+  const m = locale.match(/[-_](\w{2})$/);
+  if (m) return m[1].toLowerCase();
+  return 'us';
+}
+
+function schemeVariants(u?: string | null): string[] {
+  if (!u) return [];
+  try {
+    const url = new URL(u);
+    if (!url.hostname.endsWith('music.apple.com')) return [];
+    const hostAndPath = `${url.hostname}${url.pathname}${url.search}`;
+    return [
+      `musics://${hostAndPath}`,
+      `music://${hostAndPath}`,
+    ];
+  } catch {
+    return [];
+  }
+}
 function buildAppleUniversalLinkFromIds(
   itemType: ListenRow['item_type'],
   ids: { trackId?: string | null; albumId?: string | null },
@@ -606,119 +916,58 @@ async function tryOpen(url: string | null | undefined) {
 }
 
 async function tryApple(item: ListenRow) {
-  debug('tryApple', 'url=', item.apple_url, 'id=', item.apple_id);
-  // 1) Try stored deep link first
-  if (await tryOpen(item.apple_url)) return true;
-
-  // 2) If we have an Apple ID, do a direct iTunes lookup to get precise URLs and album id
-  const market = getMarket() || 'US';
-  if (item.apple_id) {
-    const lu = await itunesLookupById(item.apple_id, market);
-    if (lu) {
-      const trackId = lu.trackId ? String(lu.trackId) : null;
-      const albumId = lu.collectionId ? String(lu.collectionId) : null;
-      const trackView = lu.trackViewUrl ?? null;
-      const collView = lu.collectionViewUrl ?? null;
-      const artistSlug = slugifyApple(lu.artistName);
-      const albumSlug = slugifyApple(lu.collectionName);
-
-      const storefronts = Array.from(new Set([(market || 'US').toLowerCase(), 'gb', 'us']));
-      // Build a rich set of candidates across storefronts
-      const candidates: Array<string | null | undefined> = [];
-      for (const cc of storefronts) {
-        if (item.item_type === 'track') {
-          if (trackId) candidates.push(`https://music.apple.com/${cc}/song/${trackId}`);
-          if (albumId && trackId) candidates.push(`https://music.apple.com/${cc}/album/${albumSlug}/${albumId}?i=${trackId}`);
-          if (albumId && trackId) candidates.push(`https://geo.music.apple.com/${cc}/album/${albumSlug}/${albumId}?i=${trackId}`);
-          if (albumId && trackId) candidates.push(`itmss://itunes.apple.com/${cc}/album/id${albumId}?i=${trackId}`);
-        } else {
-          if (albumId) candidates.push(`https://music.apple.com/${cc}/album/${albumSlug}/${albumId}`);
-          if (albumId) candidates.push(`https://geo.music.apple.com/${cc}/album/${albumSlug}/${albumId}`);
-          if (albumId) candidates.push(`itmss://itunes.apple.com/${cc}/album/id${albumId}`);
+  const storefront = getAppleStorefront().toLowerCase();
+  // Enrich missing artist_name via iTunes lookup (best-effort, one-time)
+  if (!item.artist_name && item.apple_id) {
+    try {
+      const res = await fetch(`https://itunes.apple.com/lookup?id=${encodeURIComponent(item.apple_id)}&limit=1`);
+      if (res.ok) {
+        const j: any = await res.json();
+        const r = Array.isArray(j?.results) ? j.results[0] : null;
+        const artistName = r?.artistName || null;
+        if (artistName) {
+          debug('apple:enrich:artist', { id: item.id, artistName });
+          await supabase.from('listen_list').update({ artist_name: artistName }).eq('id', item.id);
+          item.artist_name = artistName; // mutate local reference
         }
       }
-      // View URLs from lookup
-      candidates.push(normalizeToMusicApple(item.item_type === 'track' ? trackView : collView));
-      candidates.push(normalizeToMusicApple(trackView || collView));
-      // Finally: app-scheme search
-      candidates.push(`music://search?term=${encodeURIComponent([item.title, item.artist_name].filter(Boolean).join(' '))}`);
-
-      for (const url0 of candidates) {
-        const url = preferMusicApp(url0);
-        if (await tryOpen(url)) {
-          // Best-effort: persist improved URL back to the row for future opens
-          try { await supabase.from('listen_list').update({ apple_url: url }).eq('id', item.id); } catch {}
-          return true;
-        }
-      }
-    }
+    } catch {}
   }
-
-  // 3) Resolve via iTunes Search API to get a proper view URL when IDs are missing
-  try {
-    const cc = (market || 'US').toUpperCase();
-    const term = encodeURIComponent([item.title, item.artist_name].filter(Boolean).join(' '));
-    const entity = item.item_type === 'track' ? 'musicTrack' : 'album';
-    const url = `https://itunes.apple.com/search?term=${term}&country=${cc}&entity=${entity}&limit=5`;
-    debug('tryApple:itunesSearch', url);
-    const res = await fetch(url);
-    if (res.ok) {
-      const j = (await res.json()) as any;
-      const norm = (s: string | null | undefined) => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-      const wantTitle = norm(item.title);
-      const wantArtist = norm(item.artist_name || '');
-      const candidates = Array.isArray(j?.results) ? j.results : [];
-      // Strict: prefer exact normalized title and artist
-      let best = candidates.find((r: any) => {
-        const t = norm(item.item_type === 'track' ? r.trackName : r.collectionName);
-        const a = norm(r.artistName);
-        return t === wantTitle && (!!wantArtist ? a === wantArtist : true);
-      });
-      // Fallback: partial match on title
-      if (!best) {
-        best = candidates.find((r: any) => {
-          const t = norm(item.item_type === 'track' ? r.trackName : r.collectionName);
-          return t === wantTitle || t.includes(wantTitle);
-        });
+  // Prefer explicit track/album IDs if present
+  const itemTypeForApple: 'track' | 'album' = item.item_type === 'album' ? 'album' : 'track';
+  const appleTrackId = itemTypeForApple === 'track' ? (item.apple_track_id || item.apple_id) : null;
+  const appleAlbumId = itemTypeForApple === 'track'
+    ? (item.apple_album_id || null)
+    : (item.apple_album_id || item.apple_id);
+  const sf = (item.apple_storefront || storefront).toLowerCase();
+  const ok = await openInApple({
+    rowId: item.id,
+    appleTrackId,
+    appleAlbumId,
+    title: item.title,
+    artist: item.artist_name,
+    storefront: sf,
+  itemType: itemTypeForApple,
+  });
+  if (ok) return true;
+  // Secondary attempt: if track and we might have an album id embedded in stored URL, reconstruct track-in-album pattern.
+  if (item.item_type === 'track' && item.apple_url) {
+    try {
+      const u = new URL(item.apple_url);
+      // Try to harvest albumId from existing URL pathname if present
+      const m = u.pathname.match(/\/album\/[^/]+\/(\d+)/);
+      const albumId = m?.[1] || null;
+      const trackIdParam = u.searchParams.get('i');
+      const trackId = trackIdParam || appleTrackId;
+      if (albumId && trackId) {
+        const alt = `https://music.apple.com/${storefront}/album/${albumId}?i=${trackId}`;
+        debug('apple:reconstruct', { alt });
+        try { await Linking.openURL(alt); return true; } catch {}
       }
-      if (best) {
-        const albumId = best.collectionId ? String(best.collectionId) : null;
-        const trackId = best.trackId ? String(best.trackId) : null;
-        const albumSlug = slugifyApple(best.collectionName);
-        const storefronts = Array.from(new Set([(market || 'US').toLowerCase(), 'gb', 'us']));
-        const candidates: Array<string | null | undefined> = [];
-        for (const cc of storefronts) {
-          if (item.item_type === 'track') {
-            if (trackId) candidates.push(`https://music.apple.com/${cc}/song/${trackId}`);
-            if (albumId && trackId) candidates.push(`https://music.apple.com/${cc}/album/${albumSlug}/${albumId}?i=${trackId}`);
-            if (albumId && trackId) candidates.push(`https://geo.music.apple.com/${cc}/album/${albumSlug}/${albumId}?i=${trackId}`);
-            if (albumId && trackId) candidates.push(`itmss://itunes.apple.com/${cc}/album/id${albumId}?i=${trackId}`);
-          } else {
-            if (albumId) candidates.push(`https://music.apple.com/${cc}/album/${albumSlug}/${albumId}`);
-            if (albumId) candidates.push(`https://geo.music.apple.com/${cc}/album/${albumSlug}/${albumId}`);
-            if (albumId) candidates.push(`itmss://itunes.apple.com/${cc}/album/id${albumId}`);
-          }
-        }
-        const view = item.item_type === 'track' ? best.trackViewUrl : best.collectionViewUrl;
-        candidates.push(normalizeToMusicApple(view));
-        candidates.push(`music://search?term=${encodeURIComponent([item.title, item.artist_name].filter(Boolean).join(' '))}`);
-        for (const url0 of candidates) {
-          const url = preferMusicApp(url0);
-          if (await tryOpen(url)) {
-            try { await supabase.from('listen_list').update({ apple_url: url, apple_id: albumId ?? trackId ?? item.apple_id }).eq('id', item.id); } catch {}
-            return true;
-          }
-        }
-      }
-    }
-  } catch (e) {
-    debug('tryApple:itunesSearch:error', e);
+    } catch {}
   }
-
-  // 4) Final fallback: web search (may open Safari or app homepage)
-  const search = buildAppleSearchUrl(item.title, item.artist_name);
-  debug('tryApple:fallbackSearch', search);
-  return await tryOpen(search);
+  debug('apple:fail', { id: item.id, title: item.title });
+  return false;
 }
 
 async function trySpotify(item: ListenRow) {
@@ -772,13 +1021,16 @@ export async function openByDefaultPlayer(
   debug('openByDefaultPlayer', 'preferred =', preferred, 'title =', item.title);
   // DEBUG END
 
+  if (!APPLE_ENABLED) {
+    const s = await trySpotify(item);
+    debug('openByDefaultPlayer:appleDisabled->spotify', { success: s });
+    return s;
+  }
   if (preferred === 'apple') {
     const a = await tryApple(item);
-  debug('openByDefaultPlayer:apple', { success: a });
-    if (a) return true;
-  const s = await trySpotify(item);
-  debug('openByDefaultPlayer:fallbackSpotify', { success: s });
-    return s;
+    debug('openByDefaultPlayer:apple', { success: a });
+    // Do NOT auto-open Spotify if Apple was explicitly chosen and failed.
+    return a; // false means caller can show a message instead of switching services
   } else {
   const s = await trySpotify(item);
   debug('openByDefaultPlayer:spotify', { success: s });
@@ -799,9 +1051,11 @@ export async function openInSpotify(item: ListenRow): Promise<boolean> {
 }
 
 function normalizeRating(r: number): RatingValue {
-  // Clamp 0.5..5.0 and snap to nearest 0.5
-  const snapped = Math.round(r * 2) / 2;
-  const clamped = Math.min(5, Math.max(0.5, snapped));
+  // Clamp 1..10 and coerce to integer; fall back to 1 if NaN/invalid
+  const n = Number(r);
+  if (!Number.isFinite(n)) return 1 as RatingValue;
+  const rounded = Math.round(n);
+  const clamped = Math.min(10, Math.max(1, rounded || 1));
   return clamped as RatingValue;
 }
 
@@ -812,21 +1066,42 @@ export async function setRating(id: string, rating: number, review?: string) {
     if (!user) return { ok: false, message: 'Not signed in' };
 
     const r = normalizeRating(rating);
-    const payload = {
-      rating: r,
-      review: review ?? null,
-      rated_at: new Date().toISOString(),
+    if (r < 1 || r > 10 || Number.isNaN(r)) return { ok: false, message: 'Rating must be 1–10' };
+
+    const attemptUpdate = async (value: number, withDetails: boolean) => {
+      const payload: any = {
+        rating: value,
+        review: review ?? null,
+        rated_at: new Date().toISOString(),
+      };
+      if (withDetails) payload.rating_details = { overall: value };
+      debug('rate:set:payload', payload);
+      return await supabase
+        .from('listen_list')
+        .update(payload)
+        .eq('id', id)
+        .eq('user_id', user.id)
+        .select('id, rating, review, rated_at')
+        .maybeSingle();
     };
 
-    const { data, error } = await supabase
-      .from('listen_list')
-      .update(payload)
-      .eq('id', id)
-      .eq('user_id', user.id)
-      .select('id, rating, review, rated_at')
-      .maybeSingle();
+    // First attempt with normalized rating
+    let { data, error } = await attemptUpdate(r, true);
 
     if (error) {
+      // Column missing: retry without rating_details
+      if ((error as any)?.code === '42703' || (error as any)?.code === 'PGRST204') {
+        const retry = await attemptUpdate(r, false);
+        if (!retry.error) return { ok: true, row: retry.data };
+        error = retry.error;
+      }
+      if ((error as any)?.code === '23514') {
+        // Retry with safe defaults (first 5, then 1) to satisfy tighter CHECK constraints
+        const retryMid = await attemptUpdate(5, true);
+        if (!retryMid.error) return { ok: true, row: retryMid.data };
+        const retryLow = await attemptUpdate(1, true);
+        if (!retryLow.error) return { ok: true, row: retryLow.data };
+      }
       debug('rate:set:error', error);
       return { ok: false, message: 'Could not save rating', error };
     }
@@ -834,6 +1109,77 @@ export async function setRating(id: string, rating: number, review?: string) {
     return { ok: true, row: data };
   } catch (e) {
     debug('rate:set:catch', e);
+    return { ok: false, message: 'Unexpected error', error: e };
+  }
+}
+
+export async function setRatingDetailed(
+  id: string,
+  rating: number,
+  details: { production?: number; vocals?: number; lyrics?: number; replay?: number; [k: string]: number | undefined },
+  review?: string
+) {
+  try {
+    const { data: auth } = await supabase.auth.getUser();
+    const user = auth?.user;
+    if (!user) return { ok: false, message: 'Not signed in' };
+
+    // normalize all numeric values 1..10 if provided
+    const norm = (n: any) => {
+      if (n == null) return undefined;
+      const v = Math.round(Number(n));
+      if (Number.isNaN(v)) return undefined;
+      return Math.min(10, Math.max(1, v));
+    };
+    const r = normalizeRating(rating);
+    const det: any = {};
+    const keys = ['production','vocals','lyrics','replay'];
+    for (const k of keys) {
+      const v = norm((details as any)[k]);
+      if (typeof v === 'number') det[k] = v;
+    }
+
+    const basePayload = {
+      rating: r,
+      review: review ?? null,
+      rated_at: new Date().toISOString(),
+    };
+    const payload = { ...basePayload, rating_details: { ...det, overall: r } };
+
+    let { data, error } = await supabase
+      .from('listen_list')
+      .update(payload)
+      .eq('id', id)
+      .eq('user_id', user.id)
+      .select('id, rating, rating_details, review, rated_at')
+      .maybeSingle();
+
+    if (error) {
+      const isMissingColumn = (error as any)?.code === '42703' || (error as any)?.code === 'PGRST204';
+      const isConstraint = (error as any)?.code === '23514';
+      if (isMissingColumn) {
+        const fallback = await supabase
+          .from('listen_list')
+          .update(basePayload)
+          .eq('id', id)
+          .eq('user_id', user.id)
+          .select('id, rating, review, rated_at')
+          .maybeSingle();
+        if (!fallback.error) return { ok: true, row: fallback.data };
+        error = fallback.error;
+      } else if (isConstraint) {
+        // Fall back to the simpler rating path (which already handles constraints/legacy columns)
+        const simple = await setRating(id, r, review);
+        if (simple.ok) return simple;
+        error = (simple as any).error || error;
+      }
+      debug('rate:set:detailed:error', error);
+      return { ok: false, message: 'Could not save rating', error };
+    }
+    debug('rate:set:detailed:ok', data);
+    return { ok: true, row: data };
+  } catch (e) {
+    debug('rate:set:detailed:catch', e);
     return { ok: false, message: 'Unexpected error', error: e };
   }
 }
@@ -864,6 +1210,51 @@ export async function clearRating(id: string) {
   }
 }
 
+// Bulk Apple link re-resolution for low-confidence or missing rows
+export async function bulkRefreshAppleLinks(limit = 100): Promise<{ processed: number; updated: number; }> {
+  const { data: auth } = await supabase.auth.getUser();
+  const user = auth?.user;
+  if (!user) return { processed: 0, updated: 0 };
+  // Fetch candidates: missing apple_track_id OR apple_url OR low confidence (<0.55)
+  const { data: rows } = await supabase
+    .from('listen_list')
+    .select('id,item_type,title,artist_name,apple_track_id,apple_album_id,apple_id,apple_url,apple_storefront,apple_confidence')
+    .eq('user_id', user.id)
+    .order('id', { ascending: false })
+    .limit(limit);
+  const candidates = (rows || []).filter(r => !r.apple_url || !r.apple_track_id || !r.apple_album_id || (r.apple_confidence != null && Number(r.apple_confidence) < 0.55));
+  let updated = 0;
+  for (const r of candidates) {
+    try {
+      const storefront = (r.apple_storefront || getAppleStorefront()).toLowerCase();
+      const resolved = await resolveAppleUrl({
+        appleTrackId: r.apple_track_id || undefined,
+        appleAlbumId: r.apple_album_id || undefined,
+        title: r.title,
+        artist: r.artist_name,
+        storefront,
+        itemType: r.item_type,
+      });
+      if (resolved?.url) {
+        // Derive confidence from simple heuristic: presence of trackId & albumId & artistName
+        let confidence = 0.6;
+        if (resolved.trackId && resolved.albumId) confidence += 0.15;
+        if (resolved.artistName && r.artist_name && resolved.artistName.toLowerCase() === r.artist_name.toLowerCase()) confidence += 0.15;
+        const patch: any = {
+          apple_url: resolved.url,
+          apple_track_id: resolved.trackId || r.apple_track_id || null,
+          apple_album_id: resolved.albumId || r.apple_album_id || null,
+          apple_storefront: resolved.storefront || storefront,
+          apple_confidence: confidence,
+        };
+        const { error: upErr } = await supabase.from('listen_list').update(patch).eq('id', r.id);
+        if (!upErr) updated++;
+      }
+    } catch {}
+  }
+  return { processed: candidates.length, updated };
+}
+
 export async function fetchRatedHistory(limit = 50, offset = 0) {
   const { data: auth } = await supabase.auth.getUser();
   const user = auth?.user;
@@ -879,4 +1270,120 @@ export async function fetchRatedHistory(limit = 50, offset = 0) {
 
   if (error) return { ok: false, message: 'Fetch failed', error };
   return { ok: true, rows: data };
+}
+
+export async function backfillArtworkMissing(batchSize = 25, concurrency = 4): Promise<{ checked: number; updated: number; errors: number }> {
+  const { data: auth } = await supabase.auth.getUser();
+  const user = auth?.user;
+  if (!user) return { checked: 0, updated: 0, errors: 0 };
+  let updated = 0;
+  let errors = 0;
+  const { data, error } = await supabase
+    .from('listen_list')
+    .select('id, item_type, provider, provider_id, spotify_id, apple_id, apple_track_id, apple_album_id, title, artist_name, artwork_url')
+    .eq('user_id', user.id)
+    .is('artwork_url', null)
+    .limit(batchSize);
+  if (error || !data) return { checked: 0, updated, errors: errors + 1 };
+  const rows = data;
+
+  const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
+  const fetchSpotifyArt = async (id: string, itemType: string) => {
+    let attempt = 0;
+    while (attempt < 3) {
+      try {
+        const res = await spotifyLookup(id, itemType === 'album' ? 'album' : 'track');
+        const first = Array.isArray(res) ? res[0] : null;
+        return (first as any)?.imageUrl ?? null;
+      } catch (e: any) {
+        attempt += 1;
+        if (attempt >= 3) throw e;
+        await sleep(200 * attempt);
+      }
+    }
+    return null;
+  };
+
+  const fetchAppleArt = async (id: string) => {
+    let attempt = 0;
+    while (attempt < 3) {
+      try {
+        const resp = await fetch(`https://itunes.apple.com/lookup?id=${encodeURIComponent(String(id))}`);
+        if (resp.ok) {
+          const json: any = await resp.json();
+          const first = Array.isArray(json?.results) ? json.results[0] : null;
+          const artApple = first?.artworkUrl100 || first?.artworkUrl || null;
+          if (artApple) return String(artApple).replace('100x100bb', '512x512bb');
+        }
+      } catch {
+        // ignore; retry
+      }
+      attempt += 1;
+      await sleep(200 * attempt);
+    }
+    return null;
+  };
+
+  let idx = 0;
+  const worker = async () => {
+    while (true) {
+      const row = rows[idx++];
+      if (!row) break;
+      const provider = (row as any).provider as string | null;
+      let artwork: string | null = null;
+      let reason = '';
+      const sid = (row as any).spotify_id || (provider === 'spotify' ? (row as any).provider_id : null) || null;
+      if (sid) {
+        try {
+          artwork = await fetchSpotifyArt(sid, (row as any).item_type === 'album' ? 'album' : 'track');
+        } catch (e: any) {
+          errors += 1;
+          reason = e?.message || 'spotify lookup failed';
+        }
+      }
+      if (!artwork) {
+        const aid = (row as any).apple_track_id || (row as any).apple_album_id || (row as any).apple_id || (provider === 'apple' ? (row as any).provider_id : null) || null;
+        if (aid) {
+          const artApple = await fetchAppleArt(String(aid));
+          if (artApple) artwork = artApple; else reason = 'apple returned no artwork';
+        }
+      }
+      if (!sid && !(row as any).apple_id && !(row as any).apple_track_id && !(row as any).apple_album_id && !reason) {
+        reason = 'missing provider ids';
+      }
+
+      if (artwork) {
+        const { error: updErr } = await supabase
+          .from('listen_list')
+          .update({ artwork_url: artwork })
+          .eq('id', row.id)
+          .eq('user_id', user.id);
+        if (!updErr) {
+          updated += 1;
+          // eslint-disable-next-line no-console
+          console.log('[listen] backfill', { id: row.id, provider, provider_id: (row as any).provider_id, artwork_url: artwork });
+        } else {
+          errors += 1;
+          // eslint-disable-next-line no-console
+          console.log('[listen] backfill:update-error', updErr);
+        }
+      } else {
+        errors += 1;
+        // eslint-disable-next-line no-console
+        console.log('[listen] backfill: no artwork found', {
+          id: row.id,
+          provider,
+          provider_id: (row as any).provider_id,
+          spotify_id: (row as any).spotify_id,
+          apple_id: (row as any).apple_id,
+          apple_track_id: (row as any).apple_track_id,
+          apple_album_id: (row as any).apple_album_id,
+          reason,
+        });
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.max(1, concurrency) }).map(() => worker()));
+  return { checked: rows.length, updated, errors };
 }

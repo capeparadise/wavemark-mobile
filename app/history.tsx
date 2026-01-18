@@ -3,14 +3,20 @@
    PURPOSE: Show all listened items (done_at != null), newest first.
    ======================================================================== */
 import React, { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, FlatList, RefreshControl, Text, View } from 'react-native';
+import { ActivityIndicator, FlatList, RefreshControl, Text, View, Pressable } from 'react-native';
 import type { ListenRow } from '../lib/listen';
 import { fetchHistory } from '../lib/listen';
+import StatusMenu from '../components/StatusMenu';
+import Screen from '../components/Screen';
+import { useTheme } from '../theme/useTheme';
+import GlassCard from '../components/GlassCard';
 
 export default function HistoryTab() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [rows, setRows] = useState<ListenRow[]>([]);
+  const [menuRow, setMenuRow] = useState<ListenRow | null>(null);
+  const { colors } = useTheme();
 
   const load = async () => {
     setLoading(true);
@@ -36,46 +42,77 @@ export default function HistoryTab() {
   }, [rows]);
 
   return (
-    <View style={{ flex: 1, backgroundColor: '#fff' }}>
+    <Screen edges={['left', 'right']}>
       <View style={{
         paddingVertical: 12,
         borderBottomWidth: 1,
-        borderBottomColor: '#eee',
+        borderBottomColor: colors.border.subtle,
       }}>
-        <Text style={{ fontSize: 22, fontWeight: '700' }}>History</Text>
-        <Text style={{ marginTop: 6, color: '#666' }}>
+        <Text style={{ fontSize: 22, fontWeight: '700', color: colors.text.secondary }}>History</Text>
+        <Text style={{ marginTop: 6, color: colors.text.muted }}>
           Everything you’ve marked as listened, most recent first.
         </Text>
       </View>
 
       {loading ? (
-        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-          <ActivityIndicator />
-        </View>
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}><ActivityIndicator color={colors.text.muted} /></View>
       ) : (
         <FlatList
           data={visible}
           keyExtractor={(r) => r.id}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.text.muted} />}
           ListEmptyComponent={
             <View style={{ paddingVertical: 20 }}>
-              <Text style={{ fontSize: 16, color: '#666' }}>No listened items yet.</Text>
+              <Text style={{ fontSize: 16, color: colors.text.muted }}>No listened items yet.</Text>
             </View>
           }
           renderItem={({ item }) => (
-            <View style={{ paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#eee', gap: 6 }}>
-              <Text style={{ fontWeight: '600' }} numberOfLines={2}>{item.title}</Text>
-              <Text style={{ color: '#666' }} numberOfLines={1}>{item.artist_name}</Text>
+            <GlassCard asChild style={{ marginVertical: 4, padding: 0 }}>
+              <View style={{ padding: 12, gap: 6 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontWeight: '600', color: colors.text.secondary }} numberOfLines={2}>{item.title}</Text>
+                    <Text style={{ color: colors.text.muted }} numberOfLines={1}>{item.artist_name}</Text>
+                  </View>
+                  <Pressable onPress={() => setMenuRow(item)} hitSlop={8} style={{ paddingHorizontal: 6, paddingVertical: 6 }}>
+                    <Text style={{ fontSize: 18, color: colors.text.muted }}>⋯</Text>
+                  </Pressable>
+                </View>
 
-              <View style={{ flexDirection: 'row', gap: 12, marginTop: 8, alignItems: 'center' }}>
-                <Text style={{ opacity: 0.7 }}>
-                  {item.rating ? `★ ${item.rating}` : 'Not rated'}
-                </Text>
+                <View style={{ flexDirection: 'row', gap: 12, marginTop: 4, alignItems: 'center' }}>
+                  <Text style={{ opacity: 0.8, color: colors.text.muted }}>
+                    {item.rating ? `★ ${item.rating}` : 'Not rated'}
+                  </Text>
+                </View>
               </View>
-            </View>
+            </GlassCard>
           )}
         />
       )}
-    </View>
+      <StatusMenu
+        row={menuRow}
+        visible={!!menuRow}
+        onClose={() => setMenuRow(null)}
+        onChanged={(update) => {
+          if (!update) return load();
+          if (update.type === 'mark') {
+            if (!update.done) {
+              // Move back to Listen: remove from history list
+              setRows(prev => prev.filter(r => r.id !== update.row.id));
+              return;
+            }
+          }
+          if (update.type === 'remove') {
+            setRows(prev => prev.filter(r => r.id !== update.row.id));
+            return;
+          }
+          if (update.type === 'rate') {
+            setRows(prev => prev.map(r => r.id === update.row.id ? { ...r, rating: update.row.rating } : r));
+            return;
+          }
+          load();
+        }}
+      />
+    </Screen>
   );
 }

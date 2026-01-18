@@ -2,8 +2,11 @@ import React, { useEffect, useState } from 'react';
 import { Alert, Pressable, Text } from 'react-native';
 import { followArtist, isFollowing, unfollowArtist } from '../lib/follow';
 import { H } from './haptics';
+import { ui } from '../constants/ui';
+import { useTheme } from '../theme/useTheme';
 
 export default function FollowButton({ artistId, artistName, spotifyUrl }: { artistId: string; artistName: string; spotifyUrl?: string | null }) {
+  const { colors } = useTheme();
   const [following, setFollowing] = useState<boolean>(false);
   const [busy, setBusy] = useState(false);
 
@@ -25,11 +28,11 @@ export default function FollowButton({ artistId, artistName, spotifyUrl }: { art
   return (
     <Pressable onPress={onToggle}
       style={{
-        borderWidth: 1, borderColor: following ? '#111827' : '#e5e7eb',
-        backgroundColor: following ? '#111827' : '#fff',
-        paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999
+        borderWidth: 1, borderColor: following ? colors.accent.primary : colors.border.subtle,
+        backgroundColor: following ? colors.accent.primary : colors.bg.primary,
+        paddingHorizontal: 12, paddingVertical: 8, borderRadius: ui.radius.lg
       }}>
-      <Text style={{ color: following ? '#fff' : '#111827', fontWeight: '700' }}>
+      <Text style={{ color: following ? colors.text.inverted : colors.text.secondary, fontWeight: '700' }}>
         {following ? 'Following' : 'Follow'}
       </Text>
     </Pressable>

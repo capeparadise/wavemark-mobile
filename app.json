@@ -35,7 +35,10 @@
       "typedRoutes": true
     },
     "plugins": [
-      "expo-localization"
+      "expo-localization",
+      "expo-font",
+      "expo-router",
+      "expo-web-browser"
     ]
   }
 }

@@ -6,6 +6,7 @@ export type SimpleAlbum = {
   id: string;
   title: string;
   artist: string;
+  artistId?: string | null;
   releaseDate?: string | null;
   spotifyUrl?: string | null;
   imageUrl?: string | null;
@@ -51,6 +52,7 @@ export async function getNewReleases(days = 21, marketIn?: string): Promise<Simp
             id: a.id,
             title: a.name,
             artist: a.artists?.[0]?.name ?? '',
+            artistId: a.artists?.[0]?.id ?? null,
             releaseDate: a.release_date ?? null,
             spotifyUrl: a.external_urls?.spotify ?? null,
             imageUrl: a.images?.[0]?.url ?? null,
@@ -156,6 +158,7 @@ export async function getNewReleasesBrowse(days = 28, marketIn?: string): Promis
           id: a.id,
           title: a.name,
           artist: a.artists?.[0]?.name ?? '',
+          artistId: a.artists?.[0]?.id ?? null,
           releaseDate: a.release_date ?? null,
           spotifyUrl: a.external_urls?.spotify ?? null,
           imageUrl: a.images?.[0]?.url ?? null,
@@ -189,6 +192,7 @@ export async function getNewReleasesWide(days = 28, target = 250, marketIn?: str
           id: a.id,
           title: a.name,
           artist: a.artists?.[0]?.name ?? '',
+          artistId: a.artists?.[0]?.id ?? null,
           releaseDate: a.release_date ?? null,
           spotifyUrl: a.external_urls?.spotify ?? null,
           imageUrl: a.images?.[0]?.url ?? null,

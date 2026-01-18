@@ -55,6 +55,51 @@ function normalizeArt(url?: string | null): string {
   return url.replace(/\/\d+x\d+bb\.(jpg|png)$/, "/100x100bb.$1");
 }
 
+// Slugify names the way Apple Music does (approximation).
+// Keep alphanumerics, convert spaces to dashes, strip most punctuation.
+// Lowercase. Collapse duplicate dashes. Trim leading/trailing dashes.
+export function slugifyAppleName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/['"’]/g, '') // remove quotes
+    .replace(/&/g, 'and')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
+/** Build canonical album URL: https://music.apple.com/{country}/album/{slug}/{collectionId} */
+export function buildAlbumUrl(
+  collectionId: number | string,
+  collectionName: string,
+  country: string = 'us'
+): string {
+  const slug = slugifyAppleName(collectionName || 'album');
+  return `https://music.apple.com/${country}/album/${slug}/${collectionId}`;
+}
+
+/** Build canonical track URL: https://music.apple.com/{country}/song/{slug}/{trackId} */
+export function buildTrackUrl(
+  trackId: number | string,
+  trackName: string,
+  country: string = 'us'
+): string {
+  const slug = slugifyAppleName(trackName || 'song');
+  return `https://music.apple.com/${country}/song/${slug}/${trackId}`;
+}
+
+/** Build track-in-album URL variant: https://music.apple.com/{country}/album/{albumSlug}/{collectionId}?i={trackId} */
+export function buildTrackInAlbumUrl(
+  trackId: number | string,
+  trackName: string,
+  collectionId: number | string,
+  collectionName: string,
+  country: string = 'us'
+): string {
+  const albumSlug = slugifyAppleName(collectionName || 'album');
+  return `https://music.apple.com/${country}/album/${albumSlug}/${collectionId}?i=${trackId}`;
+}
+
 /**
  * Search artists by name.
  */
@@ -123,6 +168,40 @@ export async function fetchTopTracks(
       artworkUrl: normalizeArt(r.artworkUrl100),
       previewUrl: r.previewUrl ?? null,
     }));
+}
+
+/** Lookup a single track by trackId */
+export async function fetchTrackById(trackId: number): Promise<AppleTrack | null> {
+  const url = `${ITUNES}/lookup?id=${trackId}&entity=song&limit=1`;
+  const data = await fetchJSON<{ results: any[] }>(url);
+  const r = (data.results ?? []).find((x) => x.wrapperType === 'track');
+  if (!r) return null;
+  return {
+    trackId: r.trackId,
+    trackName: r.trackName,
+    artistName: r.artistName,
+    artistId: r.artistId,
+    collectionName: r.collectionName ?? null,
+    releaseDate: r.releaseDate,
+    artworkUrl: normalizeArt(r.artworkUrl100),
+    previewUrl: r.previewUrl ?? null,
+  };
+}
+
+/** Lookup a single collection (album) by collectionId */
+export async function fetchCollectionById(collectionId: number): Promise<AppleAlbum | null> {
+  const url = `${ITUNES}/lookup?id=${collectionId}&entity=album&limit=1`;
+  const data = await fetchJSON<{ results: any[] }>(url);
+  const r = (data.results ?? []).find((x) => x.wrapperType === 'collection');
+  if (!r) return null;
+  return {
+    collectionId: r.collectionId,
+    collectionName: r.collectionName,
+    artistName: r.artistName,
+    artistId: r.artistId,
+    releaseDate: r.releaseDate,
+    artworkUrl: normalizeArt(r.artworkUrl100),
+  };
 }
 
 // Compatibility helpers expected by app/artist code

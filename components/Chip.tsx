@@ -4,6 +4,8 @@
    ======================================================================== */
 import React from 'react';
 import { Pressable, Text, View, ViewProps } from 'react-native';
+import { ui } from '../constants/ui';
+import { useTheme } from '../theme/useTheme';
 
 type Props = ViewProps & {
   selected?: boolean;
@@ -12,6 +14,10 @@ type Props = ViewProps & {
 };
 
 export default function Chip({ selected, label, onPress, style, ...rest }: Props) {
+  const { colors } = useTheme();
+  const baseBg = 'rgba(255,255,255,0.05)';
+  const selectedGlow = colors.accent.primary + '26';
+
   return (
     <Pressable onPress={onPress}>
       <View
@@ -19,16 +25,24 @@ export default function Chip({ selected, label, onPress, style, ...rest }: Props
           {
             paddingHorizontal: 12,
             paddingVertical: 8,
-            borderRadius: 14,
-            borderWidth: 1,
-            borderColor: selected ? '#1f2937' : '#e5e7eb',
-            backgroundColor: selected ? '#111827' : '#ffffff',
+            borderRadius: ui.radius.lg,
+            borderWidth: selected ? 1 : 0,
+            borderColor: selected ? colors.accent.primary + '44' : 'transparent',
+            backgroundColor: selected ? selectedGlow : baseBg,
+            shadowColor: colors.accent.primary,
+            shadowOpacity: selected ? 0.16 : 0.04,
+            shadowRadius: selected ? 14 : 6,
+            shadowOffset: { width: 0, height: 3 },
+            position: 'relative',
           },
           style,
         ]}
         {...rest}
       >
-        <Text style={{ color: selected ? '#ffffff' : '#111827', fontWeight: '700', fontSize: 12 }}>
+        {selected && (
+          <View style={{ position: 'absolute', left: 10, right: 10, top: 6, height: 2, borderRadius: 2, backgroundColor: colors.accent.primary + '55' }} />
+        )}
+        <Text style={{ color: selected ? colors.text.secondary : colors.text.muted, fontWeight: '700', fontSize: 12 }}>
           {label}
         </Text>
       </View>
