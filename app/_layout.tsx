@@ -1,40 +1,44 @@
 // app/_layout.tsx
-import { Stack } from 'expo-router';
+import { Stack, router, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { ensureDevSignIn } from '../lib/devAuth';
-import { SessionProvider } from '../lib/session';
+import { SessionProvider, useSession } from '../lib/session';
 import { themeByName } from '../theme/themes';
 import { useTheme } from '../theme/useTheme';
 
-export default function RootLayout() {
-  const { themeName, colors } = useTheme();
+function AuthSync() {
+  const { session, loading } = useSession();
+  const segments = useSegments();
 
   useEffect(() => {
-    if (__DEV__) {
-      ensureDevSignIn();
-    }
-  }, []);
+    if (loading) return;
+    const root = segments[0];
+    if (root === 'session') return;
+    if (session && root === '(auth)') router.replace('/session');
+    if (!session && root === '(tabs)') router.replace('/session');
+  }, [loading, segments, session]);
+
+  return null;
+}
+
+export default function RootLayout() {
+  const { themeName, colors } = useTheme();
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
         <SessionProvider>
+          <AuthSync />
           <StatusBar
             style={themeByName[themeName]?.isDark ? 'light' : 'dark'}
             backgroundColor={colors.bg.primary}
           />
-          <Stack screenOptions={{ headerShown: false }}>
-            {/* Tabs group */}
+          <Stack initialRouteName="session" screenOptions={{ headerShown: false }}>
+            <Stack.Screen name="session" options={{ headerShown: false }} />
+            <Stack.Screen name="(auth)" options={{ headerShown: false }} />
             <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-            {/* Login lives outside tabs */}
-            <Stack.Screen name="login" options={{ headerShown: false }} />
-            {/* New releases wide and genres screens */}
-            <Stack.Screen name="new-releases-all" options={{ headerShown: false }} />
-            <Stack.Screen name="new-releases-all-genres" options={{ headerShown: false }} />
-            <Stack.Screen name="new-releases/[genre]" options={{ headerShown: false }} />
           </Stack>
         </SessionProvider>
       </SafeAreaProvider>
