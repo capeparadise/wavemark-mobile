@@ -1,4 +1,5 @@
 import Constants from 'expo-constants';
+import * as AuthSession from 'expo-auth-session';
 import * as Linking from 'expo-linking';
 import * as WebBrowser from 'expo-web-browser';
 import { router } from 'expo-router';
@@ -10,18 +11,6 @@ import type { ThemeColors } from '../../theme/themes';
 import { useTheme } from '../../theme/useTheme';
 
 WebBrowser.maybeCompleteAuthSession();
-
-function getExpoGoProxyRedirectUri(path: string) {
-  const fullName =
-    (Constants.expoConfig as any)?.originalFullName ||
-    (Constants.expoConfig as any)?.owner && (Constants.expoConfig as any)?.slug
-      ? `@${(Constants.expoConfig as any).owner}/${(Constants.expoConfig as any).slug}`
-      : null;
-  if (!fullName) return null;
-  const normalized = String(fullName).startsWith('@') ? String(fullName) : `@${fullName}`;
-  const cleanPath = path.replace(/^\//, '');
-  return `https://auth.expo.io/${normalized}/--/${cleanPath}`;
-}
 
 const Button = ({
   title, onPress, variant = 'primary', disabled = false,
@@ -55,10 +44,10 @@ export default function WelcomeScreen() {
   const continueWithGoogle = async () => {
     try {
       setBusy(true);
-      const redirectTo = Constants.appOwnership === 'expo'
-        ? (getExpoGoProxyRedirectUri('session') ?? Linking.createURL('session'))
-        : Linking.createURL('session');
+      const useProxy = Constants.appOwnership === 'expo';
+      const redirectTo = AuthSession.makeRedirectUri({ useProxy, path: 'session' });
       console.log('Google OAuth redirectTo:', redirectTo);
+
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {

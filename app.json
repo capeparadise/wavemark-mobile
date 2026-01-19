@@ -2,6 +2,7 @@
   "expo": {
     "name": "Wavemark",
     "slug": "wavemark-mobile",
+    "owner": "capeparadise",
     "scheme": "wavemark",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
