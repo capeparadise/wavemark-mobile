@@ -16,6 +16,7 @@ export default function ProfileSettingsPage() {
   const { colors, themeName, setThemeName } = useTheme();
   const [market, setMarket] = useState<string>('');
   const [saved, setSaved] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
   const [repairing, setRepairing] = useState(false);
   const [repairDone, setRepairDone] = useState(false);
   const [repairCount, setRepairCount] = useState<number | null>(null);
@@ -67,6 +68,26 @@ export default function ProfileSettingsPage() {
   };
 
   const APPLE_ENABLED = process.env.EXPO_PUBLIC_ENABLE_APPLE === 'true';
+
+  const onSignOut = () => {
+    if (signingOut) return;
+    Alert.alert('Sign out?', 'You can sign back in anytime.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Sign out',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            setSigningOut(true);
+            const { error } = await supabase.auth.signOut();
+            if (error) Alert.alert('Sign out failed', error.message);
+          } finally {
+            setSigningOut(false);
+          }
+        },
+      },
+    ]);
+  };
 
   return (
     <Screen edges={['left', 'right']}>
@@ -298,10 +319,10 @@ export default function ProfileSettingsPage() {
         )}
       </View>
 
-      {APPLE_ENABLED ? (
-        <View style={{ marginBottom: 24 }}>
-          <Text style={{ fontWeight: '700', marginBottom: 6, color: colors.text.secondary }}>Apple Music Deep Links</Text>
-          <Pressable
+	      {APPLE_ENABLED ? (
+	        <View style={{ marginBottom: 24 }}>
+	          <Text style={{ fontWeight: '700', marginBottom: 6, color: colors.text.secondary }}>Apple Music Deep Links</Text>
+	          <Pressable
             onPress={async () => {
               if (repairing) return;
               setRepairDone(false);
@@ -378,10 +399,33 @@ export default function ProfileSettingsPage() {
             <Text style={{ marginTop: 8, color: colors.accent.success }}>
               Processed {refreshResult.processed}, updated {refreshResult.updated}
             </Text>
-          )}
+	          )}
+	        </View>
+	      ) : null}
+
+        <View style={{ marginTop: 8 }}>
+          <Text style={{ fontWeight: '700', marginBottom: 6, color: colors.text.secondary }}>Account</Text>
+          <Pressable
+            onPress={onSignOut}
+            disabled={signingOut}
+            style={{
+              padding: 12,
+              borderRadius: 14,
+              backgroundColor: colors.bg.secondary,
+              borderWidth: 1,
+              borderColor: colors.border.subtle,
+              opacity: signingOut ? 0.6 : 1,
+            }}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+              <Text style={{ fontWeight: '700', color: '#ff3b30' }}>
+                Sign out
+              </Text>
+              {signingOut ? <ActivityIndicator /> : null}
+            </View>
+          </Pressable>
         </View>
-      ) : null}
-      </ScrollView>
-    </Screen>
-  );
-}
+	      </ScrollView>
+	    </Screen>
+	  );
+	}

@@ -62,30 +62,11 @@ export default function TabsLayout() {
           headerShown: true,
           headerStyle: { backgroundColor: colors.bg.primary },
           headerTitleStyle: { fontWeight: '800', color: colors.text.secondary },
-          headerRight: () => (
-            <Ionicons
-              name="settings-outline"
-              size={22}
-              color={colors.text.secondary}
-              // Expo Router: use a link-like behavior to navigate to /settings
-              onPress={() => {
-                try {
-                  // dynamic import to avoid top-level dependency
-                  // eslint-disable-next-line @typescript-eslint/no-var-requires
-                  const { router } = require('expo-router');
-                  router.push('/profile/settings');
-                } catch {}
-              }}
-              style={{ marginRight: 12 }}
-              accessibilityLabel="Settings"
-            />
-          ),
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="person-circle-outline" color={color} size={size} />
           ),
         }}
       />
-      {/** Settings removed from tab bar; accessible from Profile header */}
 
       {/*
         Safety: if any of these files still exist in (tabs), force-hide them.
@@ -95,10 +76,7 @@ export default function TabsLayout() {
       <Tabs.Screen name="history" options={{ href: null }} />
       <Tabs.Screen name="rated" options={{ href: null }} />
       <Tabs.Screen name="search" options={{ href: null }} />
-      {/* Explicitly hide any accidental settings tab route */}
-      <Tabs.Screen name="settings" options={{ href: null }} />
       <Tabs.Screen name="upcoming" options={{ href: null }} />
-      <Tabs.Screen name="calendar" options={{ href: null }} />
       <Tabs.Screen name="add-release" options={{ href: null }} />
       <Tabs.Screen name="index" options={{ href: null }} />
     </Tabs>
