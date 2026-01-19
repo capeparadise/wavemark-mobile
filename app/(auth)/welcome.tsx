@@ -12,6 +12,17 @@ import { useTheme } from '../../theme/useTheme';
 
 WebBrowser.maybeCompleteAuthSession();
 
+function getExpoAuthProxyRedirectUrl() {
+  const fullName =
+    (Constants.expoConfig as any)?.originalFullName ||
+    ((Constants.expoConfig as any)?.owner && (Constants.expoConfig as any)?.slug
+      ? `@${(Constants.expoConfig as any).owner}/${(Constants.expoConfig as any).slug}`
+      : null);
+  if (!fullName) return null;
+  const normalized = String(fullName).startsWith('@') ? String(fullName) : `@${fullName}`;
+  return `https://auth.expo.io/${normalized}`;
+}
+
 const Button = ({
   title, onPress, variant = 'primary', disabled = false,
   colors,
@@ -44,8 +55,11 @@ export default function WelcomeScreen() {
   const continueWithGoogle = async () => {
     try {
       setBusy(true);
-      const useProxy = Constants.appOwnership === 'expo';
-      const redirectTo = AuthSession.makeRedirectUri({ useProxy, path: 'session' });
+      const returnUrl = AuthSession.makeRedirectUri({ path: 'session' });
+      const proxyRedirectTo = getExpoAuthProxyRedirectUrl();
+      const redirectTo = Constants.appOwnership === 'expo' && proxyRedirectTo
+        ? proxyRedirectTo
+        : returnUrl;
       console.log('Google OAuth redirectTo:', redirectTo);
 
       const { data, error } = await supabase.auth.signInWithOAuth({
@@ -58,7 +72,11 @@ export default function WelcomeScreen() {
       if (error) throw error;
       if (!data?.url) throw new Error('Missing OAuth URL');
 
-      const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
+      const authUrl = Constants.appOwnership === 'expo' && proxyRedirectTo
+        ? `${proxyRedirectTo}/start?${new URLSearchParams({ authUrl: data.url, returnUrl }).toString()}`
+        : data.url;
+
+      const result = await WebBrowser.openAuthSessionAsync(authUrl, returnUrl);
       if (result.type !== 'success' || !result.url) {
         setBusy(false);
         return;
