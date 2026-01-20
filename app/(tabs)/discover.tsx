@@ -2072,20 +2072,6 @@ export default function DiscoverTab() {
               size={20}
               color={colors.text.secondary}
             />
-            <View
-              style={{
-                position: 'absolute',
-                right: -1,
-                bottom: -1,
-                width: 7,
-                height: 7,
-                borderRadius: 99,
-                backgroundColor: viewMode === 'mixed' ? colors.accent.primary : colors.text.muted,
-                borderWidth: 1,
-                borderColor: colors.bg.muted,
-                opacity: 0.9,
-              }}
-            />
           </View>
         </Pressable>
         <Pressable onPress={() => setFilterVisible(true)} hitSlop={8} style={{ padding: 10, borderRadius: 10, backgroundColor: colors.bg.muted }}>
