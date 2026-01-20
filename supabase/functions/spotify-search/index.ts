@@ -371,22 +371,23 @@ serve(async (req) => {
           for (const art of aj.artists ?? []) artistMap.set(art.id, art);
         }
 
-  const buckets: Record<string, any[]> = { rap: [], rnb: [], pop: [], rock: [], latin: [], edm: [], country: [], kpop: [], afrobeats: [], jazz: [], dancehall: [], reggae: [], indie: [], metal: [], punk: [], folk: [], blues: [], classical: [], soundtrack: [], ambient: [], jpop: [], desi: [] };
+        const buckets: Record<string, any[]> = { rap: [], rnb: [], pop: [], rock: [], latin: [], edm: [], country: [], kpop: [], afrobeats: [], jazz: [], dancehall: [], reggae: [], indie: [], metal: [], punk: [], folk: [], blues: [], classical: [], soundtrack: [], ambient: [], jpop: [], desi: [] };
         const bucketFor = (genres: string[]): string | null => {
           const g = (genres ?? []).map((s) => s.toLowerCase());
-          if (g.some((s) => s.includes("hip hop") || s.includes("hip-hop") || s.includes("rap") || s.includes("trap") || s.includes("drill") || s.includes("grime") || s.includes("pop rap"))) return "rap";
+          // NOTE: order matters — keep more specific buckets ahead of broad "pop" matches.
+          if (g.some((s) => s.includes("k-pop") || s.includes("kpop") || s.includes("korean pop"))) return "kpop";
+          if (g.some((s) => s.includes("j-pop") || s.includes("jpop") || s.includes("japanese pop"))) return "jpop";
+          if (g.some((s) => s.includes("hip hop") || s.includes("hip-hop") || s.includes("rap") || s.includes("trap") || s.includes("drill") || s.includes("uk drill") || s.includes("uk rap") || s.includes("grime") || s.includes("pop rap"))) return "rap";
           if (g.some((s) => s.includes("r&b") || s.includes("rnb") || s.includes("soul") || s.includes("neo-soul") || s.includes("contemporary r&b"))) return "rnb";
-          if (g.some((s) => s.includes("pop") || s.includes("dance pop") || s.includes("electropop") || s.includes("hyperpop"))) return "pop";
           if (g.some((s) => s.includes("latin") || s.includes("reggaeton") || s.includes("regional mexican") || s.includes("corrido") || s.includes("corridos") || s.includes("urbano latino") || s.includes("bachata") || s.includes("salsa"))) return "latin";
           if (g.some((s) => s.includes("edm") || s.includes("electronic") || s.includes("house") || s.includes("techno") || s.includes("trance") || s.includes("drum and bass") || s.includes("dnb") || s.includes("dubstep") || s.includes("downtempo") || s.includes("synthwave") || s.includes("electronica"))) return "edm";
-          if (g.some((s) => s.includes("rock") || s.includes("alt rock") || s.includes("alternative rock") || s.includes("classic rock") || s.includes("metal") || s.includes("punk") || s.includes("emo") || s.includes("hardcore") || s.includes("shoegaze"))) return "rock";
+          if (g.some((s) => s.includes("indie") || s.includes("indie pop") || s.includes("indie rock") || s.includes("bedroom pop") || s.includes("dream pop") || s.includes("indie folk"))) return "indie";
+          if (g.some((s) => s.includes("rock") || s.includes("alt rock") || s.includes("alternative rock") || s.includes("classic rock") || s.includes("emo") || s.includes("hardcore") || s.includes("shoegaze") || s.includes("pop punk") || s.includes("punk rock"))) return "rock";
           if (g.some((s) => s.includes("country") || s.includes("alt-country") || s.includes("country pop") || s.includes("americana"))) return "country";
-          if (g.some((s) => s.includes("k-pop") || s.includes("kpop") || s.includes("korean pop"))) return "kpop";
           if (g.some((s) => s.includes("afrobeats") || s.includes("afrobeat") || s.includes("afro-fusion") || s.includes("afrofusion") || s.includes("amapiano"))) return "afrobeats";
           if (g.some((s) => s.includes("jazz") || s.includes("bebop") || s.includes("latin jazz") || s.includes("smooth jazz"))) return "jazz";
           if (g.some((s) => s.includes("dancehall"))) return "dancehall";
           if (g.some((s) => s.includes("reggae") || s.includes("reggae fusion"))) return "reggae";
-          if (g.some((s) => s.includes("indie") || s.includes("indie pop") || s.includes("indie rock") || s.includes("bedroom pop") || s.includes("indie folk"))) return "indie";
           if (g.some((s) => s.includes("metal") || s.includes("death metal") || s.includes("black metal") || s.includes("metalcore"))) return "metal";
           if (g.some((s) => s.includes("punk") || s.includes("pop punk") || s.includes("hardcore punk"))) return "punk";
           if (g.some((s) => s.includes("folk") || s.includes("singer-songwriter"))) return "folk";
@@ -394,8 +395,8 @@ serve(async (req) => {
           if (g.some((s) => s.includes("classical") || s.includes("orchestra") || s.includes("orchestral"))) return "classical";
           if (g.some((s) => s.includes("soundtrack") || s.includes("score") || s.includes("ost"))) return "soundtrack";
           if (g.some((s) => s.includes("ambient") || s.includes("chillout") || s.includes("lo-fi") || s.includes("lofi"))) return "ambient";
-          if (g.some((s) => s.includes("j-pop") || s.includes("jpop") || s.includes("japanese pop"))) return "jpop";
           if (g.some((s) => s.includes("desi") || s.includes("bollywood") || s.includes("punjabi") || s.includes("hindi pop") || s.includes("indian pop"))) return "desi";
+          if (g.some((s) => s.includes("pop") || s.includes("dance pop") || s.includes("electropop") || s.includes("hyperpop"))) return "pop";
           return null;
         };
 
@@ -534,19 +535,20 @@ serve(async (req) => {
           const buckets2: Record<string, any[]> = { rap: [], rnb: [], pop: [], rock: [], latin: [], edm: [], country: [], kpop: [], afrobeats: [], jazz: [], dancehall: [], reggae: [], indie: [], metal: [], punk: [], folk: [], blues: [], classical: [], soundtrack: [], ambient: [], jpop: [], desi: [] };
           const bucketFor2 = (genres: string[]): string | null => {
             const g = (genres ?? []).map((s) => s.toLowerCase());
-            if (g.some((s) => s.includes('hip hop') || s.includes('hip-hop') || s.includes('rap') || s.includes('trap') || s.includes('drill') || s.includes('grime') || s.includes('pop rap'))) return 'rap';
+            // NOTE: order matters — keep more specific buckets ahead of broad "pop" matches.
+            if (g.some((s) => s.includes('k-pop') || s.includes('kpop') || s.includes('korean pop'))) return 'kpop';
+            if (g.some((s) => s.includes('j-pop') || s.includes('jpop') || s.includes('japanese pop'))) return 'jpop';
+            if (g.some((s) => s.includes('hip hop') || s.includes('hip-hop') || s.includes('rap') || s.includes('trap') || s.includes('drill') || s.includes('uk drill') || s.includes('uk rap') || s.includes('grime') || s.includes('pop rap'))) return 'rap';
             if (g.some((s) => s.includes('r&b') || s.includes('rnb') || s.includes('soul') || s.includes('neo-soul') || s.includes('contemporary r&b'))) return 'rnb';
-            if (g.some((s) => s.includes('pop') || s.includes('dance pop') || s.includes('electropop') || s.includes('hyperpop'))) return 'pop';
             if (g.some((s) => s.includes('latin') || s.includes('reggaeton') || s.includes('regional mexican') || s.includes('corrido') || s.includes('corridos') || s.includes('urbano latino') || s.includes('bachata') || s.includes('salsa'))) return 'latin';
             if (g.some((s) => s.includes('edm') || s.includes('electronic') || s.includes('house') || s.includes('techno') || s.includes('trance') || s.includes('drum and bass') || s.includes('dnb') || s.includes('dubstep') || s.includes('downtempo') || s.includes('synthwave') || s.includes('electronica'))) return 'edm';
-            if (g.some((s) => s.includes('rock') || s.includes('alt rock') || s.includes('alternative rock') || s.includes('classic rock') || s.includes('metal') || s.includes('punk') || s.includes('emo') || s.includes('hardcore') || s.includes('shoegaze'))) return 'rock';
+            if (g.some((s) => s.includes('indie') || s.includes('indie pop') || s.includes('indie rock') || s.includes('bedroom pop') || s.includes('dream pop') || s.includes('indie folk'))) return 'indie';
+            if (g.some((s) => s.includes('rock') || s.includes('alt rock') || s.includes('alternative rock') || s.includes('classic rock') || s.includes('emo') || s.includes('hardcore') || s.includes('shoegaze') || s.includes('pop punk') || s.includes('punk rock'))) return 'rock';
             if (g.some((s) => s.includes('country') || s.includes('alt-country') || s.includes('country pop') || s.includes('americana'))) return 'country';
-            if (g.some((s) => s.includes('k-pop') || s.includes('kpop') || s.includes('korean pop'))) return 'kpop';
             if (g.some((s) => s.includes('afrobeats') || s.includes('afrobeat') || s.includes('afro-fusion') || s.includes('afrofusion') || s.includes('amapiano'))) return 'afrobeats';
             if (g.some((s) => s.includes('jazz') || s.includes('bebop') || s.includes('latin jazz') || s.includes('smooth jazz'))) return 'jazz';
             if (g.some((s) => s.includes('dancehall'))) return 'dancehall';
             if (g.some((s) => s.includes('reggae') || s.includes('reggae fusion'))) return 'reggae';
-            if (g.some((s) => s.includes('indie') || s.includes('indie pop') || s.includes('indie rock') || s.includes('bedroom pop') || s.includes('indie folk'))) return 'indie';
             if (g.some((s) => s.includes('metal') || s.includes('death metal') || s.includes('black metal') || s.includes('metalcore'))) return 'metal';
             if (g.some((s) => s.includes('punk') || s.includes('pop punk') || s.includes('hardcore punk'))) return 'punk';
             if (g.some((s) => s.includes('folk') || s.includes('singer-songwriter'))) return 'folk';
@@ -554,8 +556,8 @@ serve(async (req) => {
             if (g.some((s) => s.includes('classical') || s.includes('orchestra') || s.includes('orchestral'))) return 'classical';
             if (g.some((s) => s.includes('soundtrack') || s.includes('score') || s.includes('ost'))) return 'soundtrack';
             if (g.some((s) => s.includes('ambient') || s.includes('chillout') || s.includes('lo-fi') || s.includes('lofi'))) return 'ambient';
-            if (g.some((s) => s.includes('j-pop') || s.includes('jpop') || s.includes('japanese pop'))) return 'jpop';
             if (g.some((s) => s.includes('desi') || s.includes('bollywood') || s.includes('punjabi') || s.includes('hindi pop') || s.includes('indian pop'))) return 'desi';
+            if (g.some((s) => s.includes('pop') || s.includes('dance pop') || s.includes('electropop') || s.includes('hyperpop'))) return 'pop';
             return null;
           };
 
