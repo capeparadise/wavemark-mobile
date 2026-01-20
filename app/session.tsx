@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 import { router } from 'expo-router';
+import { hasSeenFirstLogin } from '../lib/firstLogin';
 import { useSession } from '../lib/session';
 
 export default function SessionGateScreen() {
@@ -8,8 +9,18 @@ export default function SessionGateScreen() {
 
   useEffect(() => {
     if (loading) return;
-    if (session) router.replace('/(tabs)');
-    else router.replace('/(auth)/welcome');
+    let cancelled = false;
+    (async () => {
+      if (!session) {
+        router.replace('/(auth)/welcome');
+        return;
+      }
+      const seen = await hasSeenFirstLogin(session.user.id);
+      if (cancelled) return;
+      if (!seen) router.replace('/(onboarding)/welcome');
+      else router.replace('/(tabs)');
+    })();
+    return () => { cancelled = true; };
   }, [loading, session]);
 
   return (
@@ -18,4 +29,3 @@ export default function SessionGateScreen() {
     </View>
   );
 }
-
