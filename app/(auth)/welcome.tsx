@@ -1,6 +1,5 @@
 import Constants from 'expo-constants';
 import * as AuthSession from 'expo-auth-session';
-import * as Linking from 'expo-linking';
 import * as WebBrowser from 'expo-web-browser';
 import { router } from 'expo-router';
 import { useState } from 'react';
@@ -21,6 +20,37 @@ function getExpoAuthProxyRedirectUrl() {
   if (!fullName) return null;
   const normalized = String(fullName).startsWith('@') ? String(fullName) : `@${fullName}`;
   return `https://auth.expo.io/${normalized}`;
+}
+
+function redactUrl(url: string) {
+  try {
+    const u = new URL(url);
+    const redactParams = (params: URLSearchParams) => {
+      for (const key of ['access_token', 'refresh_token', 'id_token', 'provider_token', 'token']) {
+        if (params.has(key)) params.set(key, 'REDACTED');
+      }
+    };
+    redactParams(u.searchParams);
+    if (u.hash?.startsWith('#')) {
+      const h = new URLSearchParams(u.hash.slice(1));
+      redactParams(h);
+      u.hash = `#${h.toString()}`;
+    }
+    return u.toString();
+  } catch {
+    return url.replace(/(access_token|refresh_token|id_token|provider_token)=([^&#]+)/g, '$1=REDACTED');
+  }
+}
+
+function extractParamsFromUrl(url: string) {
+  const hashIndex = url.indexOf('#');
+  const queryIndex = url.indexOf('?');
+  const query = queryIndex >= 0 ? url.slice(queryIndex + 1, hashIndex >= 0 ? hashIndex : undefined) : '';
+  const hash = hashIndex >= 0 ? url.slice(hashIndex + 1) : '';
+  return {
+    queryParams: new URLSearchParams(query),
+    hashParams: new URLSearchParams(hash),
+  };
 }
 
 const Button = ({
@@ -82,16 +112,32 @@ export default function WelcomeScreen() {
         return;
       }
 
-      const parsed = Linking.parse(result.url);
-      const qp = (parsed.queryParams ?? {}) as Record<string, string | string[] | undefined>;
-      const errorDescription = (qp.error_description ?? qp.error) as string | undefined;
+      console.log('Google OAuth returned URL:', redactUrl(result.url));
+
+      const { queryParams, hashParams } = extractParamsFromUrl(result.url);
+      const errorDescription = queryParams.get('error_description')
+        ?? queryParams.get('error')
+        ?? hashParams.get('error_description')
+        ?? hashParams.get('error');
       if (errorDescription) throw new Error(errorDescription);
 
-      const code = qp.code as string | undefined;
-      if (!code) throw new Error('Missing OAuth code');
+      const code = queryParams.get('code') ?? hashParams.get('code');
+      if (code) {
+        const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
+        if (exchangeError) throw exchangeError;
+        return;
+      }
 
-      const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
-      if (exchangeError) throw exchangeError;
+      const access_token = hashParams.get('access_token') ?? queryParams.get('access_token');
+      const refresh_token = hashParams.get('refresh_token') ?? queryParams.get('refresh_token');
+      if (access_token && refresh_token) {
+        const { error: setSessionError } = await supabase.auth.setSession({ access_token, refresh_token });
+        if (setSessionError) throw setSessionError;
+        return;
+      }
+
+      console.error('Google OAuth missing code/tokens:', redactUrl(result.url));
+      throw new Error('Missing OAuth code');
     } catch (e: any) {
       Alert.alert('Google sign-in failed', e?.message ?? 'Unknown error');
     } finally {
