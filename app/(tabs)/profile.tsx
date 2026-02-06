@@ -7,11 +7,13 @@ import { Ionicons } from '@expo/vector-icons';
 import { Link, router } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, Pressable, ScrollView, Text, View } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
+import Avatar from '../../components/Avatar';
 import Screen from '../../components/Screen';
-import { supabase } from '../../lib/supabase';
 import { computeAchievements } from '../../lib/achievements';
 import { fetchProfileSnapshot, loadCachedProfileSnapshot, type ProfileSnapshot } from '../../lib/stats';
 import { getUiColors, ui, icon } from '../../constants/ui';
+import { countIncomingPendingRequests, ensureMyProfile, uploadMyAvatar } from '../../lib/profileSocial';
 import { useTheme } from '../../theme/useTheme';
 import GlassCard from '../../components/GlassCard';
 
@@ -20,16 +22,17 @@ export default function ProfileTab() {
   const navigation = useNavigation();
   const [loading, setLoading] = useState(true);
   const [stats, setStats] = useState({ total: 0, avgRating: 0, week: 0, month: 0, streak: 0 });
-  const [userEmail, setUserEmail] = useState<string | null>(null);
   const [displayName, setDisplayName] = useState<string>('Listener');
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const [avatarBusy, setAvatarBusy] = useState(false);
   const [achievements, setAchievements] = useState<{ id: string; title: string; unlocked: boolean }[]>([]);
   const [topRated, setTopRated] = useState<ProfileSnapshot['topRated']>([]);
+  const [requestsHasDot, setRequestsHasDot] = useState(false);
 
   const load = useCallback(async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      setUserEmail(user?.email ?? null);
-      const name = (user as any)?.user_metadata?.full_name || (user?.email ? user.email.split('@')[0] : 'Listener');
-      setDisplayName(name || 'Listener');
+      const profile = await ensureMyProfile();
+      setDisplayName(profile?.display_name || 'Listener');
+      setAvatarUrl(profile?.avatar_url ?? null);
 
       const cached = await loadCachedProfileSnapshot();
       if (cached) {
@@ -63,11 +66,18 @@ export default function ProfileTab() {
       setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  const checkFriendAcceptedNotice = useCallback(async () => {
+    const count = await countIncomingPendingRequests();
+    setRequestsHasDot(count > 0);
+  }, []);
+  useFocusEffect(useCallback(() => {
+    load();
+    checkFriendAcceptedNotice().catch(() => {});
+  }, [checkFriendAcceptedNotice, load]));
   useEffect(() => {
-    const unsub = (navigation as any).addListener('tabPress', () => { load(); });
+    const unsub = (navigation as any).addListener('tabPress', () => { load(); checkFriendAcceptedNotice().catch(() => {}); });
     return unsub;
-  }, [navigation, load]);
+  }, [navigation, checkFriendAcceptedNotice, load]);
 
   const LEVELS = useMemo(() => ([
     { name: 'Listener', threshold: 0 },
@@ -94,16 +104,30 @@ export default function ProfileTab() {
     return { current, next, toNext, progress };
   }, [LEVELS, stats.total]);
 
-  const initials = useMemo(() => {
-    const parts = displayName.trim().split(/\s+/).filter(Boolean);
-    if (parts.length === 0) return 'U';
-    if (parts.length === 1) return parts[0].slice(0,2).toUpperCase();
-    return (parts[0][0] + parts[1][0]).toUpperCase();
-  }, [displayName]);
-
   const uiColors = useMemo(() => getUiColors(colors), [colors]);
 
   const goSettings = () => { try { router.push('/profile/settings'); } catch {} };
+  const goFriendRequests = () => { try { router.push('/profile/friend-requests'); } catch {} };
+
+  const changeAvatar = async () => {
+    try {
+      setAvatarBusy(true);
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) return;
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.85,
+      });
+      if (res.canceled || !res.assets?.[0]?.uri) return;
+      const asset = res.assets[0];
+      const up = await uploadMyAvatar({ uri: asset.uri, contentType: (asset as any).mimeType ?? null });
+      if (up.ok && up.url) setAvatarUrl(up.url);
+    } finally {
+      setAvatarBusy(false);
+    }
+  };
 
   const StatCard = ({ label, value, sub }: { label: string; value: string; sub?: string }) => (
     <GlassCard style={{ flex: 1, minWidth: 150, padding: ui.spacing.lg }}>
@@ -113,7 +137,17 @@ export default function ProfileTab() {
     </GlassCard>
   );
 
-  const QuickButton = ({ label, icon, onPress }: { label: string; icon: keyof typeof Ionicons.glyphMap; onPress: () => void }) => (
+  const QuickButton = ({
+    label,
+    icon,
+    onPress,
+    dot,
+  }: {
+    label: string;
+    icon: keyof typeof Ionicons.glyphMap;
+    onPress: () => void;
+    dot?: boolean;
+  }) => (
     <GlassCard
       asChild
       style={{
@@ -126,6 +160,7 @@ export default function ProfileTab() {
       <Pressable
         onPress={onPress}
         style={({ pressed }) => ({
+          position: 'relative',
           flexDirection: 'row',
           alignItems: 'center',
           gap: 12,
@@ -137,6 +172,21 @@ export default function ProfileTab() {
           transform: [{ scale: pressed ? 0.98 : 1 }],
         })}
       >
+        {dot ? (
+          <View
+            style={{
+              position: 'absolute',
+              top: 10,
+              right: 10,
+              width: 10,
+              height: 10,
+              borderRadius: 999,
+              backgroundColor: '#ff3b30',
+              borderWidth: 2,
+              borderColor: colors.bg.secondary,
+            }}
+          />
+        ) : null}
         <Ionicons name={icon} size={22} color={uiColors.text} />
         <Text style={{ fontWeight: '700', color: uiColors.text, fontSize: 12 }} numberOfLines={1}>{label}</Text>
       </Pressable>
@@ -153,12 +203,12 @@ export default function ProfileTab() {
         <GlassCard>
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-              <View style={{ width: 52, height: 52, borderRadius: 26, backgroundColor: colors.bg.muted, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.border.muted }}>
-                <Text style={{ fontWeight: '800', color: colors.text.secondary, fontSize: 18 }}>{initials}</Text>
-              </View>
+              <Pressable onPress={changeAvatar} disabled={avatarBusy} style={({ pressed }) => ({ opacity: avatarBusy ? 0.6 : pressed ? 0.85 : 1 })}>
+                <Avatar uri={avatarUrl} size={52} borderColor={colors.border.muted} backgroundColor={colors.bg.muted} />
+              </Pressable>
               <View>
                 <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text.secondary }}>{displayName}</Text>
-                {userEmail && <Text style={{ color: colors.text.muted, marginTop: 2 }}>{userEmail}</Text>}
+                <Text style={{ color: colors.text.muted, marginTop: 2 }}>{avatarBusy ? 'Updating photo…' : 'Profile'}</Text>
               </View>
             </View>
             <Pressable onPress={goSettings} hitSlop={8} style={{ width: icon.button, height: icon.button, borderRadius: ui.radius.lg, backgroundColor: colors.bg.muted, alignItems: 'center', justifyContent: 'center' }}>
@@ -235,6 +285,12 @@ export default function ProfileTab() {
                 <QuickButton label="To rate" icon="alert-circle-outline" onPress={() => router.push('/profile/pending')} />
                 <QuickButton label="Top rated" icon="trophy-outline" onPress={() => router.push('/profile/top-rated')} />
                 <QuickButton label="Insights" icon="stats-chart-outline" onPress={() => router.push('/profile/insights')} />
+                <QuickButton
+                  label="Social"
+                  icon="person-add-outline"
+                  dot={requestsHasDot}
+                  onPress={goFriendRequests}
+                />
                 <QuickButton label="Share" icon="share-outline" onPress={() => router.push('/profile/share-card')} />
               </View>
             </View>

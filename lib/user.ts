@@ -1,10 +1,11 @@
 // app/lib/user.ts
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import React from 'react';
 import { getDefaultPlayer as getDefaultPlayerPref } from './listen';
 import { supabase } from './supabase';
 
 export type Profile = {
-  user_id: string;
+  id: string;
   default_player: 'apple' | 'spotify';
   created_at: string;
   updated_at: string;
@@ -26,7 +27,7 @@ export async function setDefaultPlayer(p: 'apple' | 'spotify'): Promise<boolean>
 
   const { error } = await supabase
     .from('profiles')
-    .upsert({ user_id: uid, default_player: p });
+    .upsert({ id: uid, default_player: p }, { onConflict: 'id' });
 
   if (error) {
     console.warn('setDefaultPlayer error', error);
@@ -47,7 +48,7 @@ export async function getAdvancedRatingsEnabled(): Promise<boolean> {
     const { data, error } = await supabase
       .from('profiles')
       .select('advanced_ratings_enabled')
-      .eq('user_id', uid)
+      .eq('id', uid)
       .maybeSingle();
     if (!error && data && typeof data.advanced_ratings_enabled === 'boolean') {
       return !!data.advanced_ratings_enabled;
@@ -69,7 +70,7 @@ export async function setAdvancedRatingsEnabled(enabled: boolean): Promise<boole
   try {
     const { error } = await supabase
       .from('profiles')
-      .upsert({ user_id: uid, advanced_ratings_enabled: enabled }, { onConflict: 'user_id' });
+      .upsert({ id: uid, advanced_ratings_enabled: enabled }, { onConflict: 'id' });
     if (!error) return true;
   } catch {}
   try {
@@ -81,7 +82,6 @@ export async function setAdvancedRatingsEnabled(enabled: boolean): Promise<boole
 }
 
 export function useAdvancedRatingsEnabled() {
-  const React = require('react');
   const [enabled, setEnabled] = React.useState(false as boolean);
   React.useEffect(() => {
     getAdvancedRatingsEnabled().then(setEnabled).catch(() => setEnabled(false));

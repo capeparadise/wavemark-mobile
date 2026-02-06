@@ -3,7 +3,7 @@
     "name": "Wavemark",
     "slug": "wavemark-mobile",
     "owner": "capeparadise",
-    "scheme": "wavemark",
+    "scheme": ["wavemark", "rppl"],
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "splash": {
@@ -38,6 +38,7 @@
     "plugins": [
       "expo-localization",
       "expo-font",
+      "expo-image-picker",
       "expo-router",
       "expo-web-browser"
     ]

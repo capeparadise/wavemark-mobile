@@ -1,37 +1,68 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, Image, Pressable, Text, View } from 'react-native';
-import Screen from '../../components/Screen';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, Image, Pressable, Share, Text, View } from 'react-native';
+import * as ExpoLinking from 'expo-linking';
+import Avatar from '../../components/Avatar';
+import Snackbar from '../../components/Snackbar';
+import Screen from '../../components/StackScreen';
 import { fetchProfileSnapshot, loadCachedProfileSnapshot, type ProfileSnapshot } from '../../lib/stats';
+import { ensureMyProfile, type PublicProfile } from '../../lib/profileSocial';
 import { useTheme } from '../../theme/useTheme';
 
 export const options = { title: 'Share Card' };
 
 export default function ShareCardScreen() {
   const { colors } = useTheme();
+  const [profile, setProfile] = useState<PublicProfile | null>(null);
   const [snap, setSnap] = useState<ProfileSnapshot | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [profileLoading, setProfileLoading] = useState(true);
+  const [statsLoading, setStatsLoading] = useState(true);
   const [cachedOnly, setCachedOnly] = useState(false);
+  const [inviteError, setInviteError] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [snack, setSnack] = useState<{ visible: boolean; message: string }>({ visible: false, message: '' });
+
+  const loadProfile = useCallback(async () => {
+    setProfileLoading(true);
+    setInviteError(false);
+    try {
+      let p = await ensureMyProfile();
+      if (p && !p.public_id) p = await ensureMyProfile();
+      setProfile(p);
+      setInviteError(!p?.public_id);
+    } finally {
+      setProfileLoading(false);
+    }
+  }, []);
+
+  const loadStats = useCallback(async () => {
+    setStatsLoading(true);
+    try {
+      const cached = await loadCachedProfileSnapshot();
+      if (cached) setSnap(cached);
+      try {
+        const fresh = await fetchProfileSnapshot();
+        setSnap(fresh);
+        setCachedOnly(false);
+      } catch {
+        setCachedOnly(true);
+      }
+    } finally {
+      setStatsLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    let mounted = true;
-    (async () => {
-      try {
-        const cached = await loadCachedProfileSnapshot();
-        if (cached && mounted) setSnap(cached);
-        try {
-          const fresh = await fetchProfileSnapshot();
-          if (mounted && fresh) { setSnap(fresh); setCachedOnly(false); }
-        } catch (err) {
-          // eslint-disable-next-line no-console
-          console.log('[share-card] fallback to cached only', err);
-          if (mounted) setCachedOnly(true);
-        }
-      } finally {
-        if (mounted) setLoading(false);
-      }
-    })();
-    return () => { mounted = false; };
-  }, []);
+    loadProfile().catch(() => {});
+    loadStats().catch(() => {});
+  }, [loadProfile, loadStats]);
+
+  const inviteUrl = useMemo(() => {
+    if (!profile?.public_id) return null;
+    // Dev-only: use an Expo link so this can be tested between devices without TestFlight.
+    // Production builds will use the `rppl://` scheme.
+    if (__DEV__) return ExpoLinking.createURL(`add-friend/${profile.public_id}`);
+    return `rppl://add-friend/${profile.public_id}`;
+  }, [profile?.public_id]);
 
   const level = useMemo(() => {
     const LEVELS = [
@@ -54,10 +85,10 @@ export default function ShareCardScreen() {
     const fromCurrent = Math.max(0, total - current.threshold);
     const span = Math.max(1, next.threshold - current.threshold);
     const progress = Math.min(1, fromCurrent / span);
-    return { current, next, progress };
-  }, [snap]);
+    return { current, next, progress, total };
+  }, [snap?.uniqueCount]);
 
-  const topRatedNormalized = useMemo(() => {
+  const top3Rated = useMemo(() => {
     const items = (snap?.topRated ?? []).slice().sort((a, b) => {
       const ra = Number(a.rating ?? 0);
       const rb = Number(b.rating ?? 0);
@@ -66,74 +97,138 @@ export default function ShareCardScreen() {
       const tb = b.rated_at ? Date.parse(b.rated_at) : (b.done_at ? Date.parse(b.done_at) : 0);
       return tb - ta;
     });
-    return items.map(it => ({
-      ...it,
-      artwork_url: it.artwork_url ?? (it as any).artworkUrl ?? null,
-    }));
-  }, [snap]);
-  const top3 = useMemo(() => {
-    return topRatedNormalized.filter(it => !!it.artwork_url).slice(0, 3);
-  }, [topRatedNormalized]);
-  const ratingAvg = useMemo(() => {
-    if (!snap) return '—';
-    const rated = (snap.ratings || []).filter(r => typeof r.rating === 'number' && !Number.isNaN(r.rating));
-    if (!rated.length) return '—';
-    const avg = rated.reduce((s, r) => s + (r.rating ?? 0), 0) / rated.length;
-    return avg.toFixed(1);
-  }, [snap]);
-  const isLoading = loading || !snap;
+    return items
+      .filter((it) => !!it.artwork_url)
+      .slice(0, 3);
+  }, [snap?.topRated]);
+
+  const onShare = async () => {
+    if (busy) return;
+    if (!inviteUrl) {
+      setInviteError(true);
+      return;
+    }
+    try {
+      setBusy(true);
+      try {
+        await Share.share({ message: `Send me a merge request on Wavemark: ${inviteUrl}` });
+      } catch {
+        await (async () => {
+          try {
+            // Optional dependency; prefer Expo Clipboard when installed.
+            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            const Clipboard = require('expo-clipboard');
+            if (Clipboard?.setStringAsync) {
+              await Clipboard.setStringAsync(inviteUrl);
+              return;
+            }
+          } catch {}
+          try {
+            const nav = (globalThis as any)?.navigator;
+            if (nav?.clipboard?.writeText) {
+              await nav.clipboard.writeText(inviteUrl);
+              return;
+            }
+          } catch {}
+        })();
+        setSnack({ visible: true, message: 'Merge request link copied' });
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <Screen edges={['left', 'right']}>
-      {isLoading ? (
+      {profileLoading && !profile ? (
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
           <ActivityIndicator />
         </View>
       ) : (
-        <View style={{ padding: 16, borderRadius: 20, backgroundColor: colors.bg.elevated, borderWidth: 1, borderColor: colors.border.strong, gap: 10 }}>
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-          <Text style={{ color: colors.text.subtle, fontSize: 12, fontWeight: '700' }}>SHARE CARD</Text>
-          {cachedOnly && <Text style={{ color: colors.accent.subtle, fontSize: 12 }}>Offline cache</Text>}
-        </View>
-        <Text style={{ color: colors.text.inverted, fontSize: 24, fontWeight: '800' }}>{level.current.name}</Text>
-        <Text style={{ color: colors.text.subtle }}>{snap?.uniqueCount ?? 0} listened · Avg {ratingAvg}</Text>
-        <View style={{ height: 8, borderRadius: 999, backgroundColor: colors.overlay.softLight, overflow: 'hidden' }}>
-          <View style={{ width: `${Math.min(100, Math.round(level.progress * 100))}%`, height: '100%', backgroundColor: colors.accent.primary }} />
-        </View>
-        <Text style={{ color: colors.text.subtle, fontSize: 12 }}>Next: {level.next.name} at {level.next.threshold}</Text>
-        {/* Debug: ensure topRated has enough items and artwork */}
-        {(() => {
-          // eslint-disable-next-line no-console
-          console.log('[share-card] topRated', (snap?.topRated || []).length, (snap?.topRated || []).slice(0, 5).map((r) => ({
-            id: r.id,
-            title: r.title,
-            rating: r.rating,
-            rated_at: (r as any).rated_at,
-            artwork_url: (r as any).artwork_url,
-            spotify_url: (r as any).spotify_url,
-            item_type: (r as any).item_type,
-          })));
-          return null;
-        })()}
-        <View style={{ flexDirection: 'row', gap: 10, marginTop: 6 }}>
-          {top3.length === 0 ? (
-            <Text style={{ color: colors.text.subtle }}>Rate 3 releases to showcase your top picks</Text>
-          ) : (
-            top3.map((r) => (
-              <View key={r.id} style={{ width: 64, height: 64, borderRadius: 12, backgroundColor: colors.border.strong, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
-                <Image source={{ uri: r.artwork_url as string }} style={{ width: 64, height: 64, borderRadius: 10 }} />
+        <View style={{ paddingTop: 10, gap: 14 }}>
+          <View style={{ padding: 16, borderRadius: 20, backgroundColor: colors.bg.elevated, borderWidth: 1, borderColor: colors.border.strong, gap: 12 }}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+              <Text style={{ color: colors.text.subtle, fontSize: 12, fontWeight: '700' }}>SHARE CARD</Text>
+              {cachedOnly && <Text style={{ color: colors.accent.subtle, fontSize: 12 }}>Offline cache</Text>}
+            </View>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+              <Avatar uri={profile?.avatar_url ?? null} size={58} borderColor={colors.border.strong} backgroundColor={colors.bg.muted} />
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: colors.text.inverted, fontSize: 22, fontWeight: '800' }} numberOfLines={1}>
+                  {profile?.display_name || 'Listener'}
+                </Text>
+                <Text style={{ color: colors.text.subtle, marginTop: 4 }}>{level.current.name} · {level.total} listened</Text>
               </View>
-            ))
+            </View>
+
+            <View style={{ height: 8, borderRadius: 999, backgroundColor: colors.overlay.softLight, overflow: 'hidden' }}>
+              <View style={{ width: `${Math.min(100, Math.round(level.progress * 100))}%`, height: '100%', backgroundColor: colors.accent.primary }} />
+            </View>
+            <Text style={{ color: colors.text.subtle, fontSize: 12 }}>Next: {level.next.name} at {level.next.threshold}</Text>
+
+            <View style={{ marginTop: 4 }}>
+              <Text style={{ color: colors.text.subtle, fontSize: 12, fontWeight: '700', letterSpacing: 0.3 }}>TOP RATED</Text>
+              <View style={{ flexDirection: 'row', gap: 10, marginTop: 10 }}>
+                {top3Rated.length === 0 ? (
+                  <Text style={{ color: colors.text.subtle }}>{statsLoading ? 'Loading…' : 'Rate 3 items to showcase your top picks'}</Text>
+                ) : (
+                  top3Rated.map((r) => (
+                    <View key={r.id} style={{ width: 64, height: 64, borderRadius: 12, backgroundColor: colors.border.strong, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+                      <Image source={{ uri: r.artwork_url as string }} style={{ width: 64, height: 64 }} />
+                    </View>
+                  ))
+                )}
+              </View>
+            </View>
+          </View>
+
+          <Pressable
+            onPress={onShare}
+            disabled={profileLoading}
+            style={({ pressed }) => ({
+              paddingVertical: 12,
+              paddingHorizontal: 14,
+              borderRadius: 12,
+              backgroundColor: colors.accent.primary,
+              opacity: profileLoading ? 0.6 : pressed ? 0.9 : 1,
+              alignItems: 'center',
+            })}
+          >
+            <Text style={{ color: colors.text.inverted, fontWeight: '800' }}>{busy ? 'Sharing…' : 'Share merge request link'}</Text>
+          </Pressable>
+
+          {inviteError && !profileLoading && (
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 2 }}>
+              <Text style={{ color: colors.text.muted, fontSize: 12 }}>Merge request link unavailable. Try again.</Text>
+              <Pressable
+                onPress={() => loadProfile().catch(() => {})}
+                style={({ pressed }) => ({
+                  paddingHorizontal: 10,
+                  paddingVertical: 6,
+                  borderRadius: 10,
+                  backgroundColor: colors.bg.muted,
+                  borderWidth: 1,
+                  borderColor: colors.border.subtle,
+                  opacity: pressed ? 0.85 : 1,
+                })}
+              >
+                <Text style={{ color: colors.text.secondary, fontWeight: '800', fontSize: 12 }}>Retry</Text>
+              </Pressable>
+            </View>
           )}
-        </View>
+
+          <View style={{ paddingHorizontal: 2 }}>
+            <Text style={{ color: colors.text.muted, fontSize: 12, lineHeight: 16 }}>
+              Ripples never see internal IDs in the app. Your merge request link opens a Merge Ripples screen.
+            </Text>
+          </View>
         </View>
       )}
-      <Pressable
-        onPress={() => Alert.alert('Share', 'Sharing coming soon')}
-        style={{ marginTop: 14, padding: 12, borderRadius: 12, backgroundColor: colors.text.secondary, alignItems: 'center', opacity: 0.7 }}
-      >
-        <Text style={{ color: colors.text.inverted, fontWeight: '800' }}>Sharing coming soon</Text>
-      </Pressable>
+      <Snackbar
+        visible={snack.visible}
+        message={snack.message}
+        onTimeout={() => setSnack({ visible: false, message: '' })}
+      />
     </Screen>
   );
 }

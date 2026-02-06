@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList, Image, Linking, Pressable, RefreshControl, Text, View } from 'react-native';
-import Screen from '../../components/Screen';
+import Screen from '../../components/StackScreen';
 import StatusMenu from '../../components/StatusMenu';
 import RatingModal from '../../components/RatingModal';
 import { formatDate } from '../../lib/date';

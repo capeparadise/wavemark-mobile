@@ -59,6 +59,27 @@ export type FeedItem = {
   apple_id?: string | null;
   external_id?: string | null;
 };
+
+function normalizeFeedItem(row: any): FeedItem | null {
+  if (!row || typeof row !== 'object') return null;
+  const artistId = row.artist_id as string | undefined;
+  const title = row.title as string | undefined;
+  const id =
+    row.id ??
+    row.provider_id ??
+    row.spotify_id ??
+    row.apple_id ??
+    row.external_id ??
+    row.spotify_url ??
+    row.apple_url ??
+    (artistId && title ? `${artistId}__${title}` : null);
+  if (!id) return null;
+  return {
+    ...(row as any),
+    id: String(id),
+  } as FeedItem;
+}
+
 export async function fetchFeed(): Promise<FeedItem[]> {
   const { data, error } = await supabase
     .from('new_release_feed')
@@ -66,7 +87,7 @@ export async function fetchFeed(): Promise<FeedItem[]> {
     .order('release_date', { ascending: false, nullsFirst: false })
     .order('created_at', { ascending: false });
   if (error) return [];
-  return data as FeedItem[];
+  return (Array.isArray(data) ? data : []).map(normalizeFeedItem).filter(Boolean) as FeedItem[];
 }
 
 export async function fetchFeedForArtists(input: { artistIds: string[]; limit?: number }): Promise<FeedItem[]> {
@@ -81,7 +102,7 @@ export async function fetchFeedForArtists(input: { artistIds: string[]; limit?: 
     .order('created_at', { ascending: false })
     .limit(limit);
   if (error) return [];
-  return data as FeedItem[];
+  return (Array.isArray(data) ? data : []).map(normalizeFeedItem).filter(Boolean) as FeedItem[];
 }
 
 export type FollowedArtist = { id: string; name: string };

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, View, Text } from 'react-native';
-import Screen from '../../components/Screen';
+import Screen from '../../components/StackScreen';
 import { fetchProfileSnapshot, loadCachedProfileSnapshot, type ProfileSnapshot } from '../../lib/stats';
 import { useTheme } from '../../theme/useTheme';
 

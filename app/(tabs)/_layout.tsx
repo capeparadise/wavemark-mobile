@@ -49,7 +49,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="feed"
         options={{
-          title: 'Feed',
+          title: 'Your Wave',
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="sparkles-outline" color={color} size={size} />
           ),

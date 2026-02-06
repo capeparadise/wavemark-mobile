@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, Text, View } from 'react-native';
-import Screen from '../../components/Screen';
+import Screen from '../../components/StackScreen';
 import { backfillArtworkMissing } from '../../lib/listen';
 import { useTheme } from '../../theme/useTheme';
 

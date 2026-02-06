@@ -1,5 +1,6 @@
 import type { Session, User } from '@supabase/supabase-js';
 import { createContext, useContext, useEffect, useState } from 'react';
+import { ensureMyProfile } from './profileSocial';
 import { supabase } from './supabase';
 
 type SessionCtx = {
@@ -27,6 +28,11 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     });
     return () => { sub.subscription.unsubscribe(); };
   }, []);
+
+  useEffect(() => {
+    if (!session?.user?.id) return;
+    ensureMyProfile().catch(() => {});
+  }, [session?.user?.id]);
 
   return (
     <SessionContext.Provider value={{ session, user: session?.user ?? null, loading }}>

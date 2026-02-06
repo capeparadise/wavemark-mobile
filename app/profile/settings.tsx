@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, ScrollView, Switch, Text, TextInput, View } from 'react-native';
-import Screen from '../../components/Screen';
+import Screen from '../../components/StackScreen';
 import { emit } from '../../lib/events';
 import { bulkRefreshAppleLinks } from '../../lib/listen';
 import { getMarketOverride, initMarketOverride, setMarketOverride } from '../../lib/market';
