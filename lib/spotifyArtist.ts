@@ -1,4 +1,4 @@
-import { FN_BASE } from './fnBase';
+import { FN_BASE, fetchFn } from './fnBase';
 
 export type ArtistMini = {
   id: string;
@@ -8,7 +8,7 @@ export type ArtistMini = {
 };
 
 export async function artistSearch(q: string, market = 'GB', mode: 'loose'|'precise' = 'loose'): Promise<ArtistMini[]> {
-  const r = await fetch(`${FN_BASE}/spotify-search/artist-search?` + new URLSearchParams({ q, market, mode }));
+  const r = await fetchFn(`${FN_BASE}/spotify-search/artist-search?` + new URLSearchParams({ q, market, mode }));
   if (!r.ok) return [];
   const data: any = await r.json();
   return (data.artists?.items ?? []).map((a: any) => ({
@@ -164,7 +164,7 @@ export async function artistAlbums(artistId: string, market = 'GB'): Promise<Art
 
   try {
     const fnUrl = `${FN}/spotify-search/artist-albums?` + new URLSearchParams({ artistId, market: effectiveMarket }).toString();
-    const r = await fetch(fnUrl);
+    const r = await fetchFn(fnUrl);
     const raw = await r.text().catch(() => '');
     const ctype = r.headers.get('content-type') || '';
     // Always log the head for visibility
@@ -204,7 +204,7 @@ export async function artistAlbums(artistId: string, market = 'GB'): Promise<Art
 export async function artistTopTracks(artistId: string, market = 'GB'): Promise<{
   id: string; title: string; artist: string; releaseDate?: string | null; spotifyUrl?: string | null;
 }[]> {
-  const r = await fetch(`${FN_BASE}/spotify-search/artist-top-tracks?` + new URLSearchParams({ artistId, market }));
+  const r = await fetchFn(`${FN_BASE}/spotify-search/artist-top-tracks?` + new URLSearchParams({ artistId, market }));
   if (!r.ok) return [];
   const data: any = await r.json();
   return (data.tracks ?? []).map((t: any) => ({
@@ -217,7 +217,7 @@ export async function artistTopTracks(artistId: string, market = 'GB'): Promise<
 }
 
 export async function relatedArtists(artistId: string): Promise<ArtistMini[]> {
-  const r = await fetch(`${FN_BASE}/spotify-search/related?` + new URLSearchParams({ artistId }));
+  const r = await fetchFn(`${FN_BASE}/spotify-search/related?` + new URLSearchParams({ artistId }));
   if (!r.ok) return [];
   const data: any = await r.json();
   const items = data.artists ?? [];
@@ -225,7 +225,7 @@ export async function relatedArtists(artistId: string): Promise<ArtistMini[]> {
 }
 
 export async function fetchArtistDetails(artistId: string): Promise<{ id: string; name: string; imageUrl?: string | null; followers?: number; genres?: string[] } | null> {
-  const r = await fetch(`${FN_BASE}/spotify-search/artist?` + new URLSearchParams({ artistId }));
+  const r = await fetchFn(`${FN_BASE}/spotify-search/artist?` + new URLSearchParams({ artistId }));
   if (!r.ok) return null;
   const a: any = await r.json();
   if (!a?.id) return null;

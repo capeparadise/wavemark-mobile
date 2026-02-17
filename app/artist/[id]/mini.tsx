@@ -4,12 +4,13 @@ import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Animated, Image, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Animated, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import GlassCard from '../../../components/GlassCard';
 import Screen from '../../../components/Screen';
 import { H } from '../../../components/haptics';
 import { addToListFromSearch } from '../../../lib/listen';
 import { formatDate } from '../../../lib/date';
+import { goToRelease } from '../../../lib/navigation';
 import { getMarket, spotifyLookup, spotifySearch } from '../../../lib/spotify';
 import { artistAlbums, artistSearch, fetchArtistDetails } from '../../../lib/spotifyArtist';
 import { supabase } from '../../../lib/supabase';
@@ -531,8 +532,8 @@ export default function ArtistMiniScreen() {
               <GlassCard key={item.id} asChild style={{ paddingVertical: 12, paddingHorizontal: 12, borderRadius: 18 }}>
                 <Pressable
                   onPress={() => {
-                    const url = item.spotifyUrl || null;
-                    if (url) Linking.openURL(url).catch(() => {});
+                    const releaseId = spotifyKey(item.id, item.spotifyUrl) || item.id;
+                    if (releaseId) goToRelease(releaseId);
                   }}
                   style={({ pressed }) => ({
                     flexDirection: 'row',

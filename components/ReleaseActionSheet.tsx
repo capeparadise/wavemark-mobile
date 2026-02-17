@@ -7,7 +7,6 @@ import {
   ensureListenRowForSearch,
   markDone,
   markDoneByProvider,
-  openByDefaultPlayer,
   removeListen,
   removeListenByProvider,
   setRating,
@@ -235,15 +234,6 @@ export default function ReleaseActionSheet({ row, visible, onClose, onChanged }:
     }
   };
 
-  const onOpenLink = async () => {
-    try {
-      const r = await ensureRow();
-      await openByDefaultPlayer(r);
-    } catch (e: any) {
-      Alert.alert('Could not open', e?.message || 'Try again.');
-    }
-  };
-
   const actions = [
     ...(ctx.artistId || ctx.provider === 'spotify'
       ? [{ label: 'View artist profile', onPress: () => run(resolveAndOpenArtist) }]
@@ -259,7 +249,6 @@ export default function ReleaseActionSheet({ row, visible, onClose, onChanged }:
         setRatingVisible(true);
       },
     },
-    { label: 'Open in music app', onPress: onOpenLink },
     ...(ctx.inList ? [] : [{ label: 'Add to Listen List', onPress: () => run(onAdd) }]),
     ...(ctx.inList
       ? [

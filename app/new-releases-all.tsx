@@ -9,6 +9,7 @@ import GlassCard from '../components/GlassCard';
 import Chip from '../components/Chip';
 import { useTheme } from '../theme/useTheme';
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { goToRelease } from '../lib/navigation';
 
 const GENRE_OPTIONS: { key: CanonicalGenre | 'all'; label: string }[] = [
   { key: 'all', label: 'All' },
@@ -26,6 +27,7 @@ const GENRE_OPTIONS: { key: CanonicalGenre | 'all'; label: string }[] = [
   { key: 'metal', label: 'Metal' },
   { key: 'gospel', label: 'Gospel' },
 ];
+const DISCOVER_MARKET = 'US';
 
 export default function NewReleasesAll() {
   const { colors } = useTheme();
@@ -40,7 +42,10 @@ export default function NewReleasesAll() {
   const load = useCallback(async () => {
     setBusy(true);
     try {
-      const [list, genres] = await Promise.all([getNewReleasesWide(28, 400), loadIncludedGenres()]);
+      const [list, genres] = await Promise.all([
+        getNewReleasesWide(28, 400, DISCOVER_MARKET),
+        loadIncludedGenres(),
+      ]);
       setSelectedGenres(genres);
       setDraftGenres(genres.size ? new Set(genres) : new Set(['all']));
       setRows(list);
@@ -104,7 +109,10 @@ export default function NewReleasesAll() {
     const presave = !!(item.releaseDate && item.releaseDate > new Date().toISOString().slice(0,10));
     return (
       <GlassCard asChild style={{ marginVertical: 4, padding: 0 }}>
-        <View style={{ paddingVertical: 10, paddingHorizontal: 8, flexDirection: 'row', gap: 12, alignItems: 'center' }}>
+        <Pressable
+          onPress={() => goToRelease(item.id)}
+          style={{ paddingVertical: 10, paddingHorizontal: 8, flexDirection: 'row', gap: 12, alignItems: 'center' }}
+        >
           <Image source={{ uri: item.imageUrl ?? undefined }} style={{ width: 60, height: 60, borderRadius: 12, backgroundColor: colors.bg.muted }} />
           <View style={{ flex: 1 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
@@ -138,7 +146,7 @@ export default function NewReleasesAll() {
           >
             <Text style={{ color: colors.accent.success, fontWeight: '700' }}>Save</Text>
           </Pressable>
-        </View>
+        </Pressable>
       </GlassCard>
     );
   }, [colors]);

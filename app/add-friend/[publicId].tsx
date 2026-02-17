@@ -1,12 +1,13 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router, useLocalSearchParams } from 'expo-router';
 import React, { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Image, Linking, Pressable, ScrollView, Text, View } from 'react-native';
+import { ActivityIndicator, Image, Pressable, ScrollView, Text, View } from 'react-native';
 import Avatar from '../../components/Avatar';
 import GlassCard from '../../components/GlassCard';
 import Snackbar from '../../components/Snackbar';
 import Screen from '../../components/StackScreen';
 import { ensureMyProfile, fetchShareCardTopRated, getProfileByPublicId, getRelationshipWith, sendFriendRequestTo, unmergeRippleWith, type ShareCardTopRatedItem } from '../../lib/profileSocial';
+import { goToRelease } from '../../lib/navigation';
 import { useSession } from '../../lib/session';
 import { useTheme } from '../../theme/useTheme';
 
@@ -152,9 +153,8 @@ export default function AddFriendScreen() {
   };
 
   const openItem = (t: ShareCardTopRatedItem) => {
-    const url = t.spotifyUrl || t.appleUrl;
-    if (!url) return;
-    Linking.openURL(url).catch(() => {});
+    if (!t.id) return;
+    goToRelease(t.id);
   };
 
   return (

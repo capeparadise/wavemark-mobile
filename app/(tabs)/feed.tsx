@@ -3,7 +3,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Animated, FlatList, Image, LayoutAnimation, Linking, Platform, Pressable, SectionList, Text, UIManager, View } from 'react-native';
+import { Alert, Animated, FlatList, Image, LayoutAnimation, Platform, Pressable, SectionList, Text, UIManager, View } from 'react-native';
 import Avatar from '../../components/Avatar';
 import { H } from '../../components/haptics';
 import Screen from '../../components/Screen';
@@ -13,9 +13,11 @@ import StatusMenu from '../../components/StatusMenu';
 import FeedHeader, { type FeedMode } from '../../components/feed/FeedHeader';
 import { formatDate } from '../../lib/date';
 import { off, on } from '../../lib/events';
-import { FN_BASE } from '../../lib/fnBase';
+import { FN_BASE, fetchFn } from '../../lib/fnBase';
 import { fetchFeedForArtists, listFollowedArtists, type FeedItem } from '../../lib/follow';
 import { addToListFromSearch, fetchListenList, removeListen } from '../../lib/listen';
+import { parseSpotifyUrlOrId } from '../../lib/spotify';
+import { goToRelease } from '../../lib/navigation';
 import { fetchSocialActivity } from '../../lib/profileSocial';
 import { useSession } from '../../lib/session';
 import { RELEASE_LONG_PRESS_MS } from '../../hooks/useReleaseActions';
@@ -39,6 +41,21 @@ type SocialActivityItem = {
   itemType?: 'album' | 'track' | null;
 };
 
+const extractAppleId = (value?: string | null) => {
+  if (!value) return null;
+  if (/^\d+$/.test(value)) return value;
+  try {
+    const u = new URL(value);
+    const qId = u.searchParams.get('i');
+    if (qId && /^\d+$/.test(qId)) return qId;
+    const album = u.pathname.match(/\/album\/[^/]+\/(\d+)/);
+    if (album?.[1]) return album[1];
+    const song = u.pathname.match(/\/song\/[^/]+\/(\d+)/);
+    if (song?.[1]) return song[1];
+  } catch {}
+  return null;
+};
+
 const hashString = (s: string) => {
   let h = 0;
   for (let i = 0; i < s.length; i += 1) h = Math.imul(31, h) + s.charCodeAt(i) | 0;
@@ -50,6 +67,7 @@ const FEED_MODE_KEY = (uid: string) => `wavemark:feed-mode:${uid}`;
 export default function FeedTab() {
   const { colors } = useTheme();
   const { user } = useSession();
+  const SOCIAL_HEADER_HEIGHT = 44;
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<Item[]>([]);
   const [refreshing, setRefreshing] = useState(false);
@@ -344,7 +362,7 @@ export default function FeedTab() {
     try {
       // Best-effort: triggers the server-side “check new releases” job.
       // Uses a safe fallback base URL (see `lib/fnBase.ts`) so pull-to-refresh doesn’t pop alerts when env is missing.
-      await fetch(`${FN_BASE}/check-new-releases`);
+      await fetchFn(`${FN_BASE}/check-new-releases`);
     } catch {
       // Silent failure; the feed will still refresh from whatever is already in `new_release_feed`.
     }
@@ -485,7 +503,49 @@ export default function FeedTab() {
     return 'Listened to';
   };
 
-  const openSocialItem = useCallback((item: SocialActivityItem) => {
+  const socialItemKey = useCallback((item: SocialActivityItem) => {
+    if (item.spotifyUrl) return item.spotifyUrl;
+    if (item.appleUrl) return item.appleUrl;
+    if (item.title && item.artistName) return `${item.title}__${item.artistName}`;
+    return item.id;
+  }, []);
+
+  const onAddSocial = useCallback(async (item: SocialActivityItem) => {
+    const key = socialItemKey(item);
+    if (key && inListSet.has(key)) return;
+    const itemType =
+      item.itemType ??
+      (item.spotifyUrl && /open\.spotify\.com\/album\//.test(item.spotifyUrl) ? 'album' : 'track');
+    const providerId =
+      parseSpotifyUrlOrId(item.spotifyUrl || '')?.id ||
+      extractAppleId(item.appleUrl) ||
+      null;
+    const res = await addToListFromSearch({
+      type: itemType === 'album' ? 'album' : 'track',
+      title: item.title,
+      artist: item.artistName ?? null,
+      releaseDate: null,
+      spotifyUrl: item.spotifyUrl ?? null,
+      appleUrl: item.appleUrl ?? null,
+      artworkUrl: item.artworkUrl ?? null,
+      providerId,
+    });
+    if (res.ok) {
+      H.success();
+      if (key) setInListKeys((prev) => (prev.includes(key) ? prev : [...prev, key]));
+      setSnack({
+        visible: true,
+        message: `Added ${item.title}`,
+        listenId: res.id ?? null,
+        feedId: null,
+      });
+    } else {
+      H.error();
+      Alert.alert(res.message || 'Could not add');
+    }
+  }, [inListSet, socialItemKey]);
+
+  const openSocialItemMenu = useCallback((item: SocialActivityItem) => {
     const provider: 'spotify' | 'apple' = item.appleUrl && !item.spotifyUrl ? 'apple' : 'spotify';
     const itemType =
       item.itemType ??
@@ -504,6 +564,17 @@ export default function FeedTab() {
       rating: item.rating ?? null,
     });
   }, [setMenuRow]);
+
+  const openSocialItem = useCallback((item: SocialActivityItem) => {
+    const releaseId =
+      item.id ||
+      parseSpotifyUrlOrId(item.spotifyUrl || '')?.id ||
+      extractAppleId(item.appleUrl) ||
+      item.spotifyUrl ||
+      item.appleUrl ||
+      null;
+    if (releaseId) goToRelease(releaseId);
+  }, []);
 
   const toggleExpandedGroup = (id: string) => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
@@ -580,10 +651,15 @@ export default function FeedTab() {
                 <View style={{ gap: 10 }}>
                   <Text style={{ color: colors.text.muted, fontWeight: '800', letterSpacing: 0.2 }}>Listened to</Text>
                   <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: 10 }}>
-                    {listenedItems.map((it) => (
+                    {listenedItems.map((it) => {
+                      const key = socialItemKey(it);
+                      const isInList = !!(key && inListSet.has(key));
+                      return (
                       <Pressable
                         key={it.id}
                         onPress={() => openSocialItem(it)}
+                        onLongPress={() => openSocialItemMenu(it)}
+                        delayLongPress={RELEASE_LONG_PRESS_MS}
                         style={({ pressed }) => ({
                           width: '48%',
                           padding: 10,
@@ -606,21 +682,51 @@ export default function FeedTab() {
                             )}
                           </View>
                           <View style={{ flex: 1, minWidth: 0 }}>
-                            <Text style={{ color: colors.text.secondary, fontWeight: '800', fontSize: 12 }} numberOfLines={1}>
+                            <Text style={{ color: colors.text.secondary, fontWeight: '800', fontSize: 12 }} numberOfLines={1} ellipsizeMode="tail">
                               {it.title || 'Untitled'}
                             </Text>
                             {!!it.artistName && (
-                              <Text style={{ marginTop: 2, color: colors.text.muted, fontSize: 11 }} numberOfLines={1}>
+                              <Text style={{ marginTop: 2, color: colors.text.muted, fontSize: 11 }} numberOfLines={1} ellipsizeMode="tail">
                                 {it.artistName}
                               </Text>
                             )}
-                            <Text style={{ marginTop: 2, color: colors.text.muted, fontSize: 10 }}>
-                              {contextLineForItem(it)}
-                            </Text>
+                            <View style={{ marginTop: 4, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+                              <Text style={{ color: colors.text.muted, fontSize: 10 }}>
+                                {contextLineForItem(it)}
+                              </Text>
+                              <Pressable
+                                accessibilityRole="button"
+                                accessibilityLabel={isInList ? 'Added to listen list' : 'Add to listen list'}
+                                accessibilityState={{ disabled: isInList }}
+                                onPress={(e) => {
+                                  (e as any)?.stopPropagation?.();
+                                  (e as any)?.preventDefault?.();
+                                  onAddSocial(it);
+                                }}
+                                disabled={isInList}
+                                style={({ pressed, focused }) => ({
+                                  flexDirection: 'row',
+                                  alignItems: 'center',
+                                  gap: 4,
+                                  paddingHorizontal: 8,
+                                  paddingVertical: 4,
+                                  borderRadius: 999,
+                                  borderWidth: 1,
+                                  borderColor: focused ? colors.accent.primary : colors.border.subtle,
+                                  backgroundColor: isInList ? colors.bg.muted : colors.bg.secondary,
+                                  opacity: pressed ? 0.8 : (isInList ? 0.6 : 1),
+                                })}
+                              >
+                                <Ionicons name={isInList ? 'checkmark' : 'add'} size={12} color={colors.text.secondary as any} />
+                                <Text style={{ color: colors.text.secondary, fontSize: 10, fontWeight: '800' }}>
+                                  {isInList ? 'Added' : 'Add'}
+                                </Text>
+                              </Pressable>
+                            </View>
                           </View>
                         </View>
                       </Pressable>
-                    ))}
+                    )})}
                   </View>
                 </View>
               )}
@@ -629,10 +735,15 @@ export default function FeedTab() {
                 <View style={{ gap: 10 }}>
                   <Text style={{ color: colors.text.muted, fontWeight: '800', letterSpacing: 0.2 }}>Rated</Text>
                   <View style={{ gap: 10 }}>
-                    {ratedItems.map((it) => (
+                    {ratedItems.map((it) => {
+                      const key = socialItemKey(it);
+                      const isInList = !!(key && inListSet.has(key));
+                      return (
                       <Pressable
                         key={it.id}
                         onPress={() => openSocialItem(it)}
+                        onLongPress={() => openSocialItemMenu(it)}
+                        delayLongPress={RELEASE_LONG_PRESS_MS}
                         style={({ pressed }) => ({
                           flexDirection: 'row',
                           gap: 12,
@@ -651,11 +762,11 @@ export default function FeedTab() {
                           {!!it.artworkUrl && <Image source={{ uri: it.artworkUrl }} style={{ width: 38, height: 38 }} />}
                         </View>
                         <View style={{ flex: 1, minWidth: 0 }}>
-                          <Text style={{ color: colors.text.secondary, fontWeight: '800' }} numberOfLines={1}>
+                          <Text style={{ color: colors.text.secondary, fontWeight: '800' }} numberOfLines={1} ellipsizeMode="tail">
                             {it.title || 'Untitled'}
                           </Text>
                           {!!it.artistName && (
-                            <Text style={{ marginTop: 2, color: colors.text.muted }} numberOfLines={1}>
+                            <Text style={{ marginTop: 2, color: colors.text.muted }} numberOfLines={1} ellipsizeMode="tail">
                               {it.artistName}
                             </Text>
                           )}
@@ -663,13 +774,43 @@ export default function FeedTab() {
                             {contextLineForItem(it)}
                           </Text>
                         </View>
-                        {typeof it.rating === 'number' && (
-                          <View style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: colors.bg.muted, borderWidth: 1, borderColor: colors.border.subtle }}>
-                            <Text style={{ color: colors.text.secondary, fontWeight: '900', fontSize: 12 }}>{it.rating}/10</Text>
-                          </View>
-                        )}
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          {typeof it.rating === 'number' && (
+                            <View style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: colors.bg.muted, borderWidth: 1, borderColor: colors.border.subtle }}>
+                              <Text style={{ color: colors.text.secondary, fontWeight: '900', fontSize: 12 }}>{it.rating}/10</Text>
+                            </View>
+                          )}
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel={isInList ? 'Added to listen list' : 'Add to listen list'}
+                            accessibilityState={{ disabled: isInList }}
+                            onPress={(e) => {
+                              (e as any)?.stopPropagation?.();
+                              (e as any)?.preventDefault?.();
+                              onAddSocial(it);
+                            }}
+                            disabled={isInList}
+                            style={({ pressed, focused }) => ({
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              gap: 6,
+                              paddingHorizontal: 10,
+                              paddingVertical: 6,
+                              borderRadius: 999,
+                              borderWidth: 1,
+                              borderColor: focused ? colors.accent.primary : colors.border.subtle,
+                              backgroundColor: isInList ? colors.bg.muted : colors.bg.secondary,
+                              opacity: pressed ? 0.85 : (isInList ? 0.6 : 1),
+                            })}
+                          >
+                            <Ionicons name={isInList ? 'checkmark' : 'add'} size={12} color={colors.text.secondary as any} />
+                            <Text style={{ color: colors.text.secondary, fontWeight: '800', fontSize: 11 }}>
+                              {isInList ? 'Added' : 'Add'}
+                            </Text>
+                          </Pressable>
+                        </View>
                       </Pressable>
-                    ))}
+                    )})}
                   </View>
                 </View>
               )}
@@ -841,9 +982,6 @@ export default function FeedTab() {
           renderItem={({ item }) => {
             // derive album id from spotify_url to fetch artwork via /lookup if desired
             // quick-and-dirty thumb from open.spotify.com image CDN is not public; prefer lookup later
-            const onOpen = () => {
-              if (item.spotify_url) Linking.openURL(item.spotify_url).catch(() => {});
-            };
             const key = item.spotify_url ?? (item.title && item.artist_name ? `${item.title}__${item.artist_name}` : null);
             const isDone = !!(key && doneSet.has(key));
             const isInList = !!(key && inListSet.has(key));
@@ -854,6 +992,17 @@ export default function FeedTab() {
               (item as any).external_id ??
               null;
             const rowId = providerId || item.spotify_url || item.apple_url || key || item.id;
+            const releaseId =
+              providerId ||
+              item.spotify_id ||
+              (item as any).apple_id ||
+              (item as any).external_id ||
+              parseSpotifyUrlOrId(item.spotify_url || '')?.id ||
+              extractAppleId(item.apple_url) ||
+              rowId;
+            const onOpen = () => {
+              if (releaseId) goToRelease(releaseId);
+            };
             const menuPayload = {
               id: rowId,
               item_type: itemTypeOf(item) === 'album' ? 'album' : 'track',
@@ -950,71 +1099,91 @@ export default function FeedTab() {
               ))}
             </View>
           ) : (
-            <FlatList
-              ref={socialListRef}
-              data={socialFeedRows}
-              keyExtractor={(i) => i.id}
-              ListHeaderComponent={mode === 'social' && hasExpandableGroups ? (
-                <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginBottom: 10, paddingHorizontal: 6 }}>
-                  <Pressable
-                    onPress={() => { if (allExpanded) collapseAll(); else expandAll(); }}
-                    hitSlop={6}
-                    style={({ pressed }) => ({
-                      paddingHorizontal: 12,
-                      paddingVertical: 8,
-                      borderRadius: 999,
-                      borderWidth: 1,
-                      borderColor: colors.border.subtle,
-                      backgroundColor: colors.bg.muted,
-                      opacity: pressed ? 0.85 : 1,
-                    })}
-                  >
-                    <Text style={{ color: colors.text.secondary, fontWeight: '700', fontSize: 12 }}>
-                      {allExpanded ? 'Collapse all' : 'Expand all'}
-                    </Text>
-                  </Pressable>
-                </View>
-              ) : null}
-              contentContainerStyle={{ paddingBottom: 24, paddingTop: hasExpandableGroups ? 0 : 8 }}
-              onLayout={attemptRestoreScroll}
-              onContentSizeChange={attemptRestoreScroll}
-              onScroll={(e) => {
-                if (restoreTargetRef.current.mode === 'social') return;
-                socialScrollOffsetRef.current = e.nativeEvent.contentOffset.y;
-              }}
-              scrollEventThrottle={16}
-              refreshing={socialRefreshing}
-              onRefresh={onRefreshSocial}
-              ListEmptyComponent={(
-                <View style={{ marginTop: 16, borderWidth: 1, borderColor: colors.border.subtle, borderRadius: 14, padding: 16, backgroundColor: colors.bg.secondary }}>
-                  <View style={{ alignSelf: 'flex-start', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999, backgroundColor: colors.bg.muted, borderWidth: 1, borderColor: colors.border.subtle }}>
-                    <Text style={{ color: colors.text.secondary, fontWeight: '800' }}>No activity yet</Text>
-                  </View>
-                  <Text style={{ marginTop: 12, color: colors.text.secondary, fontSize: 16, fontWeight: '700' }}>
-                    {socialError ? 'Your Wave isn’t available yet.' : 'Ripple activity will appear here.'}
-                  </Text>
-                  <Text style={{ marginTop: 6, color: colors.text.muted }}>
-                    {socialError
-                      ? (socialError.includes('get_social_activity')
-                        ? 'Run the `get_social_activity` RPC migration in Supabase, then pull to refresh.'
-                        : socialError)
-                      : 'No likes, comments, or messaging — just lightweight listening updates.'}
-                  </Text>
-                </View>
-              )}
-              renderItem={({ item }) => {
-                if (item.kind === 'separator') {
-                  return (
-                    <View style={{ paddingHorizontal: 2, paddingTop: 12, paddingBottom: 6 }}>
-                      <Text style={{ color: colors.text.muted, fontWeight: '900', letterSpacing: 0.2 }}>{item.label}</Text>
+            <View style={{ flex: 1, minHeight: 0 }}>
+              <FlatList
+                ref={socialListRef}
+                data={socialFeedRows}
+                keyExtractor={(i) => i.id}
+                ListHeaderComponent={mode === 'social' && hasExpandableGroups ? (
+                  <View style={{
+                    height: SOCIAL_HEADER_HEIGHT,
+                    paddingHorizontal: 8,
+                    justifyContent: 'center',
+                    backgroundColor: colors.bg.secondary,
+                    borderBottomWidth: 1,
+                    borderColor: colors.border.subtle,
+                    ...(Platform.OS === 'web'
+                      ? { position: 'sticky', top: 0, zIndex: 10 }
+                      : {}),
+                  }}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'flex-end' }}>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={allExpanded ? 'Collapse all' : 'Expand all'}
+                        accessibilityHint="Expands or collapses all social activity groups"
+                        onPress={() => { if (allExpanded) collapseAll(); else expandAll(); }}
+                        hitSlop={6}
+                        style={({ pressed, focused }) => ({
+                          paddingHorizontal: 12,
+                          paddingVertical: 8,
+                          borderRadius: 999,
+                          borderWidth: 1,
+                          borderColor: focused ? colors.accent.primary : colors.border.subtle,
+                          backgroundColor: colors.bg.muted,
+                          opacity: pressed ? 0.85 : 1,
+                        })}
+                      >
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          <Ionicons name={allExpanded ? 'chevron-up' : 'chevron-down'} size={14} color={colors.text.secondary as any} />
+                          <Text style={{ color: colors.text.secondary, fontWeight: '800', fontSize: 12 }}>
+                            {allExpanded ? 'Collapse all' : 'Expand all'}
+                          </Text>
+                        </View>
+                      </Pressable>
                     </View>
-                  );
-                }
+                  </View>
+                ) : null}
+                contentContainerStyle={{ paddingBottom: 24, paddingTop: hasExpandableGroups ? 0 : 8 }}
+                onLayout={attemptRestoreScroll}
+                onContentSizeChange={attemptRestoreScroll}
+                onScroll={(e) => {
+                  if (restoreTargetRef.current.mode === 'social') return;
+                  socialScrollOffsetRef.current = e.nativeEvent.contentOffset.y;
+                }}
+                scrollEventThrottle={16}
+                refreshing={socialRefreshing}
+                onRefresh={onRefreshSocial}
+                ListEmptyComponent={(
+                  <View style={{ marginTop: 16, borderWidth: 1, borderColor: colors.border.subtle, borderRadius: 14, padding: 16, backgroundColor: colors.bg.secondary }}>
+                    <View style={{ alignSelf: 'flex-start', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999, backgroundColor: colors.bg.muted, borderWidth: 1, borderColor: colors.border.subtle }}>
+                      <Text style={{ color: colors.text.secondary, fontWeight: '800' }}>No activity yet</Text>
+                    </View>
+                    <Text style={{ marginTop: 12, color: colors.text.secondary, fontSize: 16, fontWeight: '700' }}>
+                      {socialError ? 'Your Wave isn’t available yet.' : 'Ripple activity will appear here.'}
+                    </Text>
+                    <Text style={{ marginTop: 6, color: colors.text.muted }}>
+                      {socialError
+                        ? (socialError.includes('get_social_activity')
+                          ? 'Run the `get_social_activity` RPC migration in Supabase, then pull to refresh.'
+                          : socialError)
+                        : 'No likes, comments, or messaging — just lightweight listening updates.'}
+                    </Text>
+                  </View>
+                )}
+                renderItem={({ item }) => {
+                  if (item.kind === 'separator') {
+                    return (
+                      <View style={{ paddingHorizontal: 2, paddingTop: 12, paddingBottom: 6 }}>
+                        <Text style={{ color: colors.text.muted, fontWeight: '900', letterSpacing: 0.2 }}>{item.label}</Text>
+                      </View>
+                    );
+                  }
 
-                const g = item.group;
-                return <SocialGroupCard group={g} expanded={expandedSocialGroupIds.has(g.id)} />;
-              }}
-            />
+                  const g = item.group;
+                  return <SocialGroupCard group={g} expanded={expandedSocialGroupIds.has(g.id)} />;
+                }}
+              />
+            </View>
           )
         )
       )}

@@ -6,6 +6,7 @@ import Screen from '../../components/Screen';
 import { formatDate } from '../../lib/date';
 import { addToListFromSearch } from '../../lib/listen';
 import { getNewReleasesByGenre, type SimpleAlbum } from '../../lib/recommend';
+import { goToRelease } from '../../lib/navigation';
 
 export default function NewReleasesByGenre() {
   const { genre } = useLocalSearchParams<{ genre: string }>();
@@ -14,13 +15,14 @@ export default function NewReleasesByGenre() {
   useEffect(() => {
     (async () => {
       const key = String(genre || '').toLowerCase();
-      const buckets = await getNewReleasesByGenre({ genres: [key], days: 28, strict: true });
-      let list: any[] = (buckets as any)[key] ?? [];
-      if (!Array.isArray(list) || list.length === 0) {
-        const looser = await getNewReleasesByGenre({ genres: [key], days: 28, strict: false });
-        list = (looser as any)[key] ?? [];
-      }
-      setRows(list as any);
+      const buckets = await getNewReleasesByGenre({
+        genres: [key],
+        days: 90,
+        strict: false,
+        market: 'US',
+      });
+      const list: any[] = (buckets as any)[key] ?? [];
+      setRows(Array.isArray(list) ? (list as any) : []);
     })();
   }, [genre]);
 
@@ -37,7 +39,7 @@ export default function NewReleasesByGenre() {
         keyExtractor={(a) => `${genre}-${a.id}`}
         contentContainerStyle={{ padding: 12, gap: 12 }}
         renderItem={({ item }) => (
-          <View style={{ flexDirection: 'row', gap: 12 }}>
+          <Pressable onPress={() => goToRelease(item.id)} style={{ flexDirection: 'row', gap: 12 }}>
             <Image source={{ uri: item.imageUrl ?? undefined }} style={{ width: 72, height: 72, borderRadius: 6, backgroundColor: '#e5e7eb' }} />
             <View style={{ flex: 1 }}>
               <Text style={{ fontWeight: '700' }}>{item.title}</Text>
@@ -61,11 +63,11 @@ export default function NewReleasesByGenre() {
                   if (res.ok) { H.success(); } else { H.error(); Alert.alert(res.message || 'Could not save'); }
                 }}
                 style={{ marginTop: 6 }}
-              >
-                <Text style={{ fontWeight: '700' }}>Add to Listen</Text>
-              </Pressable>
+                >
+                  <Text style={{ fontWeight: '700' }}>Add to Listen</Text>
+                </Pressable>
             </View>
-          </View>
+          </Pressable>
         )}
       />
     </Screen>

@@ -7,3 +7,18 @@ export const FN_BASE: string = (() => {
   // Fallback to the known functions base (public URL)
   return 'https://jvojjtjklqtmdtmeqqyy.functions.supabase.co';
 })();
+
+export const SUPABASE_ANON_KEY: string = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '';
+
+export function withFnHeaders(headers?: HeadersInit): Headers {
+  const h = new Headers(headers);
+  if (SUPABASE_ANON_KEY) {
+    h.set('apikey', SUPABASE_ANON_KEY);
+    h.set('Authorization', `Bearer ${SUPABASE_ANON_KEY}`);
+  }
+  return h;
+}
+
+export function fetchFn(input: RequestInfo | URL, init: RequestInit = {}) {
+  return fetch(input, { ...init, headers: withFnHeaders(init.headers) });
+}

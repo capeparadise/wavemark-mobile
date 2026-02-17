@@ -1,5 +1,5 @@
 import * as Localization from 'expo-localization';
-import { FN_BASE } from './fnBase';
+import { FN_BASE, fetchFn } from './fnBase';
 import { getMarketOverride } from './market';
 
 export type SpotifyResult = {
@@ -59,7 +59,7 @@ export function parseSpotifyUrlOrId(input: string): { id: string; lookupType: 'a
 
 export async function spotifyLookup(id: string, lookupType: 'album' | 'track'): Promise<SpotifyResult[]> {
   const market = getMarket();
-  const res = await fetch(`${FN}/spotify-search/lookup?` + new URLSearchParams({ id, lookupType, market }));
+  const res = await fetchFn(`${FN}/spotify-search/lookup?` + new URLSearchParams({ id, lookupType, market }));
   if (!res.ok) throw new Error('Spotify lookup failed');
   const data: any = await res.json();
   if (lookupType === 'album') {
@@ -113,7 +113,7 @@ export async function spotifySearch(q: string, types: string = 'album,track,arti
   const params = new URLSearchParams({ q, type: types, market });
   // eslint-disable-next-line no-console
   console.log('[spotifySearch:req]', { q, types, url: `${FN}/spotify-search?${params.toString()}` });
-  const res = await fetch(`${FN}/spotify-search?` + params);
+  const res = await fetchFn(`${FN}/spotify-search?` + params);
   if (!res.ok) {
     const t = await res.text().catch(()=> '');
     // eslint-disable-next-line no-console

@@ -1,12 +1,13 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, FlatList, Image, Linking, Pressable, RefreshControl, Text, View } from 'react-native';
+import { ActivityIndicator, FlatList, Image, Pressable, RefreshControl, Text, View } from 'react-native';
 import Screen from '../../components/StackScreen';
 import StatusMenu from '../../components/StatusMenu';
 import RatingModal from '../../components/RatingModal';
 import { formatDate } from '../../lib/date';
 import type { ListenRow } from '../../lib/listen';
 import { markDone, removeListen, setRating, setRatingDetailed } from '../../lib/listen';
+import { goToRelease } from '../../lib/navigation';
 import { supabase } from '../../lib/supabase';
 import { getUiColors, ui } from '../../constants/ui';
 import { useTheme } from '../../theme/useTheme';
@@ -61,8 +62,7 @@ export default function HistoryScreen() {
   const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
 
   const openRow = (row: ListenRow) => {
-    const url = row.spotify_url || row.apple_url;
-    if (url) Linking.openURL(url).catch(() => {});
+    goToRelease(row.id);
   };
 
   const renderRow = ({ item }: { item: ListenRow }) => {

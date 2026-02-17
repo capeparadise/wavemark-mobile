@@ -2,7 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { router } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Animated, AppState, Dimensions, FlatList, Image, Linking, Pressable, SectionList, Text, TextInput, View, Modal } from 'react-native';
+import { ActivityIndicator, Alert, Animated, AppState, Dimensions, FlatList, Image, Pressable, ScrollView, SectionList, Text, TextInput, View, Modal } from 'react-native';
 import FollowButton from '../../components/FollowButton';
 import { H } from '../../components/haptics';
 import Screen from '../../components/Screen';
@@ -14,8 +14,10 @@ import { formatDate } from '../../lib/date';
 import { fetchFeed, fetchFeedForArtists, listFollowedArtists, type FeedItem } from '../../lib/follow';
 import { off, on } from '../../lib/events';
 import { addToListFromSearch, markDoneByProvider } from '../../lib/listen';
+import { goToRelease } from '../../lib/navigation';
 import { openArtist } from '../../lib/openArtist';
-import { getNewReleases } from '../../lib/recommend';
+import { getNewReleasesByGenre, getWesternNewReleases } from '../../lib/recommend';
+import { FN_BASE as FN, fetchFn } from '../../lib/fnBase';
 import { getMarket, parseSpotifyUrlOrId, spotifyLookup, spotifySearch, type SpotifyResult } from '../../lib/spotify';
 import { artistAlbums, artistTopTracks, fetchArtistDetails } from '../../lib/spotifyArtist';
 import { supabase } from '../../lib/supabase';
@@ -28,10 +30,13 @@ import { RELEASE_LONG_PRESS_MS } from '../../hooks/useReleaseActions';
 type Row = { kind: 'section-title'; title: string }
   | { kind: 'new'; id: string; title: string; artist: string; releaseDate?: string | null; spotifyUrl?: string | null; imageUrl?: string | null; type?: 'album' | 'single' | 'ep' }
   | { kind: 'search'; r: SpotifyResult };
+type DebugFetchResult = { url: string; status: number; build: string | null; body: string; ok: boolean };
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 type DiscoverViewMode = 'mixed' | 'pills';
 const DISCOVER_VIEW_MODE_KEY = 'discover.viewMode';
+const DISCOVER_MARKETS = ['US', 'GB'];
+const DISCOVER_GENRE_DAYS = 90;
 
 function spotifyKey(id?: string | null, spotifyUrl?: string | null) {
   const parse = (v?: string | null) => {
@@ -77,10 +82,10 @@ export default function DiscoverTab() {
   const [artist, setArtist] = useState<{ id: string; name: string } | null>(null);
   const [artistAlbumsRows, setArtistAlbumsRows] = useState<Awaited<ReturnType<typeof artistAlbums>>>([]);
   const [artistTracksRows, setArtistTracksRows] = useState<Awaited<ReturnType<typeof artistTopTracks>>>([]);
-  const [newReleases, setNewReleases] = useState<Awaited<ReturnType<typeof getNewReleases>>>([]);
-  const [filteredTopPicks, setFilteredTopPicks] = useState<Awaited<ReturnType<typeof getNewReleases>>>([]);
-  const [filteredTrending, setFilteredTrending] = useState<Awaited<ReturnType<typeof getNewReleases>>>([]);
-  const [genreRows, setGenreRows] = useState<Array<{ genre: CanonicalGenre; items: Awaited<ReturnType<typeof getNewReleases>> }>>([]);
+  const [newReleases, setNewReleases] = useState<Awaited<ReturnType<typeof getWesternNewReleases>>>([]);
+  const [filteredTopPicks, setFilteredTopPicks] = useState<Awaited<ReturnType<typeof getWesternNewReleases>>>([]);
+  const [filteredTrending, setFilteredTrending] = useState<Awaited<ReturnType<typeof getWesternNewReleases>>>([]);
+  const [genreRows, setGenreRows] = useState<Array<{ genre: CanonicalGenre; items: Awaited<ReturnType<typeof getWesternNewReleases>> }>>([]);
   const [youMightLike, setYouMightLike] = useState<Array<any>>([]);
   const [takenTopPicks, setTakenTopPicks] = useState<Set<string>>(new Set());
   const asapDebuggedRef = useRef(false);
@@ -98,6 +103,10 @@ export default function DiscoverTab() {
   const [selectedGenres, setSelectedGenres] = useState<Set<CanonicalGenre>>(new Set());
   const [draftGenres, setDraftGenres] = useState<Set<string>>(new Set(['all']));
   const [filterVisible, setFilterVisible] = useState(false);
+  const [debugVisible, setDebugVisible] = useState(false);
+  const [debugBusy, setDebugBusy] = useState(false);
+  const [debugWide, setDebugWide] = useState<DebugFetchResult | null>(null);
+  const [debugGenre, setDebugGenre] = useState<DebugFetchResult | null>(null);
   const [reasonRow, setReasonRow] = useState<any | null>(null);
   // Track items saved during this session to show a ✓ instead of Save/Add
   const [addedIds, setAddedIds] = useState<Record<string, true>>({});
@@ -114,6 +123,26 @@ export default function DiscoverTab() {
   const lastFetchRef = useRef<number>(0);
   const artistImageMapRef = useRef<Record<string, string>>({});
   const { offline } = useOffline();
+  const debugSetNewReleases = useCallback(
+    (source: string, items: Awaited<ReturnType<typeof getWesternNewReleases>>) => {
+      if (__DEV__) {
+        const first3 = (items ?? []).slice(0, 3).map((it) => ({
+          id: it?.id ?? null,
+          spotifyUrl: !!it?.spotifyUrl,
+          artistId: !!it?.artistId,
+        }));
+        console.log('[discover][setNewReleases]', {
+          source,
+          count: items?.length ?? 0,
+          sampleId: items?.[0]?.id ?? null,
+          first3,
+        });
+        console.trace(`[discover][setNewReleases trace] ${source}`);
+      }
+      setNewReleases(items);
+    },
+    [setNewReleases]
+  );
   const GENRE_LABEL_MAP = useMemo(() => {
     const map: Record<string, string> = {};
     GENRE_OPTIONS.forEach((g) => { map[g.key] = g.label; });
@@ -126,7 +155,7 @@ export default function DiscoverTab() {
   const FOR_YOU_CACHE_KEY = 'discover_for_you_v1';
   const FOR_YOU_UPDATES_CACHE_KEY = 'discover_for_you_updates_v1';
   const [pickedDebug, setPickedDebug] = useState<{ followed: number; feedRecents: number; albumRecents: number; trackRecents: number; final: number; missing: number } | null>(null);
-  const NEW_RELEASES_CACHE_KEY = 'discover_new_releases_v1';
+  const NEW_RELEASES_CACHE_KEY = 'discover_new_releases_v3';
   // Known canonical IDs to disambiguate same-name artists (minimal, surgical fix)
   const CANONICAL_BY_NAME: Record<string, string> = useMemo(() => ({
     // use lowercase keys
@@ -172,7 +201,84 @@ export default function DiscoverTab() {
     AsyncStorage.setItem(DISCOVER_VIEW_MODE_KEY, next).catch(() => {});
   }, [animateViewTransition, viewMode]);
 
-  const topPicksSource = useMemo(() => newReleases.slice(0, Math.min(12, newReleases.length)), [newReleases]);
+  const formatDebugBody = useCallback((text: string) => {
+    try {
+      const json = JSON.parse(text);
+      return JSON.stringify(json, null, 2);
+    } catch {
+      return text;
+    }
+  }, []);
+
+  const runDebugFetch = useCallback(async () => {
+    const wideUrl = `${FN}/spotify-search/new-releases-wide?debug=1`;
+    const genreUrl = `${FN}/spotify-search/new-releases-genre?genres=rap,pop&debug=1`;
+    setDebugBusy(true);
+    const fetchOne = async (url: string, setter: (val: DebugFetchResult) => void) => {
+      try {
+        const res = await fetchFn(url);
+        const text = await res.text();
+        setter({
+          url,
+          status: res.status,
+          build: res.headers.get('x-spotify-search-build'),
+          body: formatDebugBody(text),
+          ok: res.ok,
+        });
+      } catch (e) {
+        setter({
+          url,
+          status: 0,
+          build: null,
+          body: String(e),
+          ok: false,
+        });
+      }
+    };
+    try {
+      await Promise.all([
+        fetchOne(wideUrl, (val) => setDebugWide(val)),
+        fetchOne(genreUrl, (val) => setDebugGenre(val)),
+      ]);
+    } finally {
+      setDebugBusy(false);
+    }
+  }, [formatDebugBody]);
+
+  const copyDebugBody = useCallback(async (payload?: DebugFetchResult | null) => {
+    if (!payload?.body) return;
+    const text = payload.body;
+    try {
+      // Optional dependency; prefer Expo Clipboard when installed.
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const Clipboard = require('expo-clipboard');
+      if (Clipboard?.setStringAsync) {
+        await Clipboard.setStringAsync(text);
+        Alert.alert('Copied', 'Debug JSON copied to clipboard.');
+        return;
+      }
+    } catch {}
+    try {
+      const nav = (globalThis as any)?.navigator;
+      if (nav?.clipboard?.writeText) {
+        await nav.clipboard.writeText(text);
+        Alert.alert('Copied', 'Debug JSON copied to clipboard.');
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    if (!__DEV__) return;
+    if (debugVisible) {
+      runDebugFetch();
+    }
+  }, [debugVisible, runDebugFetch]);
+
+  const railsPool = useMemo(
+    () => newReleases.filter((it) => !!it.spotifyUrl && !!it.artistId),
+    [newReleases]
+  );
+  const topPicksSource = useMemo(() => railsPool.slice(0, Math.min(12, railsPool.length)), [railsPool]);
   const trendingSource = useMemo(() => {
     if (fallbackFeed.length) {
       return fallbackFeed.slice(0, 12).map((item) => ({
@@ -186,8 +292,8 @@ export default function DiscoverTab() {
         artistId: (item as any).artist_id ?? null,
       }));
     }
-    return newReleases.slice(topPicksSource.length, topPicksSource.length + 12);
-  }, [fallbackFeed, newReleases, topPicksSource.length]);
+    return railsPool.slice(topPicksSource.length, topPicksSource.length + 12);
+  }, [fallbackFeed, railsPool, topPicksSource.length]);
 
   useEffect(() => {
     (async () => {
@@ -219,20 +325,46 @@ export default function DiscoverTab() {
     const buildGenreRows = async () => {
       const canonicalOrder = GENRE_OPTIONS.filter((g) => g.key !== 'all').map((g) => g.key as CanonicalGenre);
       const targets: CanonicalGenre[] = selectedGenres.size ? Array.from(selectedGenres) : canonicalOrder;
-      const rowsWithCounts = await Promise.all(
-        targets.map(async (g) => {
-          const items = await filterReleasesByGenres(newReleases, new Set<CanonicalGenre>([g]));
-          return { genre: g, items: items.slice(0, 12), count: items.length };
-        })
-      );
-      const nonEmpty = rowsWithCounts.filter((r) => r.count > 0);
-      nonEmpty.sort((a, b) => b.count - a.count);
+      const buckets = await getNewReleasesByGenre({
+        genres: targets,
+        days: DISCOVER_GENRE_DAYS,
+        market: getMarket(),
+        strict: false,
+        mode: 'full',
+      });
+      const rowsWithCounts = targets.map((g) => {
+        const bucket = Array.isArray((buckets as any)?.[g]) ? (buckets as any)[g] : [];
+        const items = bucket.filter((it: any) => !!it?.spotifyUrl);
+        return { genre: g, items: items.slice(0, 12), count: items.length };
+      });
       const MAX_GENRE_ROWS = selectedGenres.size ? 6 : 8;
-      if (!cancelled) setGenreRows(nonEmpty.slice(0, MAX_GENRE_ROWS).map(({ genre, items }) => ({ genre, items })));
+      if (!cancelled) {
+        const ordered = rowsWithCounts.slice(0, MAX_GENRE_ROWS);
+        setGenreRows(ordered.map(({ genre, items }) => ({ genre, items })));
+        if (__DEV__) {
+          const firstItem = rowsWithCounts.find((r) => (r.items?.length ?? 0) > 0)?.items?.[0];
+          console.log('[NRG] first item keys', Object.keys(firstItem ?? {}));
+          const hiphop = rowsWithCounts.find((r) => r.genre === 'hiphop');
+          console.log('[discover rails][predicate sample]', {
+            rail: 'hiphop',
+            readsField: 'genre',
+            comparesTo: 'remote genre bucket from spotify-search/new-releases-genre',
+            matchedCount: hiphop?.count ?? 0,
+          });
+          const counts = Object.fromEntries(rowsWithCounts.map((r) => [r.genre, r.count]));
+          console.log('[discover rails][counts]', {
+            days: DISCOVER_GENRE_DAYS,
+            markets: DISCOVER_MARKETS,
+            genres: targets,
+            strict: false,
+            counts,
+          });
+        }
+      }
     };
     buildGenreRows();
     return () => { cancelled = true; };
-  }, [newReleases, selectedGenres]);
+  }, [selectedGenres]);
 
   useEffect(() => {
     setDraftGenres(selectedGenres.size ? new Set(selectedGenres) : new Set(['all']));
@@ -244,9 +376,9 @@ export default function DiscoverTab() {
   }, [forYouItems, recentByArtist]);
 
   const hasDiscoverContent = useMemo(() => {
-    const genreContent = genreRows.some((r) => r.items.length > 0);
+    const genreContent = genreRows.length > 0;
     return hasYourUpdates || filteredTopPicks.length > 0 || youMightLike.length > 0 || genreContent;
-  }, [filteredTopPicks.length, genreRows, hasYourUpdates, youMightLike.length]);
+  }, [filteredTopPicks.length, genreRows.length, hasYourUpdates, youMightLike.length]);
 
   const toggleDraftGenre = (key: CanonicalGenre | 'all') => {
     setDraftGenres((prev) => {
@@ -600,7 +732,7 @@ export default function DiscoverTab() {
     })();
   }, []);
 
-  const cacheNewReleases = async (items: Awaited<ReturnType<typeof getNewReleases>>) => {
+  const cacheNewReleases = async (items: Awaited<ReturnType<typeof getWesternNewReleases>>) => {
     try {
       await AsyncStorage.setItem(NEW_RELEASES_CACHE_KEY, JSON.stringify({ items, ts: Date.now() }));
     } catch {}
@@ -652,14 +784,68 @@ export default function DiscoverTab() {
 
   // Loader
   const load = useCallback(async () => {
-    const NEW_RELEASE_DAYS = 42; // broaden source so fallback has more to work with
+    const NEW_RELEASE_DAYS = DISCOVER_GENRE_DAYS;
     const UPDATES_DAYS = 14;
     lastFetchRef.current = Date.now();
     try {
-      const [nr, genres] = await Promise.all([getNewReleases(NEW_RELEASE_DAYS), loadIncludedGenres()]);
+      if (__DEV__) {
+        const target = Math.max(50, Math.min(400, 220));
+        const urls = DISCOVER_MARKETS.map((market) =>
+          `${FN}/spotify-search/new-releases-wide?` +
+          new URLSearchParams({ market, days: String(NEW_RELEASE_DAYS), target: String(target) })
+        );
+        console.log('[discover rails][req]', {
+          urls,
+          note: 'genre rails fetched separately via spotify-search/new-releases-genre',
+        });
+      }
+      const [nr, genres] = await Promise.all([
+        getWesternNewReleases(NEW_RELEASE_DAYS, 220, DISCOVER_MARKETS),
+        loadIncludedGenres(),
+      ]);
+      if (__DEV__) {
+        const sample = nr?.[0];
+        const railsPoolNow = nr.filter((it) => !!it.spotifyUrl && !!it.artistId);
+        const spotifyUrlCount = nr.reduce(
+          (acc, it) => {
+            if (it.spotifyUrl) acc.present += 1;
+            else acc.missing += 1;
+            return acc;
+          },
+          { present: 0, missing: 0 }
+        );
+        const artistIdCount = nr.reduce(
+          (acc, it) => {
+            if (it.artistId) acc.present += 1;
+            else acc.missing += 1;
+            return acc;
+          },
+          { present: 0, missing: 0 }
+        );
+        console.log('[discover rails][sample count]', nr?.length ?? 0);
+        console.log('[discover rails][sample keys]', Object.keys(sample ?? {}));
+        console.log('[discover rails][sample item]', sample ?? null);
+        console.log('[discover rails][filter expects]', {
+          usesField: 'artistId',
+          genreSource: 'getArtistGenresCached(artistId)',
+          mapping: 'mapToCanonicalGenres(genres)',
+          includeSet: 'Set<CanonicalGenre>',
+        });
+        console.log('[discover rails][pool counts]', {
+          total: nr.length,
+          railsPool: railsPoolNow.length,
+          spotifyUrl: spotifyUrlCount,
+          artistId: artistIdCount,
+        });
+        console.log('[discover rails][sample items][newReleases]', nr.slice(0, 3));
+        console.log('[discover rails][sample items][railsPool]', railsPoolNow.slice(0, 3));
+      }
+      if (__DEV__) {
+        console.log('[discover rails][resp]', { total: nr.length });
+      }
       setSelectedGenres(genres);
       setDraftGenres(genres.size ? new Set(genres) : new Set(['all']));
-      setNewReleases(nr);
+      debugSetNewReleases('from getWesternNewReleases', nr);
       cacheNewReleases(nr);
       if (!nr || nr.length === 0) {
         try {
@@ -715,7 +901,7 @@ export default function DiscoverTab() {
             asapDebuggedRef.current = true;
             try {
               const fnBase = (process.env.EXPO_PUBLIC_FN_BASE ?? '') || '';
-              const search = await fetch(`${fnBase}/spotify-search/artist-search?` + new URLSearchParams({ q: 'A$AP Rocky', market }));
+              const search = await fetchFn(`${fnBase}/spotify-search/artist-search?` + new URLSearchParams({ q: 'A$AP Rocky', market }));
               const sj: any = await search.json();
               const artist = sj?.artists?.items?.[0];
               const asapId = artist?.id || '';
@@ -1047,7 +1233,7 @@ export default function DiscoverTab() {
         if (raw && mounted) {
           const parsed = JSON.parse(raw);
           if (Array.isArray(parsed?.items)) {
-            setNewReleases(parsed.items);
+            debugSetNewReleases('from cache', parsed.items);
             setInitialLoading(false);
           }
         }
@@ -1466,6 +1652,31 @@ export default function DiscoverTab() {
       </View>
     );
   };
+
+  const renderDebugBlock = (label: string, payload: DebugFetchResult | null) => {
+    const okLabel = payload ? `${payload.status} ${payload.ok ? 'OK' : 'ERR'}` : '—';
+    return (
+      <View style={{ marginTop: 12, padding: 12, borderWidth: 1, borderColor: colors.border.subtle, borderRadius: 12, backgroundColor: colors.bg.muted }}>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+          <Text style={{ fontWeight: '700', color: colors.text.secondary }}>{label}</Text>
+          <Pressable
+            onPress={() => copyDebugBody(payload)}
+            hitSlop={6}
+            disabled={!payload?.body}
+            style={({ pressed }) => ({ opacity: pressed ? 0.8 : 1 })}
+          >
+            <Text style={{ color: payload?.body ? colors.text.secondary : colors.text.muted, fontWeight: '700' }}>Copy</Text>
+          </Pressable>
+        </View>
+        <Text style={{ color: colors.text.muted, fontSize: 12 }}>Status: {okLabel}</Text>
+        <Text style={{ color: colors.text.muted, fontSize: 12 }}>Build: {payload?.build ?? '—'}</Text>
+        <Text style={{ color: colors.text.muted, fontSize: 12, marginBottom: 6 }}>URL: {payload?.url ?? '—'}</Text>
+        <Text selectable style={{ fontSize: 12, color: colors.text.secondary }}>
+          {payload?.body ?? 'No response yet.'}
+        </Text>
+      </View>
+    );
+  };
   const handleMenuChanged = async (update?: { type: 'mark' | 'remove' | 'rate'; row: any; done?: boolean }) => {
     if (update?.type === 'remove' && update.row) {
       const key = spotifyKey((update.row as any).spotify_id || (update.row as any).provider_id || (update.row as any).id || null, (update.row as any).spotify_url || null);
@@ -1793,9 +2004,18 @@ export default function DiscoverTab() {
           const label = tagLabel(stat, isAdded);
           const artistId = item.artistId || item.artist_id || null;
           const openRelease = () => {
-            const url = item.spotifyUrl || item.spotify_url || null;
-            if (url) {
-              Linking.openURL(String(url)).catch(() => {});
+            const releaseId = spotifyKey(item.id, item.spotifyUrl || item.spotify_url) || item.id;
+            if (releaseId) {
+              goToRelease(releaseId, {
+                spotifyId: item.id ?? null,
+                spotifyUrl: item.spotifyUrl ?? item.spotify_url ?? null,
+                title: item.title ?? '',
+                artistName: item.artist ?? '',
+                imageUrl: item.imageUrl ?? null,
+                type: item.type ?? null,
+                artistId,
+                releaseDate: item.releaseDate ?? null,
+              });
               return;
             }
             setMenuRow({ ...item, artist_id: artistId, in_list: isAdded, done_at: stat?.done ? new Date().toISOString() : null } as any);
@@ -1865,9 +2085,18 @@ export default function DiscoverTab() {
           const artistId = item.artistId || item.artist_id || null;
 
           const openRelease = () => {
-            const url = item.spotifyUrl || item.spotify_url || null;
-            if (url) {
-              Linking.openURL(String(url)).catch(() => {});
+            const releaseId = spotifyKey(item.id, item.spotifyUrl || item.spotify_url) || item.id;
+            if (releaseId) {
+              goToRelease(releaseId, {
+                spotifyId: item.id ?? null,
+                spotifyUrl: item.spotifyUrl ?? item.spotify_url ?? null,
+                title: item.title ?? '',
+                artistName: item.artist ?? '',
+                imageUrl: item.imageUrl ?? null,
+                type: item.type ?? null,
+                artistId,
+                releaseDate: item.releaseDate ?? null,
+              });
               return;
             }
             setMenuRow({ ...item, artist_id: artistId, in_list: isAdded, done_at: stat?.done ? new Date().toISOString() : null } as any);
@@ -1978,7 +2207,7 @@ export default function DiscoverTab() {
           );
         };
 
-        const hasAny = hasYourUpdates || filteredTopPicks.length > 0 || youMightLike.length > 0 || genreRows.some((r) => r.items.length > 0);
+        const hasAny = hasYourUpdates || filteredTopPicks.length > 0 || youMightLike.length > 0 || genreRows.length > 0;
         return (
           <>
             {yourUpdatesReleases.length ? (
@@ -2010,7 +2239,16 @@ export default function DiscoverTab() {
               const label = GENRE_OPTIONS.find((g) => g.key === row.genre)?.label ?? row.genre;
               return (
                 <View key={`wrap-${row.genre}`} style={{ marginTop: idx === 0 ? 16 : 8 }}>
-                  {renderSection(row.items, `New ${label}`, `genre-${row.genre}`)}
+                  <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text.secondary, marginBottom: 10, paddingHorizontal: horizontalPad }}>
+                    {`New ${label}`}
+                  </Text>
+                  {row.items.length ? (
+                    renderSection(row.items, '', `genre-${row.genre}`)
+                  ) : (
+                    <Text style={{ color: colors.text.muted, paddingHorizontal: horizontalPad, marginBottom: 8 }}>
+                      No releases yet.
+                    </Text>
+                  )}
                 </View>
               );
             })}
@@ -2077,6 +2315,21 @@ export default function DiscoverTab() {
         <Pressable onPress={() => setFilterVisible(true)} hitSlop={8} style={{ padding: 10, borderRadius: 10, backgroundColor: colors.bg.muted }}>
           <Ionicons name="options-outline" size={20} color={colors.text.secondary} />
         </Pressable>
+        {__DEV__ && (
+          <Pressable
+            onPress={() => setDebugVisible(true)}
+            hitSlop={8}
+            style={({ pressed }) => ({
+              paddingHorizontal: 10,
+              paddingVertical: 8,
+              borderRadius: 10,
+              backgroundColor: colors.bg.muted,
+              opacity: pressed ? 0.9 : 1,
+            })}
+          >
+            <Text style={{ color: colors.text.secondary, fontWeight: '700', fontSize: 12 }}>Debug</Text>
+          </Pressable>
+        )}
       </View>
       {/* Suggestions panel removed; global search results are shown below */}
   {/* Tip removed */}
@@ -2138,6 +2391,55 @@ export default function DiscoverTab() {
           </GlassCard>
         </View>
       </Modal>
+      {__DEV__ && (
+        <Modal visible={debugVisible} transparent animationType="slide" onRequestClose={() => setDebugVisible(false)}>
+          <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.4)' }} onPress={() => setDebugVisible(false)} />
+          <View style={{ position: 'absolute', left: 0, right: 0, top: 40, bottom: 40, padding: 16 }}>
+            <GlassCard style={{ flex: 1, padding: 12 }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                <Text style={{ fontSize: 18, fontWeight: '800', color: colors.text.secondary }}>Discover Debug</Text>
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  <Pressable
+                    onPress={runDebugFetch}
+                    hitSlop={6}
+                    style={({ pressed }) => ({
+                      paddingHorizontal: 10,
+                      paddingVertical: 6,
+                      borderRadius: 8,
+                      backgroundColor: colors.bg.muted,
+                      opacity: pressed ? 0.9 : 1,
+                    })}
+                  >
+                    <Text style={{ color: colors.text.secondary, fontWeight: '700', fontSize: 12 }}>Refresh</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => setDebugVisible(false)}
+                    hitSlop={6}
+                    style={({ pressed }) => ({
+                      paddingHorizontal: 10,
+                      paddingVertical: 6,
+                      borderRadius: 8,
+                      backgroundColor: colors.bg.muted,
+                      opacity: pressed ? 0.9 : 1,
+                    })}
+                  >
+                    <Text style={{ color: colors.text.secondary, fontWeight: '700', fontSize: 12 }}>Close</Text>
+                  </Pressable>
+                </View>
+              </View>
+              {debugBusy ? (
+                <View style={{ paddingVertical: 6 }}>
+                  <ActivityIndicator />
+                </View>
+              ) : null}
+              <ScrollView contentContainerStyle={{ paddingBottom: 16 }}>
+                {renderDebugBlock('Top picks (new-releases-wide)', debugWide)}
+                {renderDebugBlock('Genres (rap,pop)', debugGenre)}
+              </ScrollView>
+            </GlassCard>
+          </View>
+        </Modal>
+      )}
       <Modal visible={!!reasonRow} transparent animationType="fade" onRequestClose={() => setReasonRow(null)}>
         <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)' }} onPress={() => setReasonRow(null)} />
         <View style={{ position: 'absolute', left: 0, right: 0, bottom: 0, padding: 16 }}>

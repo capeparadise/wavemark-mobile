@@ -20,16 +20,14 @@ import {
   fetchListenList,
   fetchUpcomingClient,
   getDefaultPlayer,
-  openInSpotify,
-  openInAppleMusic,
   markDone,
-  openByDefaultPlayer,
   reconcileListenUpcoming,
   removeListen,
   type ListenPlayer,
   type ListenRow,
   type UpcomingItem,
 } from '../../lib/listen';
+import { goToRelease } from '../../lib/navigation';
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Chip from '../../components/Chip';
@@ -40,7 +38,6 @@ import StatusMenu from '../../components/StatusMenu';
 import Snackbar from '../../components/Snackbar';
 import SwipeRow from '../../components/SwipeRow';
 import { RELEASE_LONG_PRESS_MS } from '../../hooks/useReleaseActions';
-import { debugNS } from '../../lib/debug';
 import { off as offEvent, on as onEvent } from '../../lib/events';
 import { useSession } from '../../lib/session';
 import { spotifyLookup, spotifySearch } from '../../lib/spotify';
@@ -48,7 +45,6 @@ import { toast } from '../../lib/toast';
 import { getAdvancedRatingsEnabled } from '../../lib/user';
 import { useTheme } from '../../theme/useTheme';
 
-const debug = debugNS('ListenTab');
 
 function Stars({ value }: { value?: number | null }) {
   const { colors } = useTheme();
@@ -324,14 +320,8 @@ export default function ListenTab() {
 
   // Rating handled via RatingModal on both platforms
 
-  const onOpen = async (item: ListenRow) => {
-  // Always re-read from storage in case Settings changed recently
-  const latestPref = await getDefaultPlayer();
-  debug('latestPref at open', latestPref, 'title =', item.title);
-    const ok = await openByDefaultPlayer(item, latestPref);
-    if (!ok) {
-  toast('Could not open — try switching default player in Settings');
-    }
+  const onOpen = (item: ListenRow) => {
+    goToRelease(item.id);
   };
 
   const optimisticRemove = (id: string) => {

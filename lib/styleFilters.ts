@@ -80,9 +80,9 @@ export type CanonicalGenre =
   | 'country' | 'jazz' | 'classical' | 'metal' | 'gospel' | 'kpop';
 
 const CANONICAL: Record<CanonicalGenre, string[]> = {
-  hiphop: ['hip hop', 'hip-hop', 'rap', 'trap'],
+  hiphop: ['hip hop', 'hip-hop', 'rap', 'trap', 'drill', 'grime', 'uk drill', 'uk rap', 'boom bap', 'pop rap'],
   rnb: ['r&b', 'rnb', 'neo-soul', 'soul'],
-  pop: ['pop'],
+  pop: ['pop', 'dance pop', 'electropop', 'hyperpop', 'teen pop', 'uk pop', 'pop rap', 'pop rock', 'indie pop', 'synthpop'],
   rock: ['rock', 'punk', 'alt rock', 'hard rock'],
   indie: ['indie'],
   electronic: ['electronic', 'edm', 'house', 'techno', 'dance'],

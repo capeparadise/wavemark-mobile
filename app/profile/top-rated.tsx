@@ -1,12 +1,13 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, FlatList, Image, Linking, Pressable, RefreshControl, Text, View } from 'react-native';
+import { ActivityIndicator, FlatList, Image, Pressable, RefreshControl, Text, View } from 'react-native';
 import Screen from '../../components/StackScreen';
 import StatusMenu from '../../components/StatusMenu';
 import RatingModal from '../../components/RatingModal';
 import type { ListenRow } from '../../lib/listen';
 import { formatDate } from '../../lib/date';
 import { setRating, setRatingDetailed } from '../../lib/listen';
+import { goToRelease } from '../../lib/navigation';
 import { supabase } from '../../lib/supabase';
 import { getUiColors, ui } from '../../constants/ui';
 import { useTheme } from '../../theme/useTheme';
@@ -69,14 +70,11 @@ export default function TopRatedScreen() {
     return rows.filter(r => r.item_type !== 'album');
   }, [rows, filter]);
 
-  const openRow = (row: ListenRow) => {
-    const url = row.spotify_url || row.apple_url;
-    if (url) Linking.openURL(url).catch(() => {});
-  };
-
   const renderRow = ({ item }: { item: ListenRow }) => (
     <Pressable
-      onPress={() => { setRatingRow(item); setRatingVisible(true); }}
+      onPress={() => goToRelease(item.id)}
+      onLongPress={() => { setRatingRow(item); setRatingVisible(true); }}
+      delayLongPress={250}
       style={{
         padding: 12,
         borderRadius: 14,
@@ -89,17 +87,15 @@ export default function TopRatedScreen() {
         alignItems: 'center',
       }}
     >
-      <Pressable onPress={() => openRow(item)} hitSlop={8}>
-        {(() => {
-          const art = item.artwork_url || (item as any).spotify_artwork || null;
-          if (art) return <Image source={{ uri: art }} style={{ width: 60, height: 60, borderRadius: 10, backgroundColor: colors.bg.muted }} />;
-          return (
-            <View style={{ width: 60, height: 60, borderRadius: 10, backgroundColor: colors.bg.muted, alignItems: 'center', justifyContent: 'center' }}>
-              <Text style={{ color: colors.text.muted, fontWeight: '800' }}>{(item.title || '?').slice(0,1)}</Text>
-            </View>
-          );
-        })()}
-      </Pressable>
+      {(() => {
+        const art = item.artwork_url || (item as any).spotify_artwork || null;
+        if (art) return <Image source={{ uri: art }} style={{ width: 60, height: 60, borderRadius: 10, backgroundColor: colors.bg.muted }} />;
+        return (
+          <View style={{ width: 60, height: 60, borderRadius: 10, backgroundColor: colors.bg.muted, alignItems: 'center', justifyContent: 'center' }}>
+            <Text style={{ color: colors.text.muted, fontWeight: '800' }}>{(item.title || '?').slice(0,1)}</Text>
+          </View>
+        );
+      })()}
       <View style={{ flex: 1 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
           <Text style={{ fontWeight: '700', fontSize: 16, flexShrink: 1, color: colors.text.secondary }} numberOfLines={1}>{item.title}</Text>

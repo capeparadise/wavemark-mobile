@@ -4,15 +4,18 @@ import { FlatList, Image, Pressable, Text, View } from 'react-native';
 import Screen from '../components/Screen';
 import { formatDate } from '../lib/date';
 import { getNewReleasesByGenre, type SimpleAlbum } from '../lib/recommend';
+import { goToRelease } from '../lib/navigation';
 
 const GENRES = ['rap','rnb','pop','rock','latin','edm','country','kpop','afrobeats','jazz','indie','metal','punk','folk','ambient','jpop','desi'];
+const DISCOVER_MARKET = 'US';
+const GENRE_DAYS = 90;
 
 export default function NewReleasesAllGenres() {
   const [buckets, setBuckets] = useState<Record<string, SimpleAlbum[]>>({});
 
   useEffect(() => {
     (async () => {
-      const data = await getNewReleasesByGenre({ genres: GENRES, days: 28, strict: false, mode: 'full' });
+      const data = await getNewReleasesByGenre({ genres: GENRES, days: GENRE_DAYS, strict: false, mode: 'full', market: DISCOVER_MARKET });
       setBuckets(data);
     })();
   }, []);
@@ -42,7 +45,7 @@ export default function NewReleasesAllGenres() {
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={{ gap: 12, paddingRight: 8 }}
                 renderItem={({ item }) => (
-                  <View style={{ width: 140 }}>
+                  <Pressable onPress={() => goToRelease(item.id)} style={{ width: 140 }}>
                     <Image source={{ uri: item.imageUrl ?? undefined }} style={{ width: 140, height: 140, borderRadius: 8, backgroundColor: '#e5e7eb' }} />
                     <Text style={{ fontWeight: '700', marginTop: 6 }} numberOfLines={1}>{item.title}</Text>
                     <Text style={{ color: '#666' }} numberOfLines={1}>{item.artist}</Text>
@@ -52,7 +55,7 @@ export default function NewReleasesAllGenres() {
                       )}
                       {!!item.releaseDate && <Text style={{ color: '#6b7280' }}>{formatDate(item.releaseDate)}</Text>}
                     </View>
-                  </View>
+                  </Pressable>
                 )}
               />
             </View>

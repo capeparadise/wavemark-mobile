@@ -1,5 +1,5 @@
 import { emit } from './events';
-import { FN_BASE } from './fnBase';
+import { FN_BASE, fetchFn } from './fnBase';
 import { supabase } from './supabase';
 
 export async function isFollowing(artistId: string) {
@@ -23,7 +23,7 @@ export async function followArtist(input: { artistId: string; artistName: string
   });
   if (error) return { ok: false, message: error.message };
   // Fire-and-forget: trigger a feed refresh for this artist on the server
-  try { fetch(`${FN_BASE}/check-new-releases?` + new URLSearchParams({ artistId: input.artistId })).catch(() => {}); } catch {}
+  try { fetchFn(`${FN_BASE}/check-new-releases?` + new URLSearchParams({ artistId: input.artistId })).catch(() => {}); } catch {}
   // Notify UI to refresh feed
   emit('feed:refresh');
   return { ok: true };

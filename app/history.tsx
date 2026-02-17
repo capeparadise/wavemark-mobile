@@ -10,6 +10,7 @@ import StatusMenu from '../components/StatusMenu';
 import Screen from '../components/Screen';
 import { useTheme } from '../theme/useTheme';
 import GlassCard from '../components/GlassCard';
+import { goToRelease } from '../lib/navigation';
 
 export default function HistoryTab() {
   const [loading, setLoading] = useState(true);
@@ -68,7 +69,7 @@ export default function HistoryTab() {
           }
           renderItem={({ item }) => (
             <GlassCard asChild style={{ marginVertical: 4, padding: 0 }}>
-              <View style={{ padding: 12, gap: 6 }}>
+              <Pressable onPress={() => goToRelease(item.id)} style={{ padding: 12, gap: 6 }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                   <View style={{ flex: 1 }}>
                     <Text style={{ fontWeight: '600', color: colors.text.secondary }} numberOfLines={2}>{item.title}</Text>
@@ -84,7 +85,7 @@ export default function HistoryTab() {
                     {item.rating ? `★ ${item.rating}` : 'Not rated'}
                   </Text>
                 </View>
-              </View>
+              </Pressable>
             </GlassCard>
           )}
         />
