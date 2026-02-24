@@ -31,6 +31,7 @@ type Row = { kind: 'section-title'; title: string }
   | { kind: 'new'; id: string; title: string; artist: string; releaseDate?: string | null; spotifyUrl?: string | null; imageUrl?: string | null; type?: 'album' | 'single' | 'ep' }
   | { kind: 'search'; r: SpotifyResult };
 type DebugFetchResult = { url: string; status: number; build: string | null; body: string; ok: boolean };
+type SectionStatus = 'loading' | 'success' | 'empty' | 'error';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 type DiscoverViewMode = 'mixed' | 'pills';
@@ -100,6 +101,10 @@ export default function DiscoverTab() {
   const [forYouItems, setForYouItems] = useState<Array<{ id: string; name: string; imageUrl?: string | null; latestId?: string; latestDate?: string | null }>>([]);
   const [forYouLoading, setForYouLoading] = useState<boolean>(true);
   const [yourUpdatesReleases, setYourUpdatesReleases] = useState<Array<{ id: string; title: string; artist: string; artistId?: string | null; releaseDate?: string | null; spotifyUrl?: string | null; imageUrl?: string | null; type?: 'album' | 'single' | 'ep' }>>([]);
+  const [topPicksLoading, setTopPicksLoading] = useState<boolean>(true);
+  const [topPicksError, setTopPicksError] = useState<any | null>(null);
+  const [yourUpdatesError, setYourUpdatesError] = useState<any | null>(null);
+  const [loadCycleId, setLoadCycleId] = useState<number>(0);
   const [selectedGenres, setSelectedGenres] = useState<Set<CanonicalGenre>>(new Set());
   const [draftGenres, setDraftGenres] = useState<Set<string>>(new Set(['all']));
   const [filterVisible, setFilterVisible] = useState(false);
@@ -122,6 +127,7 @@ export default function DiscoverTab() {
   const [menuRow, setMenuRow] = useState<any | null>(null);
   const lastFetchRef = useRef<number>(0);
   const artistImageMapRef = useRef<Record<string, string>>({});
+  const loggedLoadCycleRef = useRef<number>(0);
   const { offline } = useOffline();
   const debugSetNewReleases = useCallback(
     (source: string, items: Awaited<ReturnType<typeof getWesternNewReleases>>) => {
@@ -296,6 +302,8 @@ export default function DiscoverTab() {
   }, [fallbackFeed, railsPool, topPicksSource.length]);
 
   useEffect(() => {
+    let cancelled = false;
+    setTopPicksLoading(true);
     (async () => {
       const effective = selectedGenres;
       const taken = new Set<string>();
@@ -314,10 +322,19 @@ export default function DiscoverTab() {
         const key = spotifyKey(it.id, it.spotifyUrl);
         if (key) taken.add(key);
       });
+      if (cancelled) return;
       setFilteredTopPicks(top);
       setFilteredTrending(trending);
       setTakenTopPicks(taken);
-    })();
+      setTopPicksLoading(false);
+    })().catch(() => {
+      if (cancelled) return;
+      setFilteredTopPicks([]);
+      setFilteredTrending([]);
+      setTakenTopPicks(new Set());
+      setTopPicksLoading(false);
+    });
+    return () => { cancelled = true; };
   }, [topPicksSource, trendingSource, selectedGenres, listenStatus, addedIds]);
 
   useEffect(() => {
@@ -370,15 +387,89 @@ export default function DiscoverTab() {
     setDraftGenres(selectedGenres.size ? new Set(selectedGenres) : new Set(['all']));
   }, [selectedGenres]);
 
-  const hasYourUpdates = useMemo(() => {
-    const recentCount = Object.keys(recentByArtist || {}).length;
-    return (forYouItems?.length ?? 0) > 0 || recentCount > 0;
-  }, [forYouItems, recentByArtist]);
+  const followedArtists = useMemo<Array<{ id: string; name: string; imageUrl?: string | null; latestId?: string; latestDate?: string | null }>>(() => {
+    const fallbackItems = Object.keys(recentByArtist || {}).map((id) => {
+      const det = followedDetails[id] || { name: 'Unknown', imageUrl: null };
+      const rec = recentByArtist[id] || {} as { latestId?: string; latestDate?: string | null };
+      return { id, name: det.name, imageUrl: det.imageUrl ?? null, latestId: rec.latestId, latestDate: rec.latestDate ?? null };
+    });
+    const base = (forYouItems && forYouItems.length ? forYouItems : fallbackItems) as Array<{ id: string; name: string; imageUrl?: string | null; latestId?: string; latestDate?: string | null }>;
+    const uniq = new Map<string, { id: string; name: string; imageUrl?: string | null; latestId?: string; latestDate?: string | null }>();
+    base.forEach((it) => {
+      if (!it?.latestId) return;
+      if (!it?.id || !/^[A-Za-z0-9]{22}$/.test(String(it.id))) return;
+      if (!uniq.has(it.id)) uniq.set(it.id, it);
+    });
+    return Array.from(uniq.values()).sort((a, b) => {
+      const ta = a.latestDate ? Date.parse(a.latestDate) : 0;
+      const tb = b.latestDate ? Date.parse(b.latestDate) : 0;
+      return tb - ta;
+    });
+  }, [forYouItems, recentByArtist, followedDetails]);
+
+  const yourUpdatesLoading = pickedLoading || forYouLoading;
+
+  const yourUpdatesState = useMemo<{ items: typeof yourUpdatesReleases; status: SectionStatus; error?: any }>(() => {
+    if (yourUpdatesLoading) return { items: [], status: 'loading' };
+    if (yourUpdatesError) return { items: [], status: 'error', error: yourUpdatesError };
+    if (!yourUpdatesReleases.length) return { items: [], status: 'empty' };
+    return { items: yourUpdatesReleases, status: 'success' };
+  }, [yourUpdatesError, yourUpdatesLoading, yourUpdatesReleases]);
+
+  const topPicksState = useMemo<{ items: typeof filteredTopPicks; status: SectionStatus; error?: any }>(() => {
+    if (topPicksLoading) return { items: [], status: 'loading' };
+    if (topPicksError) return { items: [], status: 'error', error: topPicksError };
+    if (!filteredTopPicks.length) return { items: [], status: 'empty' };
+    return { items: filteredTopPicks, status: 'success' };
+  }, [filteredTopPicks, topPicksError, topPicksLoading]);
+
+  const hasYourUpdates = useMemo(() => (
+    followedArtists.length > 0 || yourUpdatesReleases.length > 0
+  ), [followedArtists.length, yourUpdatesReleases.length]);
 
   const hasDiscoverContent = useMemo(() => {
     const genreContent = genreRows.length > 0;
-    return hasYourUpdates || filteredTopPicks.length > 0 || youMightLike.length > 0 || genreContent;
-  }, [filteredTopPicks.length, genreRows.length, hasYourUpdates, youMightLike.length]);
+    return hasYourUpdates || topPicksState.status !== 'empty' || youMightLike.length > 0 || genreContent;
+  }, [genreRows.length, hasYourUpdates, topPicksState.status, youMightLike.length]);
+
+  useEffect(() => {
+    if (!__DEV__) return;
+    if (!loadCycleId) return;
+    if (loggedLoadCycleRef.current === loadCycleId) return;
+    if (topPicksLoading || yourUpdatesLoading) return;
+    loggedLoadCycleRef.current = loadCycleId;
+    console.log('[discover][sections]', {
+      loadCycleId,
+      counts: {
+        yourUpdatesReleases: yourUpdatesReleases.length,
+        followedArtists: followedArtists.length,
+        topPicks: filteredTopPicks.length,
+      },
+      states: {
+        yourUpdates: yourUpdatesState.status,
+        topPicks: topPicksState.status,
+      },
+      loading: {
+        yourUpdates: yourUpdatesLoading,
+        topPicks: topPicksLoading,
+      },
+      error: {
+        yourUpdates: !!yourUpdatesError,
+        topPicks: !!topPicksError,
+      },
+    });
+  }, [
+    filteredTopPicks.length,
+    followedArtists.length,
+    loadCycleId,
+    topPicksError,
+    topPicksLoading,
+    topPicksState.status,
+    yourUpdatesError,
+    yourUpdatesLoading,
+    yourUpdatesReleases.length,
+    yourUpdatesState.status,
+  ]);
 
   const toggleDraftGenre = (key: CanonicalGenre | 'all') => {
     setDraftGenres((prev) => {
@@ -785,8 +876,13 @@ export default function DiscoverTab() {
   // Loader
   const load = useCallback(async () => {
     const NEW_RELEASE_DAYS = DISCOVER_GENRE_DAYS;
-    const UPDATES_DAYS = 14;
-    lastFetchRef.current = Date.now();
+    const UPDATES_DAYS = 36500;
+    const cycleId = Date.now();
+    lastFetchRef.current = cycleId;
+    setLoadCycleId(cycleId);
+    setTopPicksLoading(true);
+    setTopPicksError(null);
+    setYourUpdatesError(null);
     try {
       if (__DEV__) {
         const target = Math.max(50, Math.min(400, 220));
@@ -799,54 +895,69 @@ export default function DiscoverTab() {
           note: 'genre rails fetched separately via spotify-search/new-releases-genre',
         });
       }
-      const [nr, genres] = await Promise.all([
+      const [nrResult, genresResult] = await Promise.allSettled([
         getWesternNewReleases(NEW_RELEASE_DAYS, 220, DISCOVER_MARKETS),
         loadIncludedGenres(),
       ]);
-      if (__DEV__) {
-        const sample = nr?.[0];
-        const railsPoolNow = nr.filter((it) => !!it.spotifyUrl && !!it.artistId);
-        const spotifyUrlCount = nr.reduce(
-          (acc, it) => {
-            if (it.spotifyUrl) acc.present += 1;
-            else acc.missing += 1;
-            return acc;
-          },
-          { present: 0, missing: 0 }
-        );
-        const artistIdCount = nr.reduce(
-          (acc, it) => {
-            if (it.artistId) acc.present += 1;
-            else acc.missing += 1;
-            return acc;
-          },
-          { present: 0, missing: 0 }
-        );
-        console.log('[discover rails][sample count]', nr?.length ?? 0);
-        console.log('[discover rails][sample keys]', Object.keys(sample ?? {}));
-        console.log('[discover rails][sample item]', sample ?? null);
-        console.log('[discover rails][filter expects]', {
-          usesField: 'artistId',
-          genreSource: 'getArtistGenresCached(artistId)',
-          mapping: 'mapToCanonicalGenres(genres)',
-          includeSet: 'Set<CanonicalGenre>',
-        });
-        console.log('[discover rails][pool counts]', {
-          total: nr.length,
-          railsPool: railsPoolNow.length,
-          spotifyUrl: spotifyUrlCount,
-          artistId: artistIdCount,
-        });
-        console.log('[discover rails][sample items][newReleases]', nr.slice(0, 3));
-        console.log('[discover rails][sample items][railsPool]', railsPoolNow.slice(0, 3));
+      let nr: Awaited<ReturnType<typeof getWesternNewReleases>> = [];
+      if (nrResult.status === 'fulfilled') {
+        nr = nrResult.value;
+        if (__DEV__) {
+          const sample = nr?.[0];
+          const railsPoolNow = nr.filter((it) => !!it.spotifyUrl && !!it.artistId);
+          const spotifyUrlCount = nr.reduce(
+            (acc, it) => {
+              if (it.spotifyUrl) acc.present += 1;
+              else acc.missing += 1;
+              return acc;
+            },
+            { present: 0, missing: 0 }
+          );
+          const artistIdCount = nr.reduce(
+            (acc, it) => {
+              if (it.artistId) acc.present += 1;
+              else acc.missing += 1;
+              return acc;
+            },
+            { present: 0, missing: 0 }
+          );
+          console.log('[discover rails][sample count]', nr?.length ?? 0);
+          console.log('[discover rails][sample keys]', Object.keys(sample ?? {}));
+          console.log('[discover rails][sample item]', sample ?? null);
+          console.log('[discover rails][filter expects]', {
+            usesField: 'artistId',
+            genreSource: 'getArtistGenresCached(artistId)',
+            mapping: 'mapToCanonicalGenres(genres)',
+            includeSet: 'Set<CanonicalGenre>',
+          });
+          console.log('[discover rails][pool counts]', {
+            total: nr.length,
+            railsPool: railsPoolNow.length,
+            spotifyUrl: spotifyUrlCount,
+            artistId: artistIdCount,
+          });
+          console.log('[discover rails][sample items][newReleases]', nr.slice(0, 3));
+          console.log('[discover rails][sample items][railsPool]', railsPoolNow.slice(0, 3));
+          console.log('[discover rails][resp]', { total: nr.length });
+        }
+        debugSetNewReleases('from getWesternNewReleases', nr);
+        cacheNewReleases(nr);
+      } else {
+        setTopPicksError(nrResult.reason);
+        debugSetNewReleases('from getWesternNewReleases (error)', []);
+        if (__DEV__) {
+          console.warn('[discover rails][new releases failed]', nrResult.reason);
+        }
       }
-      if (__DEV__) {
-        console.log('[discover rails][resp]', { total: nr.length });
+
+      if (genresResult.status === 'fulfilled') {
+        const genres = genresResult.value;
+        setSelectedGenres(genres);
+        setDraftGenres(genres.size ? new Set(genres) : new Set(['all']));
+      } else if (__DEV__) {
+        console.warn('[discover rails][genres failed]', genresResult.reason);
       }
-      setSelectedGenres(genres);
-      setDraftGenres(genres.size ? new Set(genres) : new Set(['all']));
-      debugSetNewReleases('from getWesternNewReleases', nr);
-      cacheNewReleases(nr);
+
       if (!nr || nr.length === 0) {
         try {
           const feed = await fetchFeed();
@@ -887,12 +998,6 @@ export default function DiscoverTab() {
             else if (/^\d{4}$/.test(x)) x = `${x}-07-01`;
             else if (/^\d{4}-\d{2}$/.test(x)) x = `${x}-15`;
             return x;
-          };
-          const isRecent = (s?: string | null, precision?: string | null) => {
-            const n = normalizeDate(s, precision);
-            if (!n) return false;
-            const t = Date.parse(n);
-            return !Number.isNaN(t) && t >= cutoffTs;
           };
           const details: Record<string, { name: string; imageUrl?: string | null }> = {};
           const recents: Record<string, { latestId?: string; latestDate?: string | null }> = {};
@@ -969,7 +1074,7 @@ export default function DiscoverTab() {
 
           try {
             const feed = await fetchFeedForArtists({ artistIds: validFollowedIds, limit: 250 });
-            const recentFeed = (feed || []).filter((it) => followedIds.has(it.artist_id) && isRecent(it.release_date, null));
+            const recentFeed = (feed || []).filter((it) => followedIds.has(it.artist_id));
             if (recentFeed.length) {
               const releases: Array<{ id: string; title: string; artist: string; artistId?: string | null; releaseDate?: string | null; spotifyUrl?: string | null; imageUrl?: string | null; type?: 'album' | 'single' | 'ep' }> = [];
               const seenRelease = new Set<string>();
@@ -1064,7 +1169,7 @@ export default function DiscoverTab() {
             const idMatch = aid && followedIds.has(aid);
             const nameMatch = aname && followedNames.has(String(aname).toLowerCase().trim());
             if (!idMatch && !nameMatch) return false;
-            return isRecent((r as any).releaseDate ?? (r as any).release_date, (r as any).releaseDatePrecision ?? (r as any).release_date_precision);
+            return true;
           });
 	          if (fallbackFromNr.length) {
 	            const releases = fallbackFromNr.slice(0, 60).map((r: any) => {
@@ -1161,7 +1266,7 @@ export default function DiscoverTab() {
               }
               if (rateLimitHits >= 3) break;
               const normDateVal = (d?: string | null, p?: string | null) => Date.parse(normalizeDate(d, p) ?? '1970-01-01');
-              const recent = (albs || []).filter(a => isRecent(a.releaseDate, (a as any).releaseDatePrecision));
+              const recent = (albs || []);
               if (__DEV__) {
                 debugPerArtist.push({
                   artist: fa.name,
@@ -1209,11 +1314,18 @@ export default function DiscoverTab() {
           }
           }
         }
-      } catch {}
+      } catch (err) {
+        setYourUpdatesError(err);
+        if (__DEV__) console.warn('[updates] load failed', err);
+      }
       finally { setPickedLoading(false); setForYouLoading(false); }
       await refreshListenStatus();
-    } catch {}
+    } catch (err) {
+      setTopPicksError((prev) => prev ?? err);
+      if (__DEV__) console.warn('[discover] load failed', err);
+    }
     finally {
+      setTopPicksLoading(false);
       setInitialLoading(false);
     }
   }, [refreshListenStatus]);
@@ -1857,7 +1969,7 @@ export default function DiscoverTab() {
           return (
             <View style={{ paddingTop: 8, paddingBottom: 10 }}>
               <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text.secondary, marginBottom: 10, paddingHorizontal: pad, alignSelf: 'stretch', textAlign: 'left' }}>
-                Your updates
+                Following
               </Text>
               <FlatList
                 data={items.slice(0, 16)}
@@ -1896,7 +2008,7 @@ export default function DiscoverTab() {
           return (
             <View style={{ paddingTop: 8, paddingBottom: 18, alignItems: 'stretch' }}>
               <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text.secondary, marginBottom: 12, paddingHorizontal: pad, alignSelf: 'stretch', textAlign: 'left' }}>
-                Your updates
+                Following
               </Text>
               <GlassCard style={{ width: cardW, padding: 16, borderRadius: 20, borderWidth: 1, borderColor: colors.text.secondary + '14', gap: 12, alignSelf: 'center' }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
@@ -1925,12 +2037,12 @@ export default function DiscoverTab() {
           );
         };
 
-        if (pickedLoading || forYouLoading) {
+        if (yourUpdatesLoading) {
           const placeholders = Array.from({ length: 3 }).map((_, i) => ({ id: `ph-${i}` }));
           return (
             <View style={{ paddingTop: 8, paddingBottom: 10 }}>
               <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text.secondary, marginBottom: 12, paddingHorizontal: pad, alignSelf: 'stretch', textAlign: 'left' }}>
-                Your updates
+                Following
               </Text>
               <FlatList
                 data={placeholders}
@@ -1953,25 +2065,8 @@ export default function DiscoverTab() {
           );
         }
 
-        const fallbackItems = Object.keys(recentByArtist || {}).map((id) => {
-          const det = followedDetails[id] || { name: 'Unknown', imageUrl: null };
-          const rec = recentByArtist[id] || {} as { latestId?: string; latestDate?: string | null };
-          return { id, name: det.name, imageUrl: det.imageUrl ?? null, latestId: rec.latestId, latestDate: rec.latestDate ?? null };
-        });
-        const base = (forYouItems && forYouItems.length ? forYouItems : fallbackItems) as Array<{ id: string; name: string; imageUrl?: string | null; latestId?: string; latestDate?: string | null }>;
-        const uniq = new Map<string, { id: string; name: string; imageUrl?: string | null; latestId?: string; latestDate?: string | null }>();
-        base.forEach((it) => {
-          if (!it?.latestId) return;
-          if (!it?.id || !/^[A-Za-z0-9]{22}$/.test(String(it.id))) return;
-          if (!uniq.has(it.id)) uniq.set(it.id, it);
-        });
-        const sorted = Array.from(uniq.values()).sort((a, b) => {
-          const ta = a.latestDate ? Date.parse(a.latestDate) : 0;
-          const tb = b.latestDate ? Date.parse(b.latestDate) : 0;
-          return tb - ta;
-        });
-        if (!sorted.length) return renderEmptySpotlight();
-        return renderUpdatesRow(sorted);
+        if (!followedArtists.length) return renderEmptySpotlight();
+        return renderUpdatesRow(followedArtists);
       })()}
       <Animated.View
         style={{
@@ -2207,20 +2302,61 @@ export default function DiscoverTab() {
           );
         };
 
-        const hasAny = hasYourUpdates || filteredTopPicks.length > 0 || youMightLike.length > 0 || genreRows.length > 0;
+        const renderSectionSkeleton = (key: string, count = 3) => (
+          <View key={key} style={{ paddingHorizontal: horizontalPad, rowGap: 10, marginBottom: 8 }}>
+            {Array.from({ length: count }).map((_, idx) => (
+              <View key={`${key}-${idx}`} style={{ borderRadius: 16, overflow: 'hidden', backgroundColor: colors.bg.muted, height: 76 }}>
+                <Shimmer size={76} borderRadius={16} />
+              </View>
+            ))}
+          </View>
+        );
+
+        const renderInlineState = (message: string, tone: 'muted' | 'error' = 'muted') => (
+          <Text
+            style={{
+              color: tone === 'error' ? colors.accent.primary : colors.text.muted,
+              paddingHorizontal: horizontalPad,
+              marginBottom: 8,
+              fontSize: 13,
+            }}
+          >
+            {message}
+          </Text>
+        );
+
+        const hasAny =
+          yourUpdatesState.status === 'success' ||
+          topPicksState.status === 'success' ||
+          youMightLike.length > 0 ||
+          genreRows.length > 0;
+
         return (
           <>
-            {yourUpdatesReleases.length ? (
-              <View key="your-updates-releases" style={{ marginBottom: 16 }}>
-                {renderSection(yourUpdatesReleases, '', 'your-updates')}
-              </View>
-            ) : null}
-            {filteredTopPicks.length ? (
-              <View key="top-picks" style={{ marginBottom: 16 }}>
-                <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text.secondary, marginBottom: 10, paddingHorizontal: horizontalPad }}>Top picks</Text>
-                {renderSection(filteredTopPicks, '', 'top-picks')}
-              </View>
-            ) : null}
+            <View key="your-updates-releases" style={{ marginBottom: 16 }}>
+              <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text.secondary, marginBottom: 10, paddingHorizontal: horizontalPad }}>
+                Your updates
+              </Text>
+              {yourUpdatesState.status === 'loading'
+                ? renderSectionSkeleton('your-updates-loading')
+                : yourUpdatesState.status === 'error'
+                  ? renderInlineState('Could not load updates right now.', 'error')
+                  : yourUpdatesState.status === 'empty'
+                    ? renderInlineState('No new releases from followed artists yet.')
+                    : renderSection(yourUpdatesState.items, '', 'your-updates')}
+            </View>
+            <View key="top-picks" style={{ marginBottom: 16 }}>
+              <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text.secondary, marginBottom: 10, paddingHorizontal: horizontalPad }}>
+                Top Picks
+              </Text>
+              {topPicksState.status === 'loading'
+                ? renderSectionSkeleton('top-picks-loading')
+                : topPicksState.status === 'error'
+                  ? renderInlineState('Could not load top picks right now.', 'error')
+                  : topPicksState.status === 'empty'
+                    ? renderInlineState('No top picks available right now.')
+                    : renderSection(topPicksState.items, '', 'top-picks')}
+            </View>
             {(() => {
               if (!youMightLike.length) return null;
               return (
