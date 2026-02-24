@@ -484,11 +484,7 @@ serve(async (req) => {
         });
       }
 
-      const raw = rawParam
-        .toLowerCase()
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
+      const raw = rawParam.toLowerCase().split(",").map((s) => s.trim()).filter(Boolean);
       if (!raw.length) {
         const errPayload: any = { error: "genres required" };
         if (debug) errPayload.build = BUILD_ID;
@@ -498,23 +494,42 @@ serve(async (req) => {
         });
       }
 
+      const bucketKeys = [
+        "rap", "rnb", "pop", "rock", "latin", "edm", "country", "kpop", "afrobeats",
+        "jazz", "dancehall", "reggae", "indie", "metal", "punk", "folk", "blues", "classical",
+        "soundtrack", "ambient", "jpop", "desi",
+      ];
       const want = new Set(raw);
+      const requestedBuckets = bucketKeys.filter((k) => want.has(k));
+      const buckets: Record<string, any[]> = Object.fromEntries(bucketKeys.map((k) => [k, [] as any[]]));
+
       const marketFixed = "US";
       const daysParam = url.searchParams.get("days");
       const parsedDays = daysParam == null ? 30 : Number(daysParam);
       const daysUsed = Math.max(1, Math.min(30, Number.isFinite(parsedDays) ? parsedDays : 30));
 
-      const browseUrl = `${API}/browse/new-releases?country=${marketFixed}&limit=50`;
-      const browseRes = await fetchWithTimeout(browseUrl, { headers: hdrs }, 8000, "browse/new-releases:US");
-      if (!browseRes.ok) {
-        const err: any = new Error("spotify browse new releases failed");
-        err.stage = "browse/new-releases:US";
-        err.status = browseRes.status;
-        err.statusText = browseRes.statusText;
-        throw err;
-      }
-      const browseJson: any = await browseRes.json();
-      const itemsAll: any[] = browseJson?.albums?.items ?? [];
+      const SEED_MAP: Record<string, string[]> = {
+        pop: ["pop", "dance-pop", "electropop", "indie-pop", "synth-pop"],
+        rap: ["rap", "hip-hop", "trap", "drill"],
+        rnb: ["r-n-b", "soul", "neo-soul", "contemporary-r-b"],
+        rock: ["rock", "alternative", "indie-rock", "pop-rock"],
+        edm: ["edm", "house", "techno", "electronic", "trance", "drum-and-bass", "dubstep"],
+        latin: ["latin", "reggaeton", "latin-pop", "regional-mexican"],
+        country: ["country", "alt-country", "country-pop"],
+        kpop: ["k-pop"],
+        afrobeats: ["afrobeats", "afrobeat", "amapiano"],
+        jazz: ["jazz"],
+        reggae: ["reggae", "dancehall"],
+        indie: ["indie", "indie-pop", "indie-rock", "bedroom-pop"],
+        metal: ["metal", "metalcore", "death-metal"],
+        punk: ["punk", "pop-punk"],
+        folk: ["folk", "singer-songwriter"],
+        classical: ["classical"],
+        soundtrack: ["soundtrack"],
+        ambient: ["ambient"],
+        jpop: ["j-pop"],
+        desi: ["indian", "bollywood", "punjabi"],
+      };
 
       function normalizeDate(s?: string | null): string | null {
         if (!s) return null;
@@ -531,81 +546,25 @@ serve(async (req) => {
         if (Number.isNaN(t)) return 9999;
         return Math.max(0, (Date.now() - t) / (24 * 60 * 60 * 1000));
       }
-      const browseSampleDates = itemsAll.slice(0, 10).map((a: any) => {
-        const normalizedReleaseDate = normalizeDate(a?.release_date);
-        const parsedNormalizedReleaseDate = normalizedReleaseDate ? Date.parse(normalizedReleaseDate) : Number.NaN;
-        return {
-          album: String(a?.name ?? ""),
-          release_date: a?.release_date ?? null,
-          release_date_precision: a?.release_date_precision ?? null,
-          normalized_release_date: normalizedReleaseDate,
-          parsed_normalized_release_date: Number.isNaN(parsedNormalizedReleaseDate) ? null : parsedNormalizedReleaseDate,
-          days_ago_normalized_release_date: daysAgoFrom(normalizedReleaseDate),
-        };
-      });
 
-      const recent = itemsAll.filter((a: any) => {
-        if (!a) return false;
-        const at = String(a?.album_type ?? "").toLowerCase();
-        if (at === "compilation") return false;
-        return daysAgoFrom(a?.release_date) <= daysUsed;
-      });
-      const datePassCount = recent.length;
-
-      const artistIds = Array.from(new Set(
-        recent.map((a: any) => (a?.artists?.[0]?.id ?? "")).filter((s: string) => !!s)
-      ));
-
-      const artistMap = new Map<string, any>();
-      for (let i = 0; i < artistIds.length; i += 50) {
-        const ids = artistIds.slice(i, i + 50);
-        if (!ids.length) continue;
-        const ar = await fetchWithTimeout(`${API}/artists?ids=${ids.join(",")}`, { headers: hdrs }, 8000, "artists");
-        if (!ar.ok) {
-          const err: any = new Error("spotify artists lookup failed");
-          err.stage = "artists";
-          err.status = ar.status;
-          err.statusText = ar.statusText;
-          throw err;
-        }
-        const aj: any = await ar.json();
-        for (const art of aj.artists ?? []) artistMap.set(art.id, art);
+      function classifyType(a: any): "single" | "ep" | "album" {
+        const at = String(a?.album_type || "").toLowerCase();
+        const tt = typeof a?.total_tracks === "number"
+          ? a.total_tracks
+          : (Array.isArray(a?.tracks?.items) ? a.tracks.items.length : 0);
+        if (at === "compilation") return "album";
+        if (tt <= 2) return "single";
+        if (tt <= 6) return "ep";
+        return "album";
       }
-
-      const isElectronicish = (g: string[]) =>
-        g.some((s) =>
-          s.includes("edm") ||
-          s.includes("electronic") ||
-          s.includes("house") ||
-          s.includes("techno") ||
-          s.includes("trance") ||
-          s.includes("dubstep") ||
-          s.includes("drum and bass") ||
-          s.includes("dnb") ||
-          s.includes("future bass") ||
-          s.includes("bass") ||
-          s.includes("electronica")
-        );
-
-      const isHipHopish = (g: string[]) =>
-        g.some((s) =>
-          s.includes("hip hop") ||
-          s.includes("hip-hop") ||
-          s.includes("rap") ||
-          s.includes("drill") ||
-          s.includes("grime") ||
-          s.includes("boom bap") ||
-          s.includes("uk drill") ||
-          s.includes("uk rap")
-        );
 
       const bucketFor = (genres: string[]): string | null => {
         const g = (genres ?? []).map((s) => s.toLowerCase());
         if (g.some((s) => s.includes("k-pop") || s.includes("kpop") || s.includes("korean pop"))) return "kpop";
         if (g.some((s) => s.includes("j-pop") || s.includes("jpop") || s.includes("japanese pop"))) return "jpop";
         if (g.some((s) => s.includes("edm") || s.includes("electronic") || s.includes("electro house") || s.includes("house") || s.includes("techno") || s.includes("trance") || s.includes("drum and bass") || s.includes("dnb") || s.includes("dubstep") || s.includes("downtempo") || s.includes("synthwave") || s.includes("electronica"))) return "edm";
-        if (isHipHopish(g)) return "rap";
-        if (g.some((s) => s.includes("trap")) && !isElectronicish(g)) return "rap";
+        if (g.some((s) => s.includes("hip hop") || s.includes("hip-hop") || s.includes("rap") || s.includes("drill") || s.includes("grime") || s.includes("boom bap") || s.includes("uk drill") || s.includes("uk rap"))) return "rap";
+        if (g.some((s) => s.includes("trap")) && !g.some((s) => s.includes("edm") || s.includes("electronic"))) return "rap";
         if (g.some((s) => s.includes("r&b") || s.includes("rnb") || s.includes("soul") || s.includes("neo-soul") || s.includes("contemporary r&b"))) return "rnb";
         if (g.some((s) => s.includes("pop"))) return "pop";
         if (g.some((s) => s.includes("alt z") || s.includes("adult contemporary"))) return "pop";
@@ -628,94 +587,200 @@ serve(async (req) => {
         return null;
       };
 
-      function classifyType(a: any): "single" | "ep" | "album" {
-        const at = String(a?.album_type || "").toLowerCase();
-        const tt = typeof a?.total_tracks === "number"
-          ? a.total_tracks
-          : (Array.isArray(a?.tracks?.items) ? a.tracks.items.length : 0);
-        if (at === "compilation") return "album";
-        if (tt <= 2) return "single";
-        if (tt <= 6) return "ep";
-        return "album";
+      const dedupeById = (arr: any[]) => {
+        const seen = new Set<string>();
+        const out: any[] = [];
+        for (const item of arr) {
+          const id = String(item?.id ?? "");
+          if (!id || seen.has(id)) continue;
+          seen.add(id);
+          out.push(item);
+        }
+        return out;
+      };
+
+      const debugByBucket: any = {
+        seeds_used: Object.fromEntries(bucketKeys.map((k) => [k, [] as string[]])),
+        recommendations_track_count: Object.fromEntries(bucketKeys.map((k) => [k, 0])),
+        unique_album_ids: Object.fromEntries(bucketKeys.map((k) => [k, 0])),
+        date_pass_count: Object.fromEntries(bucketKeys.map((k) => [k, 0])),
+        popularity_pass_count: Object.fromEntries(bucketKeys.map((k) => [k, 0])),
+        final_count: Object.fromEntries(bucketKeys.map((k) => [k, 0])),
+        sample_final: Object.fromEntries(bucketKeys.map((k) => [k, [] as any[]])),
+      };
+
+      stage = "fetch_seed_list";
+      const seedRes = await fetchWithTimeout(`${API}/recommendations/available-genre-seeds`, { headers: hdrs }, 8000, stage);
+      if (!seedRes.ok) {
+        const err: any = new Error("spotify available genre seeds failed");
+        err.stage = stage;
+        err.status = seedRes.status;
+        err.statusText = seedRes.statusText;
+        throw err;
+      }
+      const seedJson: any = await seedRes.json();
+      const allowedSeedSet = new Set<string>((seedJson?.genres ?? []).map((s: any) => String(s).toLowerCase()));
+
+      const bucketAlbumIds: Record<string, string[]> = Object.fromEntries(bucketKeys.map((k) => [k, [] as string[]]));
+      const globalAlbumIdSet = new Set<string>();
+
+      for (const bucketKey of requestedBuckets) {
+        const validSeeds = (SEED_MAP[bucketKey] ?? [])
+          .map((s) => s.toLowerCase())
+          .filter((s) => allowedSeedSet.has(s))
+          .slice(0, 6);
+        debugByBucket.seeds_used[bucketKey] = validSeeds;
+        if (!validSeeds.length) continue;
+
+        const seedGroups = [validSeeds.slice(0, 3), validSeeds.slice(3, 6)].filter((g) => g.length > 0);
+        const trackSeen = new Set<string>();
+        const albumSeen = new Set<string>();
+        const albumIds: string[] = [];
+        let recTrackCount = 0;
+
+        for (const seedGroup of seedGroups) {
+          stage = `fetch_recommendations_${bucketKey}`;
+          const recUrl = `${API}/recommendations?` + new URLSearchParams({
+            seed_genres: seedGroup.join(","),
+            market: marketFixed,
+            limit: "100",
+            min_popularity: "50",
+          });
+          const recRes = await fetchWithTimeout(recUrl, { headers: hdrs }, 8000, stage);
+          if (!recRes.ok) continue;
+          const recJson: any = await recRes.json();
+          const tracks: any[] = recJson?.tracks ?? [];
+          recTrackCount += tracks.length;
+
+          for (const tr of tracks) {
+            const tid = String(tr?.id ?? "");
+            if (tid && trackSeen.has(tid)) continue;
+            if (tid) trackSeen.add(tid);
+            const albumId = String(tr?.album?.id ?? "");
+            if (!albumId || albumSeen.has(albumId)) continue;
+            albumSeen.add(albumId);
+            albumIds.push(albumId);
+            if (albumIds.length >= 120) break;
+          }
+          if (albumIds.length >= 120) break;
+        }
+
+        debugByBucket.recommendations_track_count[bucketKey] = recTrackCount;
+        debugByBucket.unique_album_ids[bucketKey] = albumIds.length;
+        bucketAlbumIds[bucketKey] = albumIds;
+        for (const id of albumIds) globalAlbumIdSet.add(id);
       }
 
-      const bucketKeys = [
-        "rap", "rnb", "pop", "rock", "latin", "edm", "country", "kpop", "afrobeats",
-        "jazz", "dancehall", "reggae", "indie", "metal", "punk", "folk", "blues", "classical",
-        "soundtrack", "ambient", "jpop", "desi",
-      ];
-      const buckets: Record<string, any[]> = Object.fromEntries(bucketKeys.map((k) => [k, [] as any[]]));
-      const bucketMatchCount: Record<string, number> = Object.fromEntries(bucketKeys.map((k) => [k, 0]));
-      const sampleAfterPopFilter: Array<{
-        albumTitle: string;
-        artistName: string;
-        artistPopularity: number;
-        artistGenres: string[];
-      }> = [];
-
-      let popularityPassCount = 0;
-      let bucketedCount = 0;
-      for (const a of recent) {
-        const primaryArtistId = a?.artists?.[0]?.id ?? null;
-        if (!primaryArtistId) continue;
-        const art = artistMap.get(primaryArtistId);
-        const pop = typeof art?.popularity === "number" ? art.popularity : null;
-        if (pop != null && pop >= 50) popularityPassCount += 1;
-        if (pop == null || pop < 50) continue;
-        if (sampleAfterPopFilter.length < 10) {
-          sampleAfterPopFilter.push({
-            albumTitle: String(a?.name ?? ""),
-            artistName: String(a?.artists?.[0]?.name ?? ""),
-            artistPopularity: pop,
-            artistGenres: Array.isArray(art?.genres) ? art.genres : [],
-          });
+      const albumMap = new Map<string, any>();
+      const globalAlbumIds = Array.from(globalAlbumIdSet);
+      for (let i = 0; i < globalAlbumIds.length; i += 50) {
+        stage = "fetch_albums_batch";
+        const ids = globalAlbumIds.slice(i, i + 50);
+        if (!ids.length) continue;
+        const albumsRes = await fetchWithTimeout(
+          `${API}/albums?` + new URLSearchParams({ ids: ids.join(","), market: marketFixed }),
+          { headers: hdrs },
+          8000,
+          stage,
+        );
+        if (!albumsRes.ok) continue;
+        const albumsJson: any = await albumsRes.json();
+        for (const album of albumsJson?.albums ?? []) {
+          if (album?.id) albumMap.set(album.id, album);
         }
-        const genresArr = Array.isArray(art?.genres) ? art.genres : [];
-        const b = bucketFor(genresArr);
-        if (!b) continue;
-        if (bucketMatchCount[b] != null) bucketMatchCount[b] += 1;
-        if (!want.has(b)) continue;
-        buckets[b].push({
-          id: a.id,
-          title: a.name,
-          artist: a.artists?.[0]?.name ?? "",
-          artistId: primaryArtistId,
-          artistPopularity: pop,
-          releaseDate: a.release_date ?? null,
-          spotifyUrl: a.external_urls?.spotify ?? null,
-          imageUrl: a.images?.[0]?.url ?? null,
-          type: classifyType(a),
-        });
-        bucketedCount += 1;
+      }
+
+      const artistIdSet = new Set<string>();
+      for (const album of albumMap.values()) {
+        const aid = String(album?.artists?.[0]?.id ?? "");
+        if (aid) artistIdSet.add(aid);
+      }
+      const artistIds = Array.from(artistIdSet);
+      const artistMap = new Map<string, any>();
+      for (let i = 0; i < artistIds.length; i += 50) {
+        stage = "fetch_artists_batch";
+        const ids = artistIds.slice(i, i + 50);
+        if (!ids.length) continue;
+        const artistRes = await fetchWithTimeout(`${API}/artists?ids=${ids.join(",")}`, { headers: hdrs }, 8000, stage);
+        if (!artistRes.ok) continue;
+        const artistJson: any = await artistRes.json();
+        for (const art of artistJson?.artists ?? []) {
+          if (art?.id) artistMap.set(art.id, art);
+        }
       }
 
       const cmp = (x: any, y: any) => {
         const popDiff = (y.artistPopularity ?? 0) - (x.artistPopularity ?? 0);
         if (popDiff) return popDiff;
-        const dx = Date.parse(x.releaseDate ?? "1970-01-01");
-        const dy = Date.parse(y.releaseDate ?? "1970-01-01");
+        const dx = Date.parse(normalizeDate(x.releaseDate) ?? "1970-01-01");
+        const dy = Date.parse(normalizeDate(y.releaseDate) ?? "1970-01-01");
         return dy - dx;
       };
 
-      for (const k of Object.keys(buckets)) {
-        buckets[k].sort(cmp);
-        buckets[k] = buckets[k].slice(0, 30);
+      for (const bucketKey of requestedBuckets) {
+        stage = `build_bucket_${bucketKey}`;
+        const albums = (bucketAlbumIds[bucketKey] ?? []).map((id) => albumMap.get(id)).filter(Boolean);
+
+        const datePassed = albums.filter((a: any) => {
+          if (!a) return false;
+          const at = String(a?.album_type ?? "").toLowerCase();
+          if (at === "compilation") return false;
+          return daysAgoFrom(a?.release_date) <= daysUsed;
+        });
+        debugByBucket.date_pass_count[bucketKey] = datePassed.length;
+
+        let popPassCount = 0;
+        const selected: any[] = [];
+        for (const a of datePassed) {
+          const primaryArtistId = String(a?.artists?.[0]?.id ?? "");
+          if (!primaryArtistId) continue;
+          const art = artistMap.get(primaryArtistId);
+          const artistPopularity = typeof art?.popularity === "number" ? art.popularity : null;
+          if (artistPopularity != null && artistPopularity >= 50) popPassCount += 1;
+          if (artistPopularity == null || artistPopularity < 50) continue;
+
+          const assignedBucket = bucketFor(Array.isArray(art?.genres) ? art.genres : []);
+          if (assignedBucket !== bucketKey) continue;
+
+          selected.push({
+            id: a.id,
+            title: a.name,
+            artist: a.artists?.[0]?.name ?? "",
+            artistId: primaryArtistId,
+            artistPopularity,
+            releaseDate: a.release_date ?? null,
+            spotifyUrl: a.external_urls?.spotify ?? null,
+            imageUrl: a.images?.[0]?.url ?? null,
+            type: classifyType(a),
+          });
+        }
+        debugByBucket.popularity_pass_count[bucketKey] = popPassCount;
+
+        const finalItems = dedupeById(selected).sort(cmp).slice(0, 30);
+        buckets[bucketKey] = finalItems;
+        debugByBucket.final_count[bucketKey] = finalItems.length;
+        debugByBucket.sample_final[bucketKey] = finalItems.slice(0, 3).map((item: any) => ({
+          title: item.title,
+          artist: item.artist,
+          popularity: item.artistPopularity,
+          releaseDate: item.releaseDate,
+        }));
       }
 
       const payload: any = { market: marketFixed, days: daysUsed, buckets };
       if (debug) {
         payload.build = BUILD_ID;
         payload.debug = {
-          browse_count: itemsAll.length,
-          filtered_count: recent.length,
-          artist_count: artistMap.size,
+          ...debugInfo,
           days_used: daysUsed,
-          date_pass_count: datePassCount,
-          popularity_pass_count: popularityPassCount,
-          bucketed_count: bucketedCount,
-          bucket_match_count: bucketMatchCount,
-          sample_after_pop_filter: sampleAfterPopFilter,
-          browse_sample_dates: browseSampleDates,
+          seeds_available_count: allowedSeedSet.size,
+          seeds_used: debugByBucket.seeds_used,
+          recommendations_track_count: debugByBucket.recommendations_track_count,
+          unique_album_ids: debugByBucket.unique_album_ids,
+          date_pass_count: debugByBucket.date_pass_count,
+          popularity_pass_count: debugByBucket.popularity_pass_count,
+          final_count: debugByBucket.final_count,
+          sample_final: debugByBucket.sample_final,
         };
       }
 
