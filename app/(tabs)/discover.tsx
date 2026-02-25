@@ -39,6 +39,7 @@ const DISCOVER_VIEW_MODE_KEY = 'discover.viewMode';
 const DISCOVER_MARKETS = ['US', 'GB'];
 const DISCOVER_GENRE_DAYS = 30;
 const DISCOVER_TOP_PICKS_DAYS = 30;
+const YOUR_UPDATES_CAP = 20;
 
 function spotifyKey(id?: string | null, spotifyUrl?: string | null) {
   const parse = (v?: string | null) => {
@@ -389,6 +390,10 @@ export default function DiscoverTab() {
   }, [forYouItems, recentByArtist, followedDetails]);
 
   const yourUpdatesLoading = pickedLoading || forYouLoading;
+  const yourUpdatesVisible = useMemo(
+    () => yourUpdatesReleases.slice(0, YOUR_UPDATES_CAP),
+    [yourUpdatesReleases]
+  );
 
   const yourUpdatesState = useMemo<{ items: typeof yourUpdatesReleases; status: SectionStatus; error?: any }>(() => {
     if (yourUpdatesLoading) return { items: [], status: 'loading' };
@@ -2322,16 +2327,23 @@ export default function DiscoverTab() {
         return (
           <>
             <View key="your-updates-releases" style={{ marginBottom: 16 }}>
-              <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text.secondary, marginBottom: 10, paddingHorizontal: horizontalPad }}>
-                Your updates
-              </Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, paddingHorizontal: horizontalPad }}>
+                <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text.secondary }}>
+                  Your updates
+                </Text>
+                {yourUpdatesReleases.length > YOUR_UPDATES_CAP ? (
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: colors.text.muted }}>
+                    Latest {YOUR_UPDATES_CAP}
+                  </Text>
+                ) : null}
+              </View>
               {yourUpdatesState.status === 'loading'
                 ? renderSectionSkeleton('your-updates-loading')
                 : yourUpdatesState.status === 'error'
                   ? renderInlineState('Could not load updates right now.', 'error')
                   : yourUpdatesState.status === 'empty'
                     ? renderInlineState('No new releases from followed artists yet.')
-                    : renderSection(yourUpdatesState.items, '', 'your-updates')}
+                    : renderSection(yourUpdatesVisible, '', 'your-updates')}
             </View>
             <View key="top-picks" style={{ marginBottom: 16 }}>
               <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text.secondary, marginBottom: 10, paddingHorizontal: horizontalPad }}>
