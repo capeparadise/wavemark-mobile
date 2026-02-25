@@ -32,6 +32,297 @@ const fetchWithTimeout = async (input: string, init: RequestInit, timeoutMs: num
   }
 };
 
+const VARIANT_KEYWORDS = [
+  "remix",
+  "acoustic",
+  "extended",
+  "edit",
+  "radio edit",
+  "live",
+  "sped up",
+  "slowed",
+  "instrumental",
+  "karaoke",
+  "demo",
+  "clean",
+  "explicit",
+  "music video",
+  "version",
+  "mix",
+  "rework",
+  "alt",
+  "deluxe",
+];
+const hasVariantKeyword = (input?: string | null): boolean => {
+  const s = String(input ?? "").toLowerCase();
+  if (!s) return false;
+  return VARIANT_KEYWORDS.some((k) => s.includes(k));
+};
+const canonicalTitle = (title?: string | null): string => {
+  const raw = String(title ?? "").toLowerCase();
+  if (!raw) return "";
+  let normalized = raw.replace(/\([^)]*\)|\[[^\]]*\]/g, " ");
+  const dashParts = normalized.split(/\s+-\s+/);
+  if (dashParts.length > 1) {
+    const suffix = dashParts.slice(1).join(" - ");
+    if (hasVariantKeyword(suffix)) normalized = dashParts[0];
+  }
+  normalized = normalized.replace(
+    /\b(remix|acoustic|extended|edit|radio edit|live|sped up|slowed|instrumental|karaoke|demo|clean|explicit|music video|version|mix|rework|alt|deluxe)\b/g,
+    " ",
+  );
+  normalized = normalized.replace(/\s+/g, " ").trim();
+  return normalized;
+};
+const isTrackItem = (item: any): boolean => (
+  item?.normalizedType === "track" || item?.sourceType === "track" || item?.type === "track"
+);
+const isAlbumItem = (item: any): boolean => (
+  item?.normalizedType === "album" || item?.sourceType === "album" || item?.type === "album"
+);
+const pickBestTrack = (items: any[]): any => {
+  if (!Array.isArray(items) || !items.length) return null;
+  const trackScore = (item: any) => {
+    const title = String(item?.title ?? item?.name ?? "");
+    const lower = title.toLowerCase();
+    const cleanBonus = hasVariantKeyword(lower) ? 0 : 1_000_000_000;
+    const popScore = Math.max(0, Number(item?.artistPopularity ?? 0)) * 1_000_000;
+    const dateScore = Math.max(0, Number(item?.releaseTs ?? 0));
+    const lengthPenalty = Math.min(10_000, title.length) * 100;
+    return cleanBonus + popScore + dateScore - lengthPenalty;
+  };
+  let best = items[0];
+  let bestScore = trackScore(best);
+  for (let i = 1; i < items.length; i++) {
+    const candidate = items[i];
+    const score = trackScore(candidate);
+    if (score > bestScore) {
+      best = candidate;
+      bestScore = score;
+      continue;
+    }
+    if (score === bestScore) {
+      const bestDate = Number(best?.releaseTs ?? 0);
+      const candidateDate = Number(candidate?.releaseTs ?? 0);
+      if (candidateDate > bestDate) {
+        best = candidate;
+        bestScore = score;
+        continue;
+      }
+      if (candidateDate === bestDate) {
+        const bestId = String(best?.id ?? "");
+        const candidateId = String(candidate?.id ?? "");
+        if (candidateId && bestId && candidateId.localeCompare(bestId) < 0) {
+          best = candidate;
+          bestScore = score;
+        }
+      }
+    }
+  }
+  return best;
+};
+const pickBestAlbum = (items: any[]): any => {
+  if (!Array.isArray(items) || !items.length) return null;
+  const sorted = [...items].sort((a: any, b: any) => {
+    const popDiff = Number(b?.artistPopularity ?? 0) - Number(a?.artistPopularity ?? 0);
+    if (popDiff) return popDiff;
+    const dateDiff = Number(b?.releaseTs ?? 0) - Number(a?.releaseTs ?? 0);
+    if (dateDiff) return dateDiff;
+    return String(a?.id ?? "").localeCompare(String(b?.id ?? ""));
+  });
+  return sorted[0];
+};
+async function dedupeDiscoveryItems(
+  items: any[],
+  opts: {
+    hdrs: Record<string, string>;
+    market: string;
+    stagePrefix: string;
+    maxAlbumFetchIds?: number;
+    setStage: (next: string) => void;
+    ensureArtistPopularity: (artistIds: string[], stagePrefix: string) => Promise<void>;
+    getArtistPopularity: (artists: Array<{ id: string | null; name: string | null }>) => number | null;
+    normalizeReleaseDate: (releaseDate?: string | null, precision?: string | null) => string | null;
+    toReleaseTs: (releaseDate?: string | null, precision?: string | null) => number | null;
+  },
+) {
+  const safeItems = Array.isArray(items) ? items.filter(Boolean) : [];
+  const maxAlbumFetchIds = Math.max(1, Math.min(20, Number.isFinite(opts?.maxAlbumFetchIds) ? Number(opts.maxAlbumFetchIds) : 20));
+  const grouped = new Map<string, { albumId: string | null; items: any[] }>();
+  safeItems.forEach((item: any, index: number) => {
+    const normalizedType = isTrackItem(item) ? "track" : "album";
+    const albumIdRaw = normalizedType === "album" ? item?.id : item?.albumId;
+    const albumId = albumIdRaw ? String(albumIdRaw) : null;
+    const fallbackId = String(item?.id ?? `${normalizedType}-${index}`);
+    const key = albumId ? `album:${albumId}` : `item:${normalizedType}:${fallbackId}`;
+    if (!grouped.has(key)) grouped.set(key, { albumId, items: [] });
+    grouped.get(key)!.items.push(item);
+  });
+
+  const trackOnlyGroups = Array.from(grouped.values())
+    .map((group) => {
+      const trackItems = group.items.filter(isTrackItem);
+      const albumItems = group.items.filter(isAlbumItem);
+      const groupMaxPopularity = trackItems.reduce((max: number, t: any) => {
+        const p = Number(t?.artistPopularity ?? -1);
+        return p > max ? p : max;
+      }, -1);
+      return {
+        group,
+        trackItems,
+        albumItems,
+        albumId: group.albumId,
+        trackCount: trackItems.length,
+        groupMaxPopularity,
+      };
+    })
+    .filter((entry) => !entry.albumItems.length && !!entry.albumId && entry.trackCount >= 2)
+    .sort((a, b) => {
+      if (b.trackCount !== a.trackCount) return b.trackCount - a.trackCount;
+      if (b.groupMaxPopularity !== a.groupMaxPopularity) return b.groupMaxPopularity - a.groupMaxPopularity;
+      return String(a.albumId ?? "").localeCompare(String(b.albumId ?? ""));
+    });
+
+  const albumIdsToFetch = trackOnlyGroups.slice(0, maxAlbumFetchIds).map((entry) => String(entry.albumId));
+  const albumById = new Map<string, any>();
+  for (let i = 0; i < albumIdsToFetch.length; i += 20) {
+    const ids = albumIdsToFetch.slice(i, i + 20);
+    if (!ids.length) continue;
+    opts.setStage(`${opts.stagePrefix}_albums_${Math.floor(i / 20)}`);
+    const ar = await fetchWithTimeout(
+      `${API}/albums?` + new URLSearchParams({ ids: ids.join(","), market: opts.market }),
+      { headers: opts.hdrs },
+      8000,
+      `${opts.stagePrefix}_albums_${Math.floor(i / 20)}`,
+    );
+    if (!ar.ok) continue;
+    const aj: any = await ar.json();
+    for (const album of aj?.albums ?? []) {
+      const aid = album?.id;
+      if (!aid) continue;
+      albumById.set(String(aid), album);
+    }
+  }
+
+  const fetchedArtistIds = Array.from(new Set(
+    Array.from(albumById.values()).flatMap((album: any) => (
+      Array.isArray(album?.artists) ? album.artists.map((a: any) => a?.id).filter(Boolean) : []
+    )),
+  ));
+  if (fetchedArtistIds.length) {
+    await opts.ensureArtistPopularity(fetchedArtistIds, `${opts.stagePrefix}_album_artists`);
+  }
+
+  const toAlbumNormalized = (album: any) => {
+    const artists = Array.isArray(album?.artists)
+      ? album.artists.map((a: any) => ({ id: a?.id ?? null, name: a?.name ?? null }))
+      : [];
+    const releaseDateRaw = album?.release_date ?? null;
+    const releaseDatePrecision = album?.release_date_precision ?? null;
+    const releaseDateNormalized = opts.normalizeReleaseDate(releaseDateRaw, releaseDatePrecision);
+    const releaseTs = opts.toReleaseTs(releaseDateRaw, releaseDatePrecision);
+    const albumItem: any = {
+      sourceType: "album",
+      normalizedType: "album",
+      type: "album",
+      id: album?.id ?? null,
+      albumId: album?.id ?? null,
+      title: album?.name ?? "",
+      name: album?.name ?? "",
+      artists,
+      releaseDateRaw,
+      releaseDatePrecision,
+      releaseDateNormalized,
+      releaseTs,
+      spotifyUrl: album?.external_urls?.spotify ?? null,
+      imageUrl: album?.images?.[0]?.url ?? null,
+      images: Array.isArray(album?.images) ? album.images : [],
+      albumType: album?.album_type ?? null,
+      totalTracks: typeof album?.total_tracks === "number" ? album.total_tracks : null,
+    };
+    albumItem.artistPopularity = opts.getArtistPopularity(artists);
+    return albumItem;
+  };
+
+  const stageAItems: any[] = [];
+  let droppedTracksDueToAlbumPreference = 0;
+  let albumsFetchedForSubstitution = 0;
+
+  for (const groupedEntry of grouped.values()) {
+    const albumItems = groupedEntry.items.filter(isAlbumItem);
+    const trackItems = groupedEntry.items.filter(isTrackItem);
+    if (albumItems.length) {
+      const albumPick = pickBestAlbum(albumItems);
+      if (albumPick) stageAItems.push(albumPick);
+      droppedTracksDueToAlbumPreference += trackItems.length;
+      continue;
+    }
+
+    if (groupedEntry.albumId && trackItems.length >= 2) {
+      const fetchedAlbum = albumById.get(String(groupedEntry.albumId));
+      if (fetchedAlbum) {
+        const albumNormalized = toAlbumNormalized(fetchedAlbum);
+        if (typeof albumNormalized?.artistPopularity !== "number") {
+          const groupMax = trackItems.reduce((max: number, t: any) => {
+            const p = Number(t?.artistPopularity ?? -1);
+            return p > max ? p : max;
+          }, -1);
+          albumNormalized.artistPopularity = groupMax >= 0 ? groupMax : null;
+        }
+        stageAItems.push(albumNormalized);
+        droppedTracksDueToAlbumPreference += trackItems.length;
+        albumsFetchedForSubstitution += 1;
+        continue;
+      }
+      const bestTrack = pickBestTrack(trackItems);
+      if (bestTrack) stageAItems.push(bestTrack);
+      droppedTracksDueToAlbumPreference += Math.max(0, trackItems.length - 1);
+      continue;
+    }
+
+    stageAItems.push(...groupedEntry.items);
+  }
+
+  const trackByVariant = new Map<string, any>();
+  const nonTracks: any[] = [];
+  let droppedVariantsCount = 0;
+
+  for (const item of stageAItems) {
+    if (!isTrackItem(item)) {
+      nonTracks.push(item);
+      continue;
+    }
+    const primaryArtistId = String(item?.artists?.[0]?.id ?? item?.artistId ?? "unknown");
+    const rawTitle = String(item?.title ?? item?.name ?? "");
+    const canonical = canonicalTitle(rawTitle) || rawTitle.toLowerCase().trim();
+    const variantKey = `${primaryArtistId}::${canonical}`;
+    const existing = trackByVariant.get(variantKey);
+    if (!existing) {
+      trackByVariant.set(variantKey, item);
+      continue;
+    }
+    const best = pickBestTrack([existing, item]);
+    if (best === existing) {
+      droppedVariantsCount += 1;
+    } else {
+      trackByVariant.set(variantKey, best);
+      droppedVariantsCount += 1;
+    }
+  }
+
+  const deduped = nonTracks.concat(Array.from(trackByVariant.values()));
+  return {
+    items: deduped,
+    stats: {
+      dedupe_input_count: safeItems.length,
+      dedupe_output_count: deduped.length,
+      dropped_tracks_due_to_album_preference: droppedTracksDueToAlbumPreference,
+      albums_fetched_for_substitution: albumsFetchedForSubstitution,
+      dropped_variants_count: droppedVariantsCount,
+    },
+  };
+}
+
 // Tiny in-memory cache (best-effort, per-warm instance)
 type CacheEntry = { ts: number; body: string };
 const CACHE_TTL_MS = 60 * 1000; // 60s
@@ -287,9 +578,16 @@ serve(async (req) => {
           ? (item?.images?.[0]?.url ?? null)
           : (item?.album?.images?.[0]?.url ?? null);
         return {
+          sourceType,
+          normalizedType: sourceType,
           id: item?.id ?? null,
+          albumId: sourceType === "album" ? (item?.id ?? null) : (item?.album?.id ?? null),
           title: item?.name ?? "",
+          name: item?.name ?? "",
           artists,
+          releaseDateRaw,
+          releaseDatePrecision,
+          releaseDateNormalized: releaseDate,
           releaseDate,
           releaseTs,
           spotifyUrl,
@@ -346,57 +644,78 @@ serve(async (req) => {
 
       const deduped = Array.from(dedupedById.values());
       const datePassed = deduped.filter((item: any) => item?.releaseTs != null && item.releaseTs >= cutoffMs);
-      const artistIds = Array.from(new Set(
-        datePassed.flatMap((item: any) => (item?.artists ?? []).map((a: any) => a?.id).filter(Boolean))
-      ));
       const artistPopularityMap = new Map<string, number | null>();
-      for (let i = 0; i < artistIds.length; i += 50) {
-        const ids = artistIds.slice(i, i + 50);
-        if (!ids.length) continue;
-        stage = `top_picks_artists_${Math.floor(i / 50)}`;
-        const ar = await fetchWithTimeout(`${API}/artists?ids=${ids.join(",")}`, { headers: hdrs }, 8000, stage);
-        if (!ar.ok) {
-          for (const id of ids) artistPopularityMap.set(id, null);
-          continue;
+      const ensureArtistPopularity = async (artistIds: string[], stagePrefix: string) => {
+        const missing = artistIds.filter((id) => id && !artistPopularityMap.has(id));
+        for (let i = 0; i < missing.length; i += 50) {
+          const ids = missing.slice(i, i + 50);
+          if (!ids.length) continue;
+          stage = `${stagePrefix}_${Math.floor(i / 50)}`;
+          const ar = await fetchWithTimeout(`${API}/artists?ids=${ids.join(",")}`, { headers: hdrs }, 8000, stage);
+          if (!ar.ok) {
+            for (const id of ids) artistPopularityMap.set(id, null);
+            continue;
+          }
+          const aj: any = await ar.json();
+          const seen = new Set<string>();
+          for (const art of aj?.artists ?? []) {
+            if (!art?.id) continue;
+            seen.add(art.id);
+            artistPopularityMap.set(art.id, typeof art?.popularity === "number" ? art.popularity : null);
+          }
+          for (const id of ids) {
+            if (!seen.has(id)) artistPopularityMap.set(id, null);
+          }
         }
-        const aj: any = await ar.json();
-        const seen = new Set<string>();
-        for (const art of aj?.artists ?? []) {
-          if (!art?.id) continue;
-          seen.add(art.id);
-          artistPopularityMap.set(art.id, typeof art?.popularity === "number" ? art.popularity : null);
-        }
-        for (const id of ids) {
-          if (!seen.has(id)) artistPopularityMap.set(id, null);
-        }
-      }
-      const popularityPassed = datePassed.filter((item: any) => {
+      };
+      const maxArtistPopularityFor = (artists: Array<{ id: string | null; name: string | null }>): number | null => {
         const pops: number[] = [];
-        for (const a of item?.artists ?? []) {
+        for (const a of artists ?? []) {
           const aid = a?.id;
           if (!aid) continue;
           const p = artistPopularityMap.get(aid);
           if (typeof p === "number") pops.push(p);
         }
-        const maxPop = pops.length ? Math.max(...pops) : null;
+        return pops.length ? Math.max(...pops) : null;
+      };
+      const artistIds = Array.from(new Set(
+        datePassed.flatMap((item: any) => (item?.artists ?? []).map((a: any) => a?.id).filter(Boolean))
+      ));
+      await ensureArtistPopularity(artistIds as string[], "top_picks_artists");
+      const popularityPassed = datePassed.filter((item: any) => {
+        const maxPop = maxArtistPopularityFor(item?.artists ?? []);
         item.artistPopularity = maxPop;
         return typeof maxPop === "number" && maxPop >= popularityFloor;
       });
-      popularityPassed.sort((a: any, b: any) => {
+      const dedupeResult = await dedupeDiscoveryItems(popularityPassed, {
+        hdrs,
+        market: marketFixed,
+        stagePrefix: "top_picks_dedupe",
+        maxAlbumFetchIds: 20,
+        setStage: (next) => { stage = next; },
+        ensureArtistPopularity,
+        getArtistPopularity: maxArtistPopularityFor,
+        normalizeReleaseDate,
+        toReleaseTs,
+      });
+      const qualityDeduped = dedupeResult.items;
+      qualityDeduped.sort((a: any, b: any) => {
         const popDiff = (b?.artistPopularity ?? 0) - (a?.artistPopularity ?? 0);
         if (popDiff) return popDiff;
-        return (b?.releaseTs ?? 0) - (a?.releaseTs ?? 0);
+        const dateDiff = (b?.releaseTs ?? 0) - (a?.releaseTs ?? 0);
+        if (dateDiff) return dateDiff;
+        return String(a?.id ?? "").localeCompare(String(b?.id ?? ""));
       });
-      const items = popularityPassed.slice(0, returnLimit).map((item: any) => ({
+      const items = qualityDeduped.slice(0, returnLimit).map((item: any) => ({
         id: item?.id,
-        title: item?.title ?? "",
+        title: item?.title ?? item?.name ?? "",
         artist: item?.artists?.[0]?.name ?? "",
         artistId: item?.artists?.[0]?.id ?? null,
         artistPopularity: item?.artistPopularity ?? null,
-        releaseDate: item?.releaseDate ?? null,
+        releaseDate: item?.releaseDateNormalized ?? item?.releaseDate ?? null,
         spotifyUrl: item?.spotifyUrl ?? null,
         imageUrl: item?.imageUrl ?? null,
-        type: item?.type === "track" ? "track" : "album",
+        type: isTrackItem(item) ? "track" : "album",
       }));
 
       const payload: any = { items, albums: { items } };
@@ -408,6 +727,11 @@ serve(async (req) => {
           deduped_count: deduped.length,
           date_pass_count: datePassed.length,
           popularity_pass_count: popularityPassed.length,
+          dedupe_input_count: dedupeResult.stats.dedupe_input_count,
+          dedupe_output_count: dedupeResult.stats.dedupe_output_count,
+          dropped_tracks_due_to_album_preference: dedupeResult.stats.dropped_tracks_due_to_album_preference,
+          albums_fetched_for_substitution: dedupeResult.stats.albums_fetched_for_substitution,
+          dropped_variants_count: dedupeResult.stats.dropped_variants_count,
           returned_count: items.length,
           cutoff_iso: cutoffIso,
           pages_scanned_total: pagesScannedTotal,
@@ -747,6 +1071,11 @@ serve(async (req) => {
           search_raw_count: 0,
           date_pass_count: 0,
           popularity_pass_count: 0,
+          dedupe_input_count: 0,
+          dedupe_output_count: 0,
+          dropped_tracks_due_to_album_preference: 0,
+          albums_fetched_for_substitution: 0,
+          dropped_variants_count: 0,
           returned_count: 0,
           cutoff_iso: cutoffIso,
           pages_scanned: 0,
@@ -794,6 +1123,8 @@ serve(async (req) => {
         return {
           sourceType,
           id: item?.id ?? null,
+          albumId: sourceType === "album" ? (item?.id ?? null) : (item?.album?.id ?? null),
+          title: item?.name ?? null,
           name: item?.name ?? null,
           type: item?.type ?? sourceType,
           releaseDateRaw: releaseDate,
@@ -910,7 +1241,6 @@ serve(async (req) => {
             return typeof maxPop === "number" && maxPop >= popularityFloor;
           });
           popularityPassCount = popPassed.length;
-          if (popularityPassCount >= MAX_RETURN) break;
         }
 
         const finalDatePassed = candidates.filter((item) => item?.releaseTs != null && item.releaseTs >= cutoffMs);
@@ -926,7 +1256,19 @@ serve(async (req) => {
         });
         popularityPassCount = finalPopPassed.length;
 
-        finalPopPassed.sort((a: any, b: any) => {
+        const dedupeResult = await dedupeDiscoveryItems(finalPopPassed, {
+          hdrs,
+          market: marketFixed,
+          stagePrefix: `genre_dedupe_${bucketKey}`,
+          maxAlbumFetchIds: 20,
+          setStage: (next) => { stage = next; },
+          ensureArtistPopularity,
+          getArtistPopularity: maxArtistPopularityFor,
+          normalizeReleaseDate,
+          toReleaseTs,
+        });
+        const qualityDeduped = dedupeResult.items;
+        qualityDeduped.sort((a: any, b: any) => {
           const popDiff = (b?.artistPopularity ?? 0) - (a?.artistPopularity ?? 0);
           if (popDiff) return popDiff;
           const dateDiff = (b?.releaseTs ?? 0) - (a?.releaseTs ?? 0);
@@ -934,18 +1276,18 @@ serve(async (req) => {
           return String(a?.id ?? "").localeCompare(String(b?.id ?? ""));
         });
 
-        const finalItems = finalPopPassed.slice(0, MAX_RETURN).map((item: any) => {
+        const finalItems = qualityDeduped.slice(0, MAX_RETURN).map((item: any) => {
           const primaryArtist = item?.artists?.[0] ?? { id: null, name: "" };
           return {
             id: item?.id,
-            title: item?.name ?? "",
+            title: item?.title ?? item?.name ?? "",
             artist: primaryArtist?.name ?? "",
             artistId: primaryArtist?.id ?? null,
             artistPopularity: item?.artistPopularity ?? null,
             releaseDate: item?.releaseDateNormalized ?? null,
             spotifyUrl: item?.spotifyUrl ?? null,
             imageUrl: item?.imageUrl ?? null,
-            type: item?.normalizedType === "track" ? "track" : "album",
+            type: isTrackItem(item) ? "track" : "album",
           };
         });
 
@@ -954,6 +1296,11 @@ serve(async (req) => {
           search_raw_count: searchRawCount,
           date_pass_count: datePassCount,
           popularity_pass_count: popularityPassCount,
+          dedupe_input_count: dedupeResult.stats.dedupe_input_count,
+          dedupe_output_count: dedupeResult.stats.dedupe_output_count,
+          dropped_tracks_due_to_album_preference: dedupeResult.stats.dropped_tracks_due_to_album_preference,
+          albums_fetched_for_substitution: dedupeResult.stats.albums_fetched_for_substitution,
+          dropped_variants_count: dedupeResult.stats.dropped_variants_count,
           returned_count: finalItems.length,
           cutoff_iso: cutoffIso,
           pages_scanned: pagesScanned,
