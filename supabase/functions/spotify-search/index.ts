@@ -584,13 +584,6 @@ serve(async (req) => {
         const t = Date.parse(normalized);
         return Number.isNaN(t) ? null : t;
       };
-      const classifyType = (albumType?: string | null, totalTracks?: number | null): "single" | "ep" | "album" => {
-        const at = String(albumType ?? "").toLowerCase();
-        const tt = typeof totalTracks === "number" ? totalTracks : 0;
-        if (at === "single" || tt <= 2) return "single";
-        if (tt > 2 && tt <= 6) return "ep";
-        return "album";
-      };
       const normalizeSearchItem = (item: any, sourceType: "album" | "track") => {
         const album = sourceType === "album" ? item : (item?.album ?? {});
         const releaseDate = album?.release_date ?? item?.release_date ?? null;
@@ -599,7 +592,9 @@ serve(async (req) => {
         const releaseTs = toReleaseTs(releaseDate, releaseDatePrecision);
         const artists = toArtistLite(sourceType === "track" ? item?.artists : album?.artists);
         const spotifyUrl = item?.external_urls?.spotify ?? album?.external_urls?.spotify ?? null;
-        const imageUrl = album?.images?.[0]?.url ?? item?.images?.[0]?.url ?? null;
+        const imageUrl = sourceType === "album"
+          ? (item?.images?.[0]?.url ?? null)
+          : (item?.album?.images?.[0]?.url ?? null);
         const totalTracks = typeof album?.total_tracks === "number" ? album.total_tracks : null;
         return {
           sourceType,
@@ -613,6 +608,8 @@ serve(async (req) => {
           artists,
           images: Array.isArray(album?.images) ? album.images : [],
           spotifyUrl,
+          imageUrl,
+          normalizedType: sourceType,
           albumType: album?.album_type ?? null,
           totalTracks,
         };
@@ -753,7 +750,7 @@ serve(async (req) => {
             releaseDate: item?.releaseDateNormalized ?? null,
             spotifyUrl: item?.spotifyUrl ?? null,
             imageUrl: item?.imageUrl ?? null,
-            type: classifyType(item?.albumType ?? null, item?.totalTracks ?? null),
+            type: item?.normalizedType === "track" ? "track" : "album",
           };
         });
 
