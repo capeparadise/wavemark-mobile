@@ -226,6 +226,201 @@ serve(async (req) => {
       return new Response(await r.text(), { headers: addBuildHeader({ "Content-Type": "application/json" }) });
     }
 
+    // Top picks (search-based global trending)
+    if (pathname.endsWith("/top-picks")) {
+      const marketFixed = "US";
+      const nowMs = Date.now();
+      const currentYear = new Date(nowMs).getUTCFullYear();
+      const daysParam = Number(url.searchParams.get("days") ?? "30");
+      const daysUsed = Math.max(1, Math.min(365, Number.isFinite(daysParam) ? daysParam : 30));
+      const popularityFloorParam = Number(
+        url.searchParams.get("popularity_floor")
+        ?? url.searchParams.get("popularityFloor")
+        ?? url.searchParams.get("min_popularity")
+        ?? "50"
+      );
+      const popularityFloor = Math.max(0, Math.min(100, Number.isFinite(popularityFloorParam) ? popularityFloorParam : 50));
+      const pagesPerQueryParam = Number(url.searchParams.get("pages") ?? "2");
+      const pagesPerQuery = Math.max(1, Math.min(4, Number.isFinite(pagesPerQueryParam) ? pagesPerQueryParam : 2));
+      const pageLimit = 50;
+      const returnLimit = 30;
+      const cutoffMs = nowMs - daysUsed * 24 * 60 * 60 * 1000;
+      const cutoffIso = new Date(cutoffMs).toISOString();
+      const queriesUsed = [
+        `year:${currentYear}`,
+        `year:${currentYear} genre:"pop"`,
+        `year:${currentYear} genre:"hiphop"`,
+        `year:${currentYear} genre:"latin"`,
+        `year:${currentYear} genre:"dance"`,
+      ];
+
+      const normalizeReleaseDate = (releaseDate?: string | null, precision?: string | null): string | null => {
+        if (!releaseDate) return null;
+        const s = String(releaseDate);
+        const p = String(precision ?? "").toLowerCase();
+        if (p === "day" && /^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+        if (p === "month" && /^\d{4}-\d{2}$/.test(s)) return `${s}-01`;
+        if (p === "year" && /^\d{4}$/.test(s)) return `${s}-01-01`;
+        if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+        if (/^\d{4}-\d{2}$/.test(s)) return `${s}-01`;
+        if (/^\d{4}$/.test(s)) return `${s}-01-01`;
+        return null;
+      };
+      const toReleaseTs = (releaseDate?: string | null, precision?: string | null): number | null => {
+        const normalized = normalizeReleaseDate(releaseDate, precision);
+        if (!normalized) return null;
+        const t = Date.parse(normalized);
+        return Number.isNaN(t) ? null : t;
+      };
+      const normalizeItem = (item: any, sourceType: "album" | "track") => {
+        const album = sourceType === "album" ? item : (item?.album ?? {});
+        const releaseDateRaw = album?.release_date ?? item?.release_date ?? null;
+        const releaseDatePrecision = album?.release_date_precision ?? item?.release_date_precision ?? null;
+        const releaseDate = normalizeReleaseDate(releaseDateRaw, releaseDatePrecision);
+        const releaseTs = toReleaseTs(releaseDateRaw, releaseDatePrecision);
+        const artistsRaw = sourceType === "track" ? item?.artists : album?.artists;
+        const artists = Array.isArray(artistsRaw)
+          ? artistsRaw.map((a: any) => ({ id: a?.id ?? null, name: a?.name ?? null }))
+          : [];
+        const spotifyUrl = item?.external_urls?.spotify ?? album?.external_urls?.spotify ?? null;
+        const imageUrl = sourceType === "album"
+          ? (item?.images?.[0]?.url ?? null)
+          : (item?.album?.images?.[0]?.url ?? null);
+        return {
+          id: item?.id ?? null,
+          title: item?.name ?? "",
+          artists,
+          releaseDate,
+          releaseTs,
+          spotifyUrl,
+          imageUrl,
+          type: sourceType,
+          artistPopularity: null as number | null,
+        };
+      };
+
+      const dedupedById = new Map<string, any>();
+      let rawCountTotal = 0;
+      let pagesScannedTotal = 0;
+
+      for (const query of queriesUsed) {
+        for (let page = 0; page < pagesPerQuery; page++) {
+          pagesScannedTotal += 1;
+          const offset = page * pageLimit;
+          stage = `top_picks_search_${page}`;
+          const searchUrl = `${API}/search?` + new URLSearchParams({
+            q: query,
+            type: "album,track",
+            market: marketFixed,
+            limit: String(pageLimit),
+            offset: String(offset),
+          });
+          const res = await fetchWithTimeout(searchUrl, { headers: hdrs }, 8000, stage);
+          if (!res.ok) {
+            if (debugInfo && !debugInfo.spotifyError) {
+              debugInfo.spotifyError = { stage, status: res.status, message: res.statusText };
+            }
+            break;
+          }
+          const j: any = await res.json();
+          const albumItems = Array.isArray(j?.albums?.items) ? j.albums.items : [];
+          const trackItems = Array.isArray(j?.tracks?.items) ? j.tracks.items : [];
+          const pageRaw = albumItems.length + trackItems.length;
+          rawCountTotal += pageRaw;
+          if (!pageRaw) break;
+
+          for (const a of albumItems) {
+            const normalized = normalizeItem(a, "album");
+            const key = String(normalized?.id ?? "");
+            if (!key) continue;
+            if (!dedupedById.has(key)) dedupedById.set(key, normalized);
+          }
+          for (const t of trackItems) {
+            const normalized = normalizeItem(t, "track");
+            const key = String(normalized?.id ?? "");
+            if (!key) continue;
+            if (!dedupedById.has(key)) dedupedById.set(key, normalized);
+          }
+        }
+      }
+
+      const deduped = Array.from(dedupedById.values());
+      const datePassed = deduped.filter((item: any) => item?.releaseTs != null && item.releaseTs >= cutoffMs);
+      const artistIds = Array.from(new Set(
+        datePassed.flatMap((item: any) => (item?.artists ?? []).map((a: any) => a?.id).filter(Boolean))
+      ));
+      const artistPopularityMap = new Map<string, number | null>();
+      for (let i = 0; i < artistIds.length; i += 50) {
+        const ids = artistIds.slice(i, i + 50);
+        if (!ids.length) continue;
+        stage = `top_picks_artists_${Math.floor(i / 50)}`;
+        const ar = await fetchWithTimeout(`${API}/artists?ids=${ids.join(",")}`, { headers: hdrs }, 8000, stage);
+        if (!ar.ok) {
+          for (const id of ids) artistPopularityMap.set(id, null);
+          continue;
+        }
+        const aj: any = await ar.json();
+        const seen = new Set<string>();
+        for (const art of aj?.artists ?? []) {
+          if (!art?.id) continue;
+          seen.add(art.id);
+          artistPopularityMap.set(art.id, typeof art?.popularity === "number" ? art.popularity : null);
+        }
+        for (const id of ids) {
+          if (!seen.has(id)) artistPopularityMap.set(id, null);
+        }
+      }
+      const popularityPassed = datePassed.filter((item: any) => {
+        const pops: number[] = [];
+        for (const a of item?.artists ?? []) {
+          const aid = a?.id;
+          if (!aid) continue;
+          const p = artistPopularityMap.get(aid);
+          if (typeof p === "number") pops.push(p);
+        }
+        const maxPop = pops.length ? Math.max(...pops) : null;
+        item.artistPopularity = maxPop;
+        return typeof maxPop === "number" && maxPop >= popularityFloor;
+      });
+      popularityPassed.sort((a: any, b: any) => {
+        const popDiff = (b?.artistPopularity ?? 0) - (a?.artistPopularity ?? 0);
+        if (popDiff) return popDiff;
+        return (b?.releaseTs ?? 0) - (a?.releaseTs ?? 0);
+      });
+      const items = popularityPassed.slice(0, returnLimit).map((item: any) => ({
+        id: item?.id,
+        title: item?.title ?? "",
+        artist: item?.artists?.[0]?.name ?? "",
+        artistId: item?.artists?.[0]?.id ?? null,
+        artistPopularity: item?.artistPopularity ?? null,
+        releaseDate: item?.releaseDate ?? null,
+        spotifyUrl: item?.spotifyUrl ?? null,
+        imageUrl: item?.imageUrl ?? null,
+        type: item?.type === "track" ? "track" : "album",
+      }));
+
+      const payload: any = { items, albums: { items } };
+      if (debug) {
+        payload.build = BUILD_ID;
+        payload.debug = {
+          queries_used: queriesUsed,
+          raw_count_total: rawCountTotal,
+          deduped_count: deduped.length,
+          date_pass_count: datePassed.length,
+          popularity_pass_count: popularityPassed.length,
+          returned_count: items.length,
+          cutoff_iso: cutoffIso,
+          pages_scanned_total: pagesScannedTotal,
+          market: marketFixed,
+          popularity_floor: popularityFloor,
+        };
+      }
+
+      return new Response(JSON.stringify(payload), {
+        headers: addBuildHeader({ "Content-Type": "application/json", "X-Route": "TOP-PICKS", "X-Path": pathname, "X-Count": String(items.length) }),
+      });
+    }
+
     // New releases (Browse) — market aware
     if (pathname.endsWith("/new-releases")) {
   const r = await fetchWithTimeout(`${API}/browse/new-releases?country=${market}&limit=50`, { headers: hdrs }, 8000, "browse:new-releases");
