@@ -33,6 +33,13 @@ const fetchWithTimeout = async (input: string, init: RequestInit, timeoutMs: num
 };
 
 const VARIANT_KEYWORDS = [
+  "official music video",
+  "music video",
+  "official video",
+  "video",
+  "extended version",
+  "part 1",
+  "part 2",
   "remix",
   "acoustic",
   "extended",
@@ -46,31 +53,51 @@ const VARIANT_KEYWORDS = [
   "demo",
   "clean",
   "explicit",
-  "music video",
   "version",
   "mix",
   "rework",
   "alt",
   "deluxe",
 ];
+const UNICODE_DASH_RE = /[\u2012\u2013\u2014\u2015\u2212]/g;
+const BRACKET_CONTENT_RE = /\([^)]*\)|\[[^\]]*\]/g;
+const VARIANT_PART_RE = /\b(part\s*[0-9]+|pt\.?\s*[0-9]+)\b/;
 const hasVariantKeyword = (input?: string | null): boolean => {
   const s = String(input ?? "").toLowerCase();
   if (!s) return false;
-  return VARIANT_KEYWORDS.some((k) => s.includes(k));
+  const normalized = s.replace(UNICODE_DASH_RE, "-");
+  if (VARIANT_PART_RE.test(normalized)) return true;
+  return VARIANT_KEYWORDS.some((k) => normalized.includes(k));
+};
+const hasBracketContent = (input?: string | null): boolean => {
+  const s = String(input ?? "");
+  return /[\(\[].*?[\)\]]/.test(s);
 };
 const canonicalTitle = (title?: string | null): string => {
-  const raw = String(title ?? "").toLowerCase();
+  const raw = String(title ?? "").toLowerCase().replace(UNICODE_DASH_RE, "-");
   if (!raw) return "";
-  let normalized = raw.replace(/\([^)]*\)|\[[^\]]*\]/g, " ");
-  const dashParts = normalized.split(/\s+-\s+/);
+  let normalized = raw;
+  normalized = normalized.replace(BRACKET_CONTENT_RE, " ");
+  normalized = normalized.replace(/\s+/g, " ").trim();
+
+  const dashParts = normalized.split(/\s*-\s*/).map((part) => part.trim()).filter(Boolean);
   if (dashParts.length > 1) {
-    const suffix = dashParts.slice(1).join(" - ");
-    if (hasVariantKeyword(suffix)) normalized = dashParts[0];
+    const suffix = dashParts.slice(1).join(" ");
+    if (hasVariantKeyword(suffix)) {
+      normalized = dashParts[0];
+    }
   }
-  normalized = normalized.replace(
-    /\b(remix|acoustic|extended|edit|radio edit|live|sped up|slowed|instrumental|karaoke|demo|clean|explicit|music video|version|mix|rework|alt|deluxe)\b/g,
-    " ",
-  );
+
+  if (hasVariantKeyword(normalized)) {
+    normalized = normalized
+      .replace(
+        /\b(official music video|music video|official video|video|extended version|part\s*[0-9]+|pt\.?\s*[0-9]+|version|edit|remix|acoustic|live|sped up|slowed|instrumental|karaoke|demo|clean|explicit|mix|rework)\b/g,
+        " ",
+      );
+  }
+
+  normalized = normalized.replace(/[.,/#!$%^&*;:{}=_`~"'|?<>+]/g, " ");
+  normalized = normalized.replace(/\s*-\s*/g, " ");
   normalized = normalized.replace(/\s+/g, " ").trim();
   return normalized;
 };
@@ -82,44 +109,45 @@ const isAlbumItem = (item: any): boolean => (
 );
 const pickBestTrack = (items: any[]): any => {
   if (!Array.isArray(items) || !items.length) return null;
-  const trackScore = (item: any) => {
-    const title = String(item?.title ?? item?.name ?? "");
-    const lower = title.toLowerCase();
-    const cleanBonus = hasVariantKeyword(lower) ? 0 : 1_000_000_000;
-    const popScore = Math.max(0, Number(item?.artistPopularity ?? 0)) * 1_000_000;
-    const dateScore = Math.max(0, Number(item?.releaseTs ?? 0));
-    const lengthPenalty = Math.min(10_000, title.length) * 100;
-    return cleanBonus + popScore + dateScore - lengthPenalty;
+  const compareTrackPriority = (a: any, b: any) => {
+    const aTitleRaw = String(a?.title ?? a?.name ?? "");
+    const bTitleRaw = String(b?.title ?? b?.name ?? "");
+    const aHasVariant = hasVariantKeyword(aTitleRaw);
+    const bHasVariant = hasVariantKeyword(bTitleRaw);
+    if (aHasVariant !== bHasVariant) return aHasVariant ? 1 : -1;
+
+    const aHasBracket = hasBracketContent(aTitleRaw);
+    const bHasBracket = hasBracketContent(bTitleRaw);
+    if (aHasBracket !== bHasBracket) return aHasBracket ? 1 : -1;
+
+    const aLen = aTitleRaw.trim().length;
+    const bLen = bTitleRaw.trim().length;
+    if (aLen !== bLen) return aLen - bLen;
+
+    const aIsTrack = isTrackItem(a);
+    const bIsTrack = isTrackItem(b);
+    if (aIsTrack !== bIsTrack) return aIsTrack ? -1 : 1;
+
+    const popDiff = Number(b?.artistPopularity ?? 0) - Number(a?.artistPopularity ?? 0);
+    if (popDiff) return popDiff;
+
+    const dateDiff = Number(b?.releaseTs ?? 0) - Number(a?.releaseTs ?? 0);
+    if (dateDiff) return dateDiff;
+
+    return String(a?.id ?? "").localeCompare(String(b?.id ?? ""));
   };
-  let best = items[0];
-  let bestScore = trackScore(best);
-  for (let i = 1; i < items.length; i++) {
-    const candidate = items[i];
-    const score = trackScore(candidate);
-    if (score > bestScore) {
-      best = candidate;
-      bestScore = score;
-      continue;
-    }
-    if (score === bestScore) {
-      const bestDate = Number(best?.releaseTs ?? 0);
-      const candidateDate = Number(candidate?.releaseTs ?? 0);
-      if (candidateDate > bestDate) {
-        best = candidate;
-        bestScore = score;
-        continue;
-      }
-      if (candidateDate === bestDate) {
-        const bestId = String(best?.id ?? "");
-        const candidateId = String(candidate?.id ?? "");
-        if (candidateId && bestId && candidateId.localeCompare(bestId) < 0) {
-          best = candidate;
-          bestScore = score;
-        }
-      }
-    }
-  }
-  return best;
+  const sorted = [...items].sort(compareTrackPriority);
+  return sorted[0];
+};
+const pickBestTrackWithVariantMeta = (items: any[]): { best: any; bracketDrops: number; dropped: number } => {
+  const best = pickBestTrack(items);
+  if (!best) return { best: null, bracketDrops: 0, dropped: 0 };
+  const losers = items.filter((it) => it !== best);
+  const bracketDrops = losers.reduce((acc: number, it: any) => {
+    const title = String(it?.title ?? it?.name ?? "");
+    return acc + (hasBracketContent(title) ? 1 : 0);
+  }, 0);
+  return { best, bracketDrops, dropped: losers.length };
 };
 const pickBestAlbum = (items: any[]): any => {
   if (!Array.isArray(items) || !items.length) return null;
@@ -283,34 +311,65 @@ async function dedupeDiscoveryItems(
     stageAItems.push(...groupedEntry.items);
   }
 
-  const trackByVariant = new Map<string, any>();
-  const nonTracks: any[] = [];
+  const variantGroups = new Map<string, any[]>();
   let droppedVariantsCount = 0;
+  let droppedVariantsBracketCount = 0;
 
   for (const item of stageAItems) {
-    if (!isTrackItem(item)) {
-      nonTracks.push(item);
-      continue;
-    }
     const primaryArtistId = String(item?.artists?.[0]?.id ?? item?.artistId ?? "unknown");
     const rawTitle = String(item?.title ?? item?.name ?? "");
     const canonical = canonicalTitle(rawTitle) || rawTitle.toLowerCase().trim();
     const variantKey = `${primaryArtistId}::${canonical}`;
-    const existing = trackByVariant.get(variantKey);
-    if (!existing) {
-      trackByVariant.set(variantKey, item);
-      continue;
-    }
-    const best = pickBestTrack([existing, item]);
-    if (best === existing) {
-      droppedVariantsCount += 1;
-    } else {
-      trackByVariant.set(variantKey, best);
-      droppedVariantsCount += 1;
-    }
+    const prev = variantGroups.get(variantKey) ?? [];
+    prev.push(item);
+    variantGroups.set(variantKey, prev);
   }
 
-  const deduped = nonTracks.concat(Array.from(trackByVariant.values()));
+  const variantCollapsedItems: any[] = [];
+  for (const groupedTracks of variantGroups.values()) {
+    if (groupedTracks.length <= 1) {
+      variantCollapsedItems.push(groupedTracks[0]);
+      continue;
+    }
+    const pick = pickBestTrackWithVariantMeta(groupedTracks);
+    if (pick.best) variantCollapsedItems.push(pick.best);
+    droppedVariantsCount += pick.dropped;
+    droppedVariantsBracketCount += pick.bracketDrops;
+  }
+
+  const nonTracks: any[] = [];
+  const coverGroups = new Map<string, any[]>();
+  const tracksNoCoverKey: any[] = [];
+  for (const track of variantCollapsedItems) {
+    if (!isTrackItem(track)) {
+      nonTracks.push(track);
+      continue;
+    }
+    const artistId = String(track?.artists?.[0]?.id ?? track?.artistId ?? "");
+    const imageUrl = String(track?.imageUrl ?? "");
+    if (!artistId || !imageUrl) {
+      tracksNoCoverKey.push(track);
+      continue;
+    }
+    const coverKey = `${artistId}::${imageUrl}`;
+    const prev = coverGroups.get(coverKey) ?? [];
+    prev.push(track);
+    coverGroups.set(coverKey, prev);
+  }
+
+  let droppedSameCoverCount = 0;
+  const coverCollapsedTracks: any[] = [...tracksNoCoverKey];
+  for (const groupedTracks of coverGroups.values()) {
+    if (groupedTracks.length <= 1) {
+      coverCollapsedTracks.push(groupedTracks[0]);
+      continue;
+    }
+    const best = pickBestTrack(groupedTracks);
+    if (best) coverCollapsedTracks.push(best);
+    droppedSameCoverCount += groupedTracks.length - 1;
+  }
+
+  const deduped = nonTracks.concat(coverCollapsedTracks);
   return {
     items: deduped,
     stats: {
@@ -319,6 +378,8 @@ async function dedupeDiscoveryItems(
       dropped_tracks_due_to_album_preference: droppedTracksDueToAlbumPreference,
       albums_fetched_for_substitution: albumsFetchedForSubstitution,
       dropped_variants_count: droppedVariantsCount,
+      dropped_variants_bracket_count: droppedVariantsBracketCount,
+      dropped_same_cover_count: droppedSameCoverCount,
     },
   };
 }
@@ -732,6 +793,8 @@ serve(async (req) => {
           dropped_tracks_due_to_album_preference: dedupeResult.stats.dropped_tracks_due_to_album_preference,
           albums_fetched_for_substitution: dedupeResult.stats.albums_fetched_for_substitution,
           dropped_variants_count: dedupeResult.stats.dropped_variants_count,
+          dropped_variants_bracket_count: dedupeResult.stats.dropped_variants_bracket_count,
+          dropped_same_cover_count: dedupeResult.stats.dropped_same_cover_count,
           returned_count: items.length,
           cutoff_iso: cutoffIso,
           pages_scanned_total: pagesScannedTotal,
@@ -1076,6 +1139,8 @@ serve(async (req) => {
           dropped_tracks_due_to_album_preference: 0,
           albums_fetched_for_substitution: 0,
           dropped_variants_count: 0,
+          dropped_variants_bracket_count: 0,
+          dropped_same_cover_count: 0,
           returned_count: 0,
           cutoff_iso: cutoffIso,
           pages_scanned: 0,
@@ -1301,6 +1366,8 @@ serve(async (req) => {
           dropped_tracks_due_to_album_preference: dedupeResult.stats.dropped_tracks_due_to_album_preference,
           albums_fetched_for_substitution: dedupeResult.stats.albums_fetched_for_substitution,
           dropped_variants_count: dedupeResult.stats.dropped_variants_count,
+          dropped_variants_bracket_count: dedupeResult.stats.dropped_variants_bracket_count,
+          dropped_same_cover_count: dedupeResult.stats.dropped_same_cover_count,
           returned_count: finalItems.length,
           cutoff_iso: cutoffIso,
           pages_scanned: pagesScanned,
