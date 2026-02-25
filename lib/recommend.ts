@@ -13,7 +13,7 @@ export type SimpleAlbum = {
   releaseDate?: string | null;
   spotifyUrl?: string | null;
   imageUrl?: string | null;
-  type?: 'album' | 'single' | 'ep';
+  type?: 'album' | 'single' | 'ep' | 'track';
 };
 
 const GENRE_BUCKETS: Record<string, string[]> = {
@@ -333,6 +333,31 @@ export async function getWesternNewReleases(days = 42, target = 200, marketsIn?:
     return await getNewReleases(days, markets[0]);
   }
   return out;
+}
+
+export async function getTopPicks(days = 30): Promise<SimpleAlbum[]> {
+  try {
+    const r = await fetchFn(`${FN}/spotify-search/top-picks?` + new URLSearchParams({ days: String(days) }));
+    if (!r.ok) return [];
+    const data: any = await r.json();
+    const items = Array.isArray(data?.items)
+      ? data.items
+      : (Array.isArray(data?.albums?.items) ? data.albums.items : []);
+    return (items || []).map((a: any) => ({
+      id: a?.id ?? '',
+      title: a?.title ?? a?.name ?? '',
+      artist: a?.artist ?? a?.artists?.[0]?.name ?? '',
+      artistId: a?.artistId ?? a?.artists?.[0]?.id ?? null,
+      artistPopularity: typeof a?.artistPopularity === 'number' ? a.artistPopularity : null,
+      artistFollowers: typeof a?.artistFollowers === 'number' ? a.artistFollowers : null,
+      releaseDate: a?.releaseDate ?? a?.release_date ?? null,
+      spotifyUrl: a?.spotifyUrl ?? a?.external_urls?.spotify ?? null,
+      imageUrl: a?.imageUrl ?? a?.images?.[0]?.url ?? null,
+      type: a?.type === 'track' ? 'track' : (a?.type === 'album' ? 'album' : undefined),
+    })).filter((x: SimpleAlbum) => !!x.id && !!x.spotifyUrl);
+  } catch {
+    return [];
+  }
 }
 
 // Wide collector list (for See All)

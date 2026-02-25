@@ -16,7 +16,7 @@ import { off, on } from '../../lib/events';
 import { addToListFromSearch, markDoneByProvider } from '../../lib/listen';
 import { goToRelease } from '../../lib/navigation';
 import { openArtist } from '../../lib/openArtist';
-import { getNewReleasesByGenre, getWesternNewReleases } from '../../lib/recommend';
+import { getNewReleasesByGenre, getTopPicks, getWesternNewReleases } from '../../lib/recommend';
 import { FN_BASE as FN, fetchFn } from '../../lib/fnBase';
 import { getMarket, parseSpotifyUrlOrId, spotifyLookup, spotifySearch, type SpotifyResult } from '../../lib/spotify';
 import { artistAlbums, artistTopTracks, fetchArtistDetails } from '../../lib/spotifyArtist';
@@ -37,7 +37,8 @@ const SCREEN_WIDTH = Dimensions.get('window').width;
 type DiscoverViewMode = 'mixed' | 'pills';
 const DISCOVER_VIEW_MODE_KEY = 'discover.viewMode';
 const DISCOVER_MARKETS = ['US', 'GB'];
-const DISCOVER_GENRE_DAYS = 90;
+const DISCOVER_GENRE_DAYS = 30;
+const DISCOVER_TOP_PICKS_DAYS = 30;
 
 function spotifyKey(id?: string | null, spotifyUrl?: string | null) {
   const parse = (v?: string | null) => {
@@ -84,6 +85,7 @@ export default function DiscoverTab() {
   const [artistAlbumsRows, setArtistAlbumsRows] = useState<Awaited<ReturnType<typeof artistAlbums>>>([]);
   const [artistTracksRows, setArtistTracksRows] = useState<Awaited<ReturnType<typeof artistTopTracks>>>([]);
   const [newReleases, setNewReleases] = useState<Awaited<ReturnType<typeof getWesternNewReleases>>>([]);
+  const [topPicksRaw, setTopPicksRaw] = useState<Awaited<ReturnType<typeof getTopPicks>>>([]);
   const [filteredTopPicks, setFilteredTopPicks] = useState<Awaited<ReturnType<typeof getWesternNewReleases>>>([]);
   const [filteredTrending, setFilteredTrending] = useState<Awaited<ReturnType<typeof getWesternNewReleases>>>([]);
   const [genreRows, setGenreRows] = useState<Array<{ genre: CanonicalGenre; items: Awaited<ReturnType<typeof getWesternNewReleases>> }>>([]);
@@ -217,7 +219,7 @@ export default function DiscoverTab() {
   }, []);
 
   const runDebugFetch = useCallback(async () => {
-    const wideUrl = `${FN}/spotify-search/new-releases-wide?debug=1`;
+    const wideUrl = `${FN}/spotify-search/top-picks?days=${DISCOVER_TOP_PICKS_DAYS}&debug=1`;
     const genreUrl = `${FN}/spotify-search/new-releases-genre?genres=rap,pop&debug=1`;
     setDebugBusy(true);
     const fetchOne = async (url: string, setter: (val: DebugFetchResult) => void) => {
@@ -280,43 +282,20 @@ export default function DiscoverTab() {
     }
   }, [debugVisible, runDebugFetch]);
 
-  const railsPool = useMemo(
-    () => newReleases.filter((it) => !!it.spotifyUrl && !!it.artistId),
-    [newReleases]
-  );
-  const topPicksSource = useMemo(() => railsPool.slice(0, Math.min(12, railsPool.length)), [railsPool]);
-  const trendingSource = useMemo(() => {
-    if (fallbackFeed.length) {
-      return fallbackFeed.slice(0, 12).map((item) => ({
-        id: item.id,
-        title: item.title,
-        artist: item.artist_name ?? 'Unknown',
-        releaseDate: item.release_date ?? null,
-        imageUrl: item.image_url ?? null,
-        spotifyUrl: item.spotify_url ?? null,
-        type: (item as any).item_type ?? null,
-        artistId: (item as any).artist_id ?? null,
-      }));
-    }
-    return railsPool.slice(topPicksSource.length, topPicksSource.length + 12);
-  }, [fallbackFeed, railsPool, topPicksSource.length]);
-
   useEffect(() => {
     let cancelled = false;
     setTopPicksLoading(true);
     (async () => {
       const effective = selectedGenres;
       const taken = new Set<string>();
-      const removeSaved = (arr: typeof topPicksSource) => arr.filter((it) => {
+      const removeSaved = (arr: typeof topPicksRaw) => arr.filter((it) => {
         const key = spotifyKey(it.id, it.spotifyUrl);
         if (!key) return true;
         return !(listenStatus[key] || addedIds[key]);
       });
-      let top = removeSaved(topPicksSource);
-      let trending = removeSaved(trendingSource);
+      let top = removeSaved(topPicksRaw);
       if (effective.size) {
         top = await filterReleasesByGenres(top, effective);
-        trending = await filterReleasesByGenres(trending, effective);
       }
       top.forEach((it) => {
         const key = spotifyKey(it.id, it.spotifyUrl);
@@ -324,7 +303,7 @@ export default function DiscoverTab() {
       });
       if (cancelled) return;
       setFilteredTopPicks(top);
-      setFilteredTrending(trending);
+      setFilteredTrending([]);
       setTakenTopPicks(taken);
       setTopPicksLoading(false);
     })().catch(() => {
@@ -335,7 +314,7 @@ export default function DiscoverTab() {
       setTopPicksLoading(false);
     });
     return () => { cancelled = true; };
-  }, [topPicksSource, trendingSource, selectedGenres, listenStatus, addedIds]);
+  }, [topPicksRaw, selectedGenres, listenStatus, addedIds]);
 
   useEffect(() => {
     let cancelled = false;
@@ -345,7 +324,7 @@ export default function DiscoverTab() {
       const buckets = await getNewReleasesByGenre({
         genres: targets,
         days: DISCOVER_GENRE_DAYS,
-        market: getMarket(),
+        market: 'US',
         strict: false,
         mode: 'full',
       });
@@ -359,6 +338,8 @@ export default function DiscoverTab() {
         const ordered = rowsWithCounts.slice(0, MAX_GENRE_ROWS);
         setGenreRows(ordered.map(({ genre, items }) => ({ genre, items })));
         if (__DEV__) {
+          const wireCounts = Object.fromEntries(ordered.slice(0, 4).map((r) => [r.genre, r.items.length]));
+          console.log('[discover][wire]', { topPicksLength: topPicksRaw.length, genreBucketCounts: wireCounts });
           const firstItem = rowsWithCounts.find((r) => (r.items?.length ?? 0) > 0)?.items?.[0];
           console.log('[NRG] first item keys', Object.keys(firstItem ?? {}));
           const hiphop = rowsWithCounts.find((r) => r.genre === 'hiphop');
@@ -381,7 +362,7 @@ export default function DiscoverTab() {
     };
     buildGenreRows();
     return () => { cancelled = true; };
-  }, [selectedGenres]);
+  }, [selectedGenres, topPicksRaw.length]);
 
   useEffect(() => {
     setDraftGenres(selectedGenres.size ? new Set(selectedGenres) : new Set(['all']));
@@ -885,19 +866,16 @@ export default function DiscoverTab() {
     setYourUpdatesError(null);
     try {
       if (__DEV__) {
-        const target = Math.max(50, Math.min(400, 220));
-        const urls = DISCOVER_MARKETS.map((market) =>
-          `${FN}/spotify-search/new-releases-wide?` +
-          new URLSearchParams({ market, days: String(NEW_RELEASE_DAYS), target: String(target) })
-        );
         console.log('[discover rails][req]', {
-          urls,
-          note: 'genre rails fetched separately via spotify-search/new-releases-genre',
+          topPicksUrl: `${FN}/spotify-search/top-picks?days=${DISCOVER_TOP_PICKS_DAYS}`,
+          genreUrl: `${FN}/spotify-search/new-releases-genre?genres=rap,pop&days=${DISCOVER_GENRE_DAYS}`,
+          note: 'top picks + genre rails fetched separately',
         });
       }
-      const [nrResult, genresResult] = await Promise.allSettled([
+      const [nrResult, genresResult, topPicksResult] = await Promise.allSettled([
         getWesternNewReleases(NEW_RELEASE_DAYS, 220, DISCOVER_MARKETS),
         loadIncludedGenres(),
+        getTopPicks(DISCOVER_TOP_PICKS_DAYS),
       ]);
       let nr: Awaited<ReturnType<typeof getWesternNewReleases>> = [];
       if (nrResult.status === 'fulfilled') {
@@ -943,11 +921,21 @@ export default function DiscoverTab() {
         debugSetNewReleases('from getWesternNewReleases', nr);
         cacheNewReleases(nr);
       } else {
-        setTopPicksError(nrResult.reason);
         debugSetNewReleases('from getWesternNewReleases (error)', []);
         if (__DEV__) {
           console.warn('[discover rails][new releases failed]', nrResult.reason);
         }
+      }
+
+      if (topPicksResult.status === 'fulfilled') {
+        setTopPicksRaw(topPicksResult.value || []);
+        if (__DEV__) {
+          console.log('[discover][wire]', { topPicksLength: topPicksResult.value?.length ?? 0 });
+        }
+      } else {
+        setTopPicksRaw([]);
+        setTopPicksError(topPicksResult.reason);
+        if (__DEV__) console.warn('[discover top-picks][failed]', topPicksResult.reason);
       }
 
       if (genresResult.status === 'fulfilled') {
@@ -2569,7 +2557,7 @@ export default function DiscoverTab() {
                 </View>
               ) : null}
               <ScrollView contentContainerStyle={{ paddingBottom: 16 }}>
-                {renderDebugBlock('Top picks (new-releases-wide)', debugWide)}
+                {renderDebugBlock('Top picks (/spotify-search/top-picks)', debugWide)}
                 {renderDebugBlock('Genres (rap,pop)', debugGenre)}
               </ScrollView>
             </GlassCard>
