@@ -384,6 +384,25 @@ async function dedupeDiscoveryItems(
   };
 }
 
+const capPerArtist = (items: any[], maxPerArtist = 2): { items: any[]; dropped_due_to_artist_cap: number } => {
+  const capped: any[] = [];
+  const counts = new Map<string, number>();
+  let dropped = 0;
+  const safeMax = Math.max(1, Math.min(5, Number.isFinite(maxPerArtist) ? Number(maxPerArtist) : 2));
+  for (const item of Array.isArray(items) ? items : []) {
+    const primaryArtistId = String(item?.artists?.[0]?.id ?? item?.artistId ?? "");
+    const key = primaryArtistId || `unknown:${String(item?.id ?? capped.length)}`;
+    const current = counts.get(key) ?? 0;
+    if (current >= safeMax) {
+      dropped += 1;
+      continue;
+    }
+    counts.set(key, current + 1);
+    capped.push(item);
+  }
+  return { items: capped, dropped_due_to_artist_cap: dropped };
+};
+
 // Tiny in-memory cache (best-effort, per-warm instance)
 type CacheEntry = { ts: number; body: string };
 const CACHE_TTL_MS = 60 * 1000; // 60s
@@ -592,6 +611,8 @@ serve(async (req) => {
         ?? "50"
       );
       const popularityFloor = Math.max(0, Math.min(100, Number.isFinite(popularityFloorParam) ? popularityFloorParam : 50));
+      const maxPerArtistParam = Number(url.searchParams.get("max_per_artist") ?? "2");
+      const maxPerArtist = Math.max(1, Math.min(5, Number.isFinite(maxPerArtistParam) ? maxPerArtistParam : 2));
       const pagesPerQueryParam = Number(url.searchParams.get("pages") ?? "2");
       const pagesPerQuery = Math.max(1, Math.min(4, Number.isFinite(pagesPerQueryParam) ? pagesPerQueryParam : 2));
       const pageLimit = 50;
@@ -767,7 +788,8 @@ serve(async (req) => {
         if (dateDiff) return dateDiff;
         return String(a?.id ?? "").localeCompare(String(b?.id ?? ""));
       });
-      const items = qualityDeduped.slice(0, returnLimit).map((item: any) => ({
+      const artistCappedResult = capPerArtist(qualityDeduped, maxPerArtist);
+      const items = artistCappedResult.items.slice(0, returnLimit).map((item: any) => ({
         id: item?.id,
         title: item?.title ?? item?.name ?? "",
         artist: item?.artists?.[0]?.name ?? "",
@@ -795,6 +817,8 @@ serve(async (req) => {
           dropped_variants_count: dedupeResult.stats.dropped_variants_count,
           dropped_variants_bracket_count: dedupeResult.stats.dropped_variants_bracket_count,
           dropped_same_cover_count: dedupeResult.stats.dropped_same_cover_count,
+          max_per_artist: maxPerArtist,
+          dropped_due_to_artist_cap: artistCappedResult.dropped_due_to_artist_cap,
           returned_count: items.length,
           cutoff_iso: cutoffIso,
           pages_scanned_total: pagesScannedTotal,
@@ -1095,6 +1119,8 @@ serve(async (req) => {
         ?? "50"
       );
       const popularityFloor = Math.max(0, Math.min(100, Number.isFinite(popularityFloorParam) ? popularityFloorParam : 50));
+      const maxPerArtistParam = Number(url.searchParams.get("max_per_artist") ?? "2");
+      const maxPerArtist = Math.max(1, Math.min(5, Number.isFinite(maxPerArtistParam) ? maxPerArtistParam : 2));
       const cutoffMs = nowMs - daysUsed * 24 * 60 * 60 * 1000;
       const cutoffIso = new Date(cutoffMs).toISOString();
       const currentYear = new Date(nowMs).getUTCFullYear();
@@ -1141,6 +1167,8 @@ serve(async (req) => {
           dropped_variants_count: 0,
           dropped_variants_bracket_count: 0,
           dropped_same_cover_count: 0,
+          max_per_artist: maxPerArtist,
+          dropped_due_to_artist_cap: 0,
           returned_count: 0,
           cutoff_iso: cutoffIso,
           pages_scanned: 0,
@@ -1340,8 +1368,9 @@ serve(async (req) => {
           if (dateDiff) return dateDiff;
           return String(a?.id ?? "").localeCompare(String(b?.id ?? ""));
         });
+        const artistCappedResult = capPerArtist(qualityDeduped, maxPerArtist);
 
-        const finalItems = qualityDeduped.slice(0, MAX_RETURN).map((item: any) => {
+        const finalItems = artistCappedResult.items.slice(0, MAX_RETURN).map((item: any) => {
           const primaryArtist = item?.artists?.[0] ?? { id: null, name: "" };
           return {
             id: item?.id,
@@ -1368,6 +1397,8 @@ serve(async (req) => {
           dropped_variants_count: dedupeResult.stats.dropped_variants_count,
           dropped_variants_bracket_count: dedupeResult.stats.dropped_variants_bracket_count,
           dropped_same_cover_count: dedupeResult.stats.dropped_same_cover_count,
+          max_per_artist: maxPerArtist,
+          dropped_due_to_artist_cap: artistCappedResult.dropped_due_to_artist_cap,
           returned_count: finalItems.length,
           cutoff_iso: cutoffIso,
           pages_scanned: pagesScanned,
