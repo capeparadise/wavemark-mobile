@@ -118,3 +118,7 @@ Verification:
 If you see warnings about missing keys, re-check the `.env.local` spelling and ensure variables start with `EXPO_PUBLIC_` so Expo exposes them.
 
 Without these keys Apple deep link resolution can't persist canonical URLs and adds fallback mismatch risk.
+
+Supabase SQL workflow note:
+- This repo keeps manual schema changes in `supabase/sql/*.sql`.
+- Planned discover cache keys are `top_picks` and `genre:<slug>`.
