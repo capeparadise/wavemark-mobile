@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const TOKEN_URL = "https://accounts.spotify.com/api/token";
 const API = "https://api.spotify.com/v1";
@@ -403,6 +404,100 @@ const capPerArtist = (items: any[], maxPerArtist = 2): { items: any[]; dropped_d
   return { items: capped, dropped_due_to_artist_cap: dropped };
 };
 
+const DISCOVER_BUCKET_KEYS = [
+  "rap", "rnb", "pop", "rock", "latin", "edm", "country", "kpop", "afrobeats",
+  "jazz", "dancehall", "reggae", "indie", "metal", "punk", "folk", "blues", "classical",
+  "soundtrack", "ambient", "jpop", "desi",
+];
+
+// Matches the existing server key normalization used by the app request layer.
+const normalizeDiscoverGenreKey = (value?: string | null): string => {
+  const lower = String(value ?? "").trim().toLowerCase();
+  if (lower === "hiphop" || lower === "hip-hop" || lower === "hip hop") return "rap";
+  if (lower === "r&b" || lower === "rb") return "rnb";
+  if (lower === "electronic") return "edm";
+  return lower;
+};
+
+const createGenreDebugByBucket = (
+  bucketKeys: string[],
+  opts: { maxPerArtist: number; cutoffIso: string; market: string; popularityFloor: number },
+) => Object.fromEntries(
+  bucketKeys.map((k) => [k, {
+    search_raw_count: 0,
+    date_pass_count: 0,
+    popularity_pass_count: 0,
+    dedupe_input_count: 0,
+    dedupe_output_count: 0,
+    dropped_tracks_due_to_album_preference: 0,
+    albums_fetched_for_substitution: 0,
+    dropped_variants_count: 0,
+    dropped_variants_bracket_count: 0,
+    dropped_same_cover_count: 0,
+    max_per_artist: opts.maxPerArtist,
+    dropped_due_to_artist_cap: 0,
+    returned_count: 0,
+    cutoff_iso: opts.cutoffIso,
+    pages_scanned: 0,
+    market: opts.market,
+    popularity_floor: opts.popularityFloor,
+  }]),
+);
+
+const isTopPicksPayload = (payload: any) => (
+  !!payload && Array.isArray(payload?.items) && Array.isArray(payload?.albums?.items)
+);
+
+const isGenreBucketCachePayload = (payload: any) => (
+  !!payload && Array.isArray(payload?.items)
+);
+
+let discoverCacheClient: any = null;
+let discoverCacheClientInitAttempted = false;
+
+const getDiscoverCacheClient = () => {
+  if (discoverCacheClientInitAttempted) return discoverCacheClient;
+  discoverCacheClientInitAttempted = true;
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!supabaseUrl || !serviceRoleKey) {
+    console.error("[discover-cache] client-unavailable missing-supabase-env");
+    discoverCacheClient = null;
+    return discoverCacheClient;
+  }
+  discoverCacheClient = createClient(supabaseUrl, serviceRoleKey);
+  return discoverCacheClient;
+};
+
+const readDiscoverCache = async (key: string) => {
+  const supabase = getDiscoverCacheClient();
+  if (!supabase) return { payload: null, error: new Error("discover cache client unavailable") };
+  try {
+    const { data, error } = await supabase
+      .from("discover_cache")
+      .select("payload")
+      .eq("key", key)
+      .maybeSingle();
+    if (error) return { payload: null, error };
+    return { payload: data?.payload ?? null, error: null };
+  } catch (error) {
+    return { payload: null, error };
+  }
+};
+
+const writeDiscoverCache = async (key: string, payload: any) => {
+  const supabase = getDiscoverCacheClient();
+  if (!supabase) return { error: new Error("discover cache client unavailable") };
+  try {
+    const { error } = await supabase
+      .from("discover_cache")
+      .upsert({ key, payload }, { onConflict: "key" });
+    return { error: error ?? null };
+  } catch (error) {
+    return { error };
+  }
+};
+
 // Tiny in-memory cache (best-effort, per-warm instance)
 type CacheEntry = { ts: number; body: string };
 const CACHE_TTL_MS = 60 * 1000; // 60s
@@ -472,6 +567,7 @@ serve(async (req) => {
       const id = url.searchParams.get("id") ?? "";
     const modeParam = (url.searchParams.get("mode") ?? "full").toLowerCase();
     const light = modeParam === 'light';
+    const refresh = url.searchParams.get("refresh") === "1";
 
       const cid = Deno.env.get("SPOTIFY_CLIENT_ID") ?? "";
       const sec = Deno.env.get("SPOTIFY_CLIENT_SECRET") ?? "";
@@ -599,236 +695,273 @@ serve(async (req) => {
 
     // Top picks (search-based global trending)
     if (pathname.endsWith("/top-picks")) {
-      const marketFixed = "US";
-      const nowMs = Date.now();
-      const currentYear = new Date(nowMs).getUTCFullYear();
-      const daysParam = Number(url.searchParams.get("days") ?? "30");
-      const daysUsed = Math.max(1, Math.min(365, Number.isFinite(daysParam) ? daysParam : 30));
-      const popularityFloorParam = Number(
-        url.searchParams.get("popularity_floor")
-        ?? url.searchParams.get("popularityFloor")
-        ?? url.searchParams.get("min_popularity")
-        ?? "50"
-      );
-      const popularityFloor = Math.max(0, Math.min(100, Number.isFinite(popularityFloorParam) ? popularityFloorParam : 50));
-      const maxPerArtistParam = Number(url.searchParams.get("max_per_artist") ?? "2");
-      const maxPerArtist = Math.max(1, Math.min(5, Number.isFinite(maxPerArtistParam) ? maxPerArtistParam : 2));
-      const pagesPerQueryParam = Number(url.searchParams.get("pages") ?? "2");
-      const pagesPerQuery = Math.max(1, Math.min(4, Number.isFinite(pagesPerQueryParam) ? pagesPerQueryParam : 2));
-      const pageLimit = 50;
-      const returnLimit = 30;
-      const cutoffMs = nowMs - daysUsed * 24 * 60 * 60 * 1000;
-      const cutoffIso = new Date(cutoffMs).toISOString();
-      const queriesUsed = [
-        `year:${currentYear}`,
-        `year:${currentYear} genre:"pop"`,
-        `year:${currentYear} genre:"hiphop"`,
-        `year:${currentYear} genre:"latin"`,
-        `year:${currentYear} genre:"dance"`,
-      ];
-
-      const normalizeReleaseDate = (releaseDate?: string | null, precision?: string | null): string | null => {
-        if (!releaseDate) return null;
-        const s = String(releaseDate);
-        const p = String(precision ?? "").toLowerCase();
-        if (p === "day" && /^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-        if (p === "month" && /^\d{4}-\d{2}$/.test(s)) return `${s}-01`;
-        if (p === "year" && /^\d{4}$/.test(s)) return `${s}-01-01`;
-        if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-        if (/^\d{4}-\d{2}$/.test(s)) return `${s}-01`;
-        if (/^\d{4}$/.test(s)) return `${s}-01-01`;
-        return null;
-      };
-      const toReleaseTs = (releaseDate?: string | null, precision?: string | null): number | null => {
-        const normalized = normalizeReleaseDate(releaseDate, precision);
-        if (!normalized) return null;
-        const t = Date.parse(normalized);
-        return Number.isNaN(t) ? null : t;
-      };
-      const normalizeItem = (item: any, sourceType: "album" | "track") => {
-        const album = sourceType === "album" ? item : (item?.album ?? {});
-        const releaseDateRaw = album?.release_date ?? item?.release_date ?? null;
-        const releaseDatePrecision = album?.release_date_precision ?? item?.release_date_precision ?? null;
-        const releaseDate = normalizeReleaseDate(releaseDateRaw, releaseDatePrecision);
-        const releaseTs = toReleaseTs(releaseDateRaw, releaseDatePrecision);
-        const artistsRaw = sourceType === "track" ? item?.artists : album?.artists;
-        const artists = Array.isArray(artistsRaw)
-          ? artistsRaw.map((a: any) => ({ id: a?.id ?? null, name: a?.name ?? null }))
-          : [];
-        const spotifyUrl = item?.external_urls?.spotify ?? album?.external_urls?.spotify ?? null;
-        const imageUrl = sourceType === "album"
-          ? (item?.images?.[0]?.url ?? null)
-          : (item?.album?.images?.[0]?.url ?? null);
-        return {
-          sourceType,
-          normalizedType: sourceType,
-          id: item?.id ?? null,
-          albumId: sourceType === "album" ? (item?.id ?? null) : (item?.album?.id ?? null),
-          title: item?.name ?? "",
-          name: item?.name ?? "",
-          artists,
-          releaseDateRaw,
-          releaseDatePrecision,
-          releaseDateNormalized: releaseDate,
-          releaseDate,
-          releaseTs,
-          spotifyUrl,
-          imageUrl,
-          type: sourceType,
-          artistPopularity: null as number | null,
-        };
-      };
-
-      const dedupedById = new Map<string, any>();
-      let rawCountTotal = 0;
-      let pagesScannedTotal = 0;
-
-      for (const query of queriesUsed) {
-        for (let page = 0; page < pagesPerQuery; page++) {
-          pagesScannedTotal += 1;
-          const offset = page * pageLimit;
-          stage = `top_picks_search_${page}`;
-          const searchUrl = `${API}/search?` + new URLSearchParams({
-            q: query,
-            type: "album,track",
-            market: marketFixed,
-            limit: String(pageLimit),
-            offset: String(offset),
-          });
-          const res = await fetchWithTimeout(searchUrl, { headers: hdrs }, 8000, stage);
-          if (!res.ok) {
-            if (debugInfo && !debugInfo.spotifyError) {
-              debugInfo.spotifyError = { stage, status: res.status, message: res.statusText };
-            }
-            break;
-          }
-          const j: any = await res.json();
-          const albumItems = Array.isArray(j?.albums?.items) ? j.albums.items : [];
-          const trackItems = Array.isArray(j?.tracks?.items) ? j.tracks.items : [];
-          const pageRaw = albumItems.length + trackItems.length;
-          rawCountTotal += pageRaw;
-          if (!pageRaw) break;
-
-          for (const a of albumItems) {
-            const normalized = normalizeItem(a, "album");
-            const key = String(normalized?.id ?? "");
-            if (!key) continue;
-            if (!dedupedById.has(key)) dedupedById.set(key, normalized);
-          }
-          for (const t of trackItems) {
-            const normalized = normalizeItem(t, "track");
-            const key = String(normalized?.id ?? "");
-            if (!key) continue;
-            if (!dedupedById.has(key)) dedupedById.set(key, normalized);
+      const cacheKey = "top_picks";
+      if (!debug) {
+        if (refresh) {
+          console.log(`[discover-cache] refresh key=${cacheKey}`);
+        } else {
+          const { payload: cachedPayload, error: cacheReadError } = await readDiscoverCache(cacheKey);
+          if (cacheReadError) {
+            console.error(`[discover-cache] read-failed key=${cacheKey}`, cacheReadError);
+          } else if (isTopPicksPayload(cachedPayload)) {
+            console.log(`[discover-cache] hit key=${cacheKey}`);
+            return new Response(JSON.stringify(cachedPayload), {
+              headers: addBuildHeader({
+                "Content-Type": "application/json",
+                "X-Route": "TOP-PICKS",
+                "X-Path": pathname,
+                "X-Count": String(Array.isArray(cachedPayload?.items) ? cachedPayload.items.length : 0),
+              }),
+            });
+          } else {
+            console.log(`[discover-cache] miss key=${cacheKey}`);
           }
         }
       }
 
-      const deduped = Array.from(dedupedById.values());
-      const datePassed = deduped.filter((item: any) => item?.releaseTs != null && item.releaseTs >= cutoffMs);
-      const artistPopularityMap = new Map<string, number | null>();
-      const ensureArtistPopularity = async (artistIds: string[], stagePrefix: string) => {
-        const missing = artistIds.filter((id) => id && !artistPopularityMap.has(id));
-        for (let i = 0; i < missing.length; i += 50) {
-          const ids = missing.slice(i, i + 50);
-          if (!ids.length) continue;
-          stage = `${stagePrefix}_${Math.floor(i / 50)}`;
-          const ar = await fetchWithTimeout(`${API}/artists?ids=${ids.join(",")}`, { headers: hdrs }, 8000, stage);
-          if (!ar.ok) {
-            for (const id of ids) artistPopularityMap.set(id, null);
-            continue;
-          }
-          const aj: any = await ar.json();
-          const seen = new Set<string>();
-          for (const art of aj?.artists ?? []) {
-            if (!art?.id) continue;
-            seen.add(art.id);
-            artistPopularityMap.set(art.id, typeof art?.popularity === "number" ? art.popularity : null);
-          }
-          for (const id of ids) {
-            if (!seen.has(id)) artistPopularityMap.set(id, null);
-          }
-        }
-      };
-      const maxArtistPopularityFor = (artists: Array<{ id: string | null; name: string | null }>): number | null => {
-        const pops: number[] = [];
-        for (const a of artists ?? []) {
-          const aid = a?.id;
-          if (!aid) continue;
-          const p = artistPopularityMap.get(aid);
-          if (typeof p === "number") pops.push(p);
-        }
-        return pops.length ? Math.max(...pops) : null;
-      };
-      const artistIds = Array.from(new Set(
-        datePassed.flatMap((item: any) => (item?.artists ?? []).map((a: any) => a?.id).filter(Boolean))
-      ));
-      await ensureArtistPopularity(artistIds as string[], "top_picks_artists");
-      const popularityPassed = datePassed.filter((item: any) => {
-        const maxPop = maxArtistPopularityFor(item?.artists ?? []);
-        item.artistPopularity = maxPop;
-        return typeof maxPop === "number" && maxPop >= popularityFloor;
-      });
-      const dedupeResult = await dedupeDiscoveryItems(popularityPassed, {
-        hdrs,
-        market: marketFixed,
-        stagePrefix: "top_picks_dedupe",
-        maxAlbumFetchIds: 20,
-        setStage: (next) => { stage = next; },
-        ensureArtistPopularity,
-        getArtistPopularity: maxArtistPopularityFor,
-        normalizeReleaseDate,
-        toReleaseTs,
-      });
-      const qualityDeduped = dedupeResult.items;
-      qualityDeduped.sort((a: any, b: any) => {
-        const popDiff = (b?.artistPopularity ?? 0) - (a?.artistPopularity ?? 0);
-        if (popDiff) return popDiff;
-        const dateDiff = (b?.releaseTs ?? 0) - (a?.releaseTs ?? 0);
-        if (dateDiff) return dateDiff;
-        return String(a?.id ?? "").localeCompare(String(b?.id ?? ""));
-      });
-      const artistCappedResult = capPerArtist(qualityDeduped, maxPerArtist);
-      const items = artistCappedResult.items.slice(0, returnLimit).map((item: any) => ({
-        id: item?.id,
-        title: item?.title ?? item?.name ?? "",
-        artist: item?.artists?.[0]?.name ?? "",
-        artistId: item?.artists?.[0]?.id ?? null,
-        artistPopularity: item?.artistPopularity ?? null,
-        releaseDate: item?.releaseDateNormalized ?? item?.releaseDate ?? null,
-        spotifyUrl: item?.spotifyUrl ?? null,
-        imageUrl: item?.imageUrl ?? null,
-        type: isTrackItem(item) ? "track" : "album",
-      }));
+      const computeTopPicksPayload = async () => {
+        const marketFixed = "US";
+        const nowMs = Date.now();
+        const currentYear = new Date(nowMs).getUTCFullYear();
+        const daysParam = Number(url.searchParams.get("days") ?? "30");
+        const daysUsed = Math.max(1, Math.min(365, Number.isFinite(daysParam) ? daysParam : 30));
+        const popularityFloorParam = Number(
+          url.searchParams.get("popularity_floor")
+          ?? url.searchParams.get("popularityFloor")
+          ?? url.searchParams.get("min_popularity")
+          ?? "50"
+        );
+        const popularityFloor = Math.max(0, Math.min(100, Number.isFinite(popularityFloorParam) ? popularityFloorParam : 50));
+        const maxPerArtistParam = Number(url.searchParams.get("max_per_artist") ?? "2");
+        const maxPerArtist = Math.max(1, Math.min(5, Number.isFinite(maxPerArtistParam) ? maxPerArtistParam : 2));
+        const pagesPerQueryParam = Number(url.searchParams.get("pages") ?? "2");
+        const pagesPerQuery = Math.max(1, Math.min(4, Number.isFinite(pagesPerQueryParam) ? pagesPerQueryParam : 2));
+        const pageLimit = 50;
+        const returnLimit = 30;
+        const cutoffMs = nowMs - daysUsed * 24 * 60 * 60 * 1000;
+        const cutoffIso = new Date(cutoffMs).toISOString();
+        const queriesUsed = [
+          `year:${currentYear}`,
+          `year:${currentYear} genre:"pop"`,
+          `year:${currentYear} genre:"hiphop"`,
+          `year:${currentYear} genre:"latin"`,
+          `year:${currentYear} genre:"dance"`,
+        ];
 
-      const payload: any = { items, albums: { items } };
-      if (debug) {
-        payload.build = BUILD_ID;
-        payload.debug = {
-          queries_used: queriesUsed,
-          raw_count_total: rawCountTotal,
-          deduped_count: deduped.length,
-          date_pass_count: datePassed.length,
-          popularity_pass_count: popularityPassed.length,
-          dedupe_input_count: dedupeResult.stats.dedupe_input_count,
-          dedupe_output_count: dedupeResult.stats.dedupe_output_count,
-          dropped_tracks_due_to_album_preference: dedupeResult.stats.dropped_tracks_due_to_album_preference,
-          albums_fetched_for_substitution: dedupeResult.stats.albums_fetched_for_substitution,
-          dropped_variants_count: dedupeResult.stats.dropped_variants_count,
-          dropped_variants_bracket_count: dedupeResult.stats.dropped_variants_bracket_count,
-          dropped_same_cover_count: dedupeResult.stats.dropped_same_cover_count,
-          max_per_artist: maxPerArtist,
-          dropped_due_to_artist_cap: artistCappedResult.dropped_due_to_artist_cap,
-          returned_count: items.length,
-          cutoff_iso: cutoffIso,
-          pages_scanned_total: pagesScannedTotal,
-          market: marketFixed,
-          popularity_floor: popularityFloor,
+        const normalizeReleaseDate = (releaseDate?: string | null, precision?: string | null): string | null => {
+          if (!releaseDate) return null;
+          const s = String(releaseDate);
+          const p = String(precision ?? "").toLowerCase();
+          if (p === "day" && /^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+          if (p === "month" && /^\d{4}-\d{2}$/.test(s)) return `${s}-01`;
+          if (p === "year" && /^\d{4}$/.test(s)) return `${s}-01-01`;
+          if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+          if (/^\d{4}-\d{2}$/.test(s)) return `${s}-01`;
+          if (/^\d{4}$/.test(s)) return `${s}-01-01`;
+          return null;
         };
+        const toReleaseTs = (releaseDate?: string | null, precision?: string | null): number | null => {
+          const normalized = normalizeReleaseDate(releaseDate, precision);
+          if (!normalized) return null;
+          const t = Date.parse(normalized);
+          return Number.isNaN(t) ? null : t;
+        };
+        const normalizeItem = (item: any, sourceType: "album" | "track") => {
+          const album = sourceType === "album" ? item : (item?.album ?? {});
+          const releaseDateRaw = album?.release_date ?? item?.release_date ?? null;
+          const releaseDatePrecision = album?.release_date_precision ?? item?.release_date_precision ?? null;
+          const releaseDate = normalizeReleaseDate(releaseDateRaw, releaseDatePrecision);
+          const releaseTs = toReleaseTs(releaseDateRaw, releaseDatePrecision);
+          const artistsRaw = sourceType === "track" ? item?.artists : album?.artists;
+          const artists = Array.isArray(artistsRaw)
+            ? artistsRaw.map((a: any) => ({ id: a?.id ?? null, name: a?.name ?? null }))
+            : [];
+          const spotifyUrl = item?.external_urls?.spotify ?? album?.external_urls?.spotify ?? null;
+          const imageUrl = sourceType === "album"
+            ? (item?.images?.[0]?.url ?? null)
+            : (item?.album?.images?.[0]?.url ?? null);
+          return {
+            sourceType,
+            normalizedType: sourceType,
+            id: item?.id ?? null,
+            albumId: sourceType === "album" ? (item?.id ?? null) : (item?.album?.id ?? null),
+            title: item?.name ?? "",
+            name: item?.name ?? "",
+            artists,
+            releaseDateRaw,
+            releaseDatePrecision,
+            releaseDateNormalized: releaseDate,
+            releaseDate,
+            releaseTs,
+            spotifyUrl,
+            imageUrl,
+            type: sourceType,
+            artistPopularity: null as number | null,
+          };
+        };
+
+        const dedupedById = new Map<string, any>();
+        let rawCountTotal = 0;
+        let pagesScannedTotal = 0;
+
+        for (const query of queriesUsed) {
+          for (let page = 0; page < pagesPerQuery; page++) {
+            pagesScannedTotal += 1;
+            const offset = page * pageLimit;
+            stage = `top_picks_search_${page}`;
+            const searchUrl = `${API}/search?` + new URLSearchParams({
+              q: query,
+              type: "album,track",
+              market: marketFixed,
+              limit: String(pageLimit),
+              offset: String(offset),
+            });
+            const res = await fetchWithTimeout(searchUrl, { headers: hdrs }, 8000, stage);
+            if (!res.ok) {
+              if (debugInfo && !debugInfo.spotifyError) {
+                debugInfo.spotifyError = { stage, status: res.status, message: res.statusText };
+              }
+              break;
+            }
+            const j: any = await res.json();
+            const albumItems = Array.isArray(j?.albums?.items) ? j.albums.items : [];
+            const trackItems = Array.isArray(j?.tracks?.items) ? j.tracks.items : [];
+            const pageRaw = albumItems.length + trackItems.length;
+            rawCountTotal += pageRaw;
+            if (!pageRaw) break;
+
+            for (const a of albumItems) {
+              const normalized = normalizeItem(a, "album");
+              const key = String(normalized?.id ?? "");
+              if (!key) continue;
+              if (!dedupedById.has(key)) dedupedById.set(key, normalized);
+            }
+            for (const t of trackItems) {
+              const normalized = normalizeItem(t, "track");
+              const key = String(normalized?.id ?? "");
+              if (!key) continue;
+              if (!dedupedById.has(key)) dedupedById.set(key, normalized);
+            }
+          }
+        }
+
+        const deduped = Array.from(dedupedById.values());
+        const datePassed = deduped.filter((item: any) => item?.releaseTs != null && item.releaseTs >= cutoffMs);
+        const artistPopularityMap = new Map<string, number | null>();
+        const ensureArtistPopularity = async (artistIds: string[], stagePrefix: string) => {
+          const missing = artistIds.filter((id) => id && !artistPopularityMap.has(id));
+          for (let i = 0; i < missing.length; i += 50) {
+            const ids = missing.slice(i, i + 50);
+            if (!ids.length) continue;
+            stage = `${stagePrefix}_${Math.floor(i / 50)}`;
+            const ar = await fetchWithTimeout(`${API}/artists?ids=${ids.join(",")}`, { headers: hdrs }, 8000, stage);
+            if (!ar.ok) {
+              for (const id of ids) artistPopularityMap.set(id, null);
+              continue;
+            }
+            const aj: any = await ar.json();
+            const seen = new Set<string>();
+            for (const art of aj?.artists ?? []) {
+              if (!art?.id) continue;
+              seen.add(art.id);
+              artistPopularityMap.set(art.id, typeof art?.popularity === "number" ? art.popularity : null);
+            }
+            for (const id of ids) {
+              if (!seen.has(id)) artistPopularityMap.set(id, null);
+            }
+          }
+        };
+        const maxArtistPopularityFor = (artists: Array<{ id: string | null; name: string | null }>): number | null => {
+          const pops: number[] = [];
+          for (const a of artists ?? []) {
+            const aid = a?.id;
+            if (!aid) continue;
+            const p = artistPopularityMap.get(aid);
+            if (typeof p === "number") pops.push(p);
+          }
+          return pops.length ? Math.max(...pops) : null;
+        };
+        const artistIds = Array.from(new Set(
+          datePassed.flatMap((item: any) => (item?.artists ?? []).map((a: any) => a?.id).filter(Boolean))
+        ));
+        await ensureArtistPopularity(artistIds as string[], "top_picks_artists");
+        const popularityPassed = datePassed.filter((item: any) => {
+          const maxPop = maxArtistPopularityFor(item?.artists ?? []);
+          item.artistPopularity = maxPop;
+          return typeof maxPop === "number" && maxPop >= popularityFloor;
+        });
+        const dedupeResult = await dedupeDiscoveryItems(popularityPassed, {
+          hdrs,
+          market: marketFixed,
+          stagePrefix: "top_picks_dedupe",
+          maxAlbumFetchIds: 20,
+          setStage: (next) => { stage = next; },
+          ensureArtistPopularity,
+          getArtistPopularity: maxArtistPopularityFor,
+          normalizeReleaseDate,
+          toReleaseTs,
+        });
+        const qualityDeduped = dedupeResult.items;
+        qualityDeduped.sort((a: any, b: any) => {
+          const popDiff = (b?.artistPopularity ?? 0) - (a?.artistPopularity ?? 0);
+          if (popDiff) return popDiff;
+          const dateDiff = (b?.releaseTs ?? 0) - (a?.releaseTs ?? 0);
+          if (dateDiff) return dateDiff;
+          return String(a?.id ?? "").localeCompare(String(b?.id ?? ""));
+        });
+        const artistCappedResult = capPerArtist(qualityDeduped, maxPerArtist);
+        const items = artistCappedResult.items.slice(0, returnLimit).map((item: any) => ({
+          id: item?.id,
+          title: item?.title ?? item?.name ?? "",
+          artist: item?.artists?.[0]?.name ?? "",
+          artistId: item?.artists?.[0]?.id ?? null,
+          artistPopularity: item?.artistPopularity ?? null,
+          releaseDate: item?.releaseDateNormalized ?? item?.releaseDate ?? null,
+          spotifyUrl: item?.spotifyUrl ?? null,
+          imageUrl: item?.imageUrl ?? null,
+          type: isTrackItem(item) ? "track" : "album",
+        }));
+
+        const payload: any = { items, albums: { items } };
+        if (debug) {
+          payload.build = BUILD_ID;
+          payload.debug = {
+            queries_used: queriesUsed,
+            raw_count_total: rawCountTotal,
+            deduped_count: deduped.length,
+            date_pass_count: datePassed.length,
+            popularity_pass_count: popularityPassed.length,
+            dedupe_input_count: dedupeResult.stats.dedupe_input_count,
+            dedupe_output_count: dedupeResult.stats.dedupe_output_count,
+            dropped_tracks_due_to_album_preference: dedupeResult.stats.dropped_tracks_due_to_album_preference,
+            albums_fetched_for_substitution: dedupeResult.stats.albums_fetched_for_substitution,
+            dropped_variants_count: dedupeResult.stats.dropped_variants_count,
+            dropped_variants_bracket_count: dedupeResult.stats.dropped_variants_bracket_count,
+            dropped_same_cover_count: dedupeResult.stats.dropped_same_cover_count,
+            max_per_artist: maxPerArtist,
+            dropped_due_to_artist_cap: artistCappedResult.dropped_due_to_artist_cap,
+            returned_count: items.length,
+            cutoff_iso: cutoffIso,
+            pages_scanned_total: pagesScannedTotal,
+            market: marketFixed,
+            popularity_floor: popularityFloor,
+          };
+        }
+        return payload;
+      };
+
+      const payload = await computeTopPicksPayload();
+      if (!debug && isTopPicksPayload(payload)) {
+        const { error: cacheWriteError } = await writeDiscoverCache(cacheKey, payload);
+        if (cacheWriteError) {
+          console.error(`[discover-cache] write-failed key=${cacheKey}`, cacheWriteError);
+        } else {
+          console.log(`[discover-cache] write key=${cacheKey}`);
+        }
       }
 
       return new Response(JSON.stringify(payload), {
-        headers: addBuildHeader({ "Content-Type": "application/json", "X-Route": "TOP-PICKS", "X-Path": pathname, "X-Count": String(items.length) }),
+        headers: addBuildHeader({ "Content-Type": "application/json", "X-Route": "TOP-PICKS", "X-Path": pathname, "X-Count": String(Array.isArray(payload?.items) ? payload.items.length : 0) }),
       });
     }
 
@@ -1090,7 +1223,7 @@ serve(async (req) => {
         });
       }
 
-      const raw = rawParam.toLowerCase().split(",").map((s) => s.trim()).filter(Boolean);
+      const raw = rawParam.toLowerCase().split(",").map((s) => normalizeDiscoverGenreKey(s)).filter(Boolean);
       if (!raw.length) {
         const errPayload: any = { error: "genres required" };
         if (debug) errPayload.build = BUILD_ID;
@@ -1100,11 +1233,7 @@ serve(async (req) => {
         });
       }
 
-      const bucketKeys = [
-        "rap", "rnb", "pop", "rock", "latin", "edm", "country", "kpop", "afrobeats",
-        "jazz", "dancehall", "reggae", "indie", "metal", "punk", "folk", "blues", "classical",
-        "soundtrack", "ambient", "jpop", "desi",
-      ];
+      const bucketKeys = DISCOVER_BUCKET_KEYS;
       const want = new Set(raw);
       const requestedBuckets = bucketKeys.filter((k) => want.has(k));
       const buckets: Record<string, any[]> = Object.fromEntries(bucketKeys.map((k) => [k, [] as any[]]));
@@ -1124,6 +1253,70 @@ serve(async (req) => {
       const cutoffMs = nowMs - daysUsed * 24 * 60 * 60 * 1000;
       const cutoffIso = new Date(cutoffMs).toISOString();
       const currentYear = new Date(nowMs).getUTCFullYear();
+      const emptyDebugByBucket = () => createGenreDebugByBucket(bucketKeys, {
+        maxPerArtist,
+        cutoffIso,
+        market: marketFixed,
+        popularityFloor,
+      });
+
+      if (!debug) {
+        if (refresh) {
+          for (const bucketKey of requestedBuckets) {
+            console.log(`[discover-cache] refresh key=genre:${bucketKey}`);
+          }
+        } else if (requestedBuckets.length) {
+          const cachedByBucket = new Map<string, any>();
+          let canServeFromCache = true;
+          for (const bucketKey of requestedBuckets) {
+            const cacheKey = `genre:${bucketKey}`;
+            const { payload: cachedPayload, error: cacheReadError } = await readDiscoverCache(cacheKey);
+            if (cacheReadError) {
+              console.error(`[discover-cache] read-failed key=${cacheKey}`, cacheReadError);
+              canServeFromCache = false;
+              break;
+            }
+            if (!isGenreBucketCachePayload(cachedPayload)) {
+              console.log(`[discover-cache] miss key=${cacheKey}`);
+              canServeFromCache = false;
+              break;
+            }
+            console.log(`[discover-cache] hit key=${cacheKey}`);
+            cachedByBucket.set(bucketKey, cachedPayload);
+          }
+
+          if (canServeFromCache) {
+            const cachedBuckets: Record<string, any[]> = Object.fromEntries(bucketKeys.map((k) => [k, [] as any[]]));
+            const debugByBucket = emptyDebugByBucket();
+            let cachedYear = currentYear;
+            for (const bucketKey of requestedBuckets) {
+              const cachedPayload = cachedByBucket.get(bucketKey);
+              cachedBuckets[bucketKey] = Array.isArray(cachedPayload?.items) ? cachedPayload.items : [];
+              if (cachedPayload?.debug && typeof cachedPayload.debug === "object") {
+                debugByBucket[bucketKey] = cachedPayload.debug;
+              }
+              if (Number.isFinite(Number(cachedPayload?.year))) {
+                cachedYear = Number(cachedPayload.year);
+              }
+            }
+
+            const payload: any = {
+              market: marketFixed,
+              days: daysUsed,
+              buckets: cachedBuckets,
+              debug: {
+                per_genre: debugByBucket,
+                requested_genres: requestedBuckets,
+                year: cachedYear,
+              },
+            };
+            const body = JSON.stringify(payload);
+            return new Response(body, {
+              headers: addBuildHeader({ "Content-Type": "application/json", "X-Route": "NRG", "X-Path": pathname }),
+            });
+          }
+        }
+      }
 
       const SEARCH_GENRE_MAP: Record<string, string> = {
         rap: "hiphop",
@@ -1155,27 +1348,7 @@ serve(async (req) => {
       const MAX_RETURN = 30;
       const RAW_CEILING = 250;
 
-      const debugByBucket: Record<string, any> = Object.fromEntries(
-        bucketKeys.map((k) => [k, {
-          search_raw_count: 0,
-          date_pass_count: 0,
-          popularity_pass_count: 0,
-          dedupe_input_count: 0,
-          dedupe_output_count: 0,
-          dropped_tracks_due_to_album_preference: 0,
-          albums_fetched_for_substitution: 0,
-          dropped_variants_count: 0,
-          dropped_variants_bracket_count: 0,
-          dropped_same_cover_count: 0,
-          max_per_artist: maxPerArtist,
-          dropped_due_to_artist_cap: 0,
-          returned_count: 0,
-          cutoff_iso: cutoffIso,
-          pages_scanned: 0,
-          market: marketFixed,
-          popularity_floor: popularityFloor,
-        }])
-      );
+      const debugByBucket: Record<string, any> = emptyDebugByBucket();
 
       const artistPopularityById = new Map<string, number | null>();
       const toArtistLite = (artists: any[] | undefined): Array<{ id: string | null; name: string | null }> => (
@@ -1423,6 +1596,24 @@ serve(async (req) => {
           ...payload.debug,
           ...debugInfo,
         };
+      }
+
+      if (!debug) {
+        for (const bucketKey of requestedBuckets) {
+          const cacheKey = `genre:${bucketKey}`;
+          const cachePayload = {
+            items: buckets[bucketKey],
+            debug: debugByBucket[bucketKey],
+            year: currentYear,
+          };
+          if (!isGenreBucketCachePayload(cachePayload)) continue;
+          const { error: cacheWriteError } = await writeDiscoverCache(cacheKey, cachePayload);
+          if (cacheWriteError) {
+            console.error(`[discover-cache] write-failed key=${cacheKey}`, cacheWriteError);
+          } else {
+            console.log(`[discover-cache] write key=${cacheKey}`);
+          }
+        }
       }
 
       const body = JSON.stringify(payload);
