@@ -642,7 +642,6 @@ serve(async (req) => {
       }
 
       console.log("[discover-refresh] start");
-      const basePath = pathname.replace(/\/discover-refresh$/, "");
       const forwarded = new URLSearchParams(url.search);
       forwarded.delete("debug");
       forwarded.delete("trace");
@@ -654,10 +653,13 @@ serve(async (req) => {
         Object.entries(extraParams ?? {}).forEach(([paramKey, value]) => {
           params.set(paramKey, value);
         });
-        const targetUrl = `${url.origin}${basePath}${routePath}?${params.toString()}`;
+        const targetUrl = new URL(req.url);
+        targetUrl.pathname = targetUrl.pathname.replace(/discover-refresh\/?$/, routePath.replace(/^\//, ""));
+        targetUrl.search = params.toString() ? `?${params.toString()}` : "";
+        console.log(`[discover-refresh] ${key} -> ${targetUrl.pathname}${targetUrl.search}`);
         const startedAt = Date.now();
         try {
-          const response = await fetch(targetUrl, {
+          const response = await fetch(targetUrl.toString(), {
             method: "GET",
             headers: { "Content-Type": "application/json" },
           });
