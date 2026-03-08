@@ -419,6 +419,16 @@ const normalizeDiscoverGenreKey = (value?: string | null): string => {
   return lower;
 };
 
+const parseDiscoverGenreKeys = (rawValue?: string | null): string[] => {
+  const requested = String(rawValue ?? "")
+    .toLowerCase()
+    .split(",")
+    .map((s) => normalizeDiscoverGenreKey(s))
+    .filter(Boolean);
+  const want = new Set(requested);
+  return DISCOVER_BUCKET_KEYS.filter((key) => want.has(key));
+};
+
 const createGenreDebugByBucket = (
   bucketKeys: string[],
   opts: { maxPerArtist: number; cutoffIso: string; market: string; popularityFloor: number },
@@ -612,6 +622,89 @@ serve(async (req) => {
     }
 
     const hdrs = { Authorization: `Bearer ${token}` };
+
+    if (pathname.endsWith("/discover-refresh")) {
+      const refreshSecret = Deno.env.get("DISCOVER_REFRESH_SECRET") ?? "";
+      if (!refreshSecret) {
+        return new Response(JSON.stringify({ error: "discover refresh secret missing", build: BUILD_ID }), {
+          status: 500,
+          headers: addBuildHeader({ "Content-Type": "application/json" }),
+        });
+      }
+
+      const authHeader = req.headers.get("authorization") ?? "";
+      const expectedAuth = `Bearer ${refreshSecret}`;
+      if (authHeader !== expectedAuth) {
+        return new Response(JSON.stringify({ error: "unauthorized", build: BUILD_ID }), {
+          status: 401,
+          headers: addBuildHeader({ "Content-Type": "application/json" }),
+        });
+      }
+
+      console.log("[discover-refresh] start");
+      const basePath = pathname.replace(/\/discover-refresh$/, "");
+      const forwarded = new URLSearchParams(url.search);
+      forwarded.delete("debug");
+      forwarded.delete("trace");
+      forwarded.delete("traceStage");
+
+      const invokeRefresh = async (key: string, routePath: string, extraParams?: Record<string, string>) => {
+        const params = new URLSearchParams(forwarded);
+        params.set("refresh", "1");
+        Object.entries(extraParams ?? {}).forEach(([paramKey, value]) => {
+          params.set(paramKey, value);
+        });
+        const targetUrl = `${url.origin}${basePath}${routePath}?${params.toString()}`;
+        const startedAt = Date.now();
+        try {
+          const response = await fetch(targetUrl, {
+            method: "GET",
+            headers: { "Content-Type": "application/json" },
+          });
+          if (!response.ok) {
+            const bodyText = await response.text();
+            const error = `status=${response.status}${bodyText ? ` body=${bodyText.slice(0, 200)}` : ""}`;
+            console.error(`[discover-refresh] failed key=${key} ${error}`);
+            return { key, ok: false, status: response.status, error, duration_ms: Date.now() - startedAt };
+          }
+          await response.text();
+          console.log(`[discover-refresh] refreshed key=${key}`);
+          return { key, ok: true, status: response.status, duration_ms: Date.now() - startedAt };
+        } catch (error) {
+          const message = String((error as any)?.message ?? error);
+          console.error(`[discover-refresh] failed key=${key} ${message}`);
+          return { key, ok: false, status: 500, error: message, duration_ms: Date.now() - startedAt };
+        }
+      };
+
+      const requestedRefreshGenres = parseDiscoverGenreKeys(url.searchParams.get("genres"));
+      const genresToRefresh = requestedRefreshGenres.length ? requestedRefreshGenres : DISCOVER_BUCKET_KEYS;
+      const results: Array<{ key: string; ok: boolean; status: number; error?: string; duration_ms: number }> = [];
+
+      results.push(await invokeRefresh("top_picks", "/top-picks"));
+      for (const genreKey of genresToRefresh) {
+        results.push(await invokeRefresh(`genre:${genreKey}`, "/new-releases-genre", { genres: genreKey }));
+      }
+
+      const success = results.filter((entry) => entry.ok);
+      const failed = results.filter((entry) => !entry.ok);
+      const durationMs = Date.now() - startTime;
+      console.log(`[discover-refresh] done success=${success.length} failed=${failed.length}`);
+
+      return new Response(JSON.stringify({
+        ok: failed.length === 0,
+        refreshed_keys: success.map((entry) => entry.key),
+        failed_keys: failed.map((entry) => entry.key),
+        results,
+        success_count: success.length,
+        failed_count: failed.length,
+        duration_ms: durationMs,
+        build: BUILD_ID,
+      }), {
+        status: failed.length ? 207 : 200,
+        headers: addBuildHeader({ "Content-Type": "application/json", "X-Route": "DISCOVER-REFRESH", "X-Path": pathname }),
+      });
+    }
 
     // Generic search (albums, tracks, artists)
     if (pathname.endsWith("/spotify-search")) {
@@ -1223,8 +1316,8 @@ serve(async (req) => {
         });
       }
 
-      const raw = rawParam.toLowerCase().split(",").map((s) => normalizeDiscoverGenreKey(s)).filter(Boolean);
-      if (!raw.length) {
+      const requestedBuckets = parseDiscoverGenreKeys(rawParam);
+      if (!requestedBuckets.length) {
         const errPayload: any = { error: "genres required" };
         if (debug) errPayload.build = BUILD_ID;
         return new Response(JSON.stringify(errPayload), {
@@ -1234,8 +1327,6 @@ serve(async (req) => {
       }
 
       const bucketKeys = DISCOVER_BUCKET_KEYS;
-      const want = new Set(raw);
-      const requestedBuckets = bucketKeys.filter((k) => want.has(k));
       const buckets: Record<string, any[]> = Object.fromEntries(bucketKeys.map((k) => [k, [] as any[]]));
       const marketFixed = "US";
       const nowMs = Date.now();
