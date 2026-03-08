@@ -392,7 +392,11 @@ const capPerArtist = (items: any[], maxPerArtist = 2): { items: any[]; dropped_d
   const safeMax = Math.max(1, Math.min(5, Number.isFinite(maxPerArtist) ? Number(maxPerArtist) : 2));
   for (const item of Array.isArray(items) ? items : []) {
     const primaryArtistId = String(item?.artists?.[0]?.id ?? item?.artistId ?? "");
-    const key = primaryArtistId || `unknown:${String(item?.id ?? capped.length)}`;
+    const primaryArtistName = String(item?.artists?.[0]?.name ?? item?.artist ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, " ");
+    const key = primaryArtistId || (primaryArtistName ? `name:${primaryArtistName}` : `unknown:${String(item?.id ?? capped.length)}`);
     const current = counts.get(key) ?? 0;
     if (current >= safeMax) {
       dropped += 1;
