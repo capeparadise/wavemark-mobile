@@ -392,33 +392,30 @@ export default function DiscoverTab() {
     setDraftGenres(selectedGenres.size ? new Set(selectedGenres) : new Set(['all']));
   }, [selectedGenres]);
 
-  const followedArtists = useMemo<Array<{ id: string; name: string; imageUrl?: string | null; latestId?: string; latestDate?: string | null }>>(() => {
-    const cutoffTs = Date.now() - UPDATES_DAYS * 24 * 60 * 60 * 1000;
-    const fallbackItems = Object.keys(recentByArtist || {}).map((id) => {
-      const det = followedDetails[id] || { name: 'Unknown', imageUrl: null };
-      const rec = recentByArtist[id] || {} as { latestId?: string; latestDate?: string | null };
-      return { id, name: det.name, imageUrl: det.imageUrl ?? null, latestId: rec.latestId, latestDate: rec.latestDate ?? null };
-    });
-    const base = (forYouItems && forYouItems.length ? forYouItems : fallbackItems) as Array<{ id: string; name: string; imageUrl?: string | null; latestId?: string; latestDate?: string | null }>;
-    const uniq = new Map<string, { id: string; name: string; imageUrl?: string | null; latestId?: string; latestDate?: string | null }>();
-    base.forEach((it) => {
-      if (!it?.latestId) return;
-      if (!it?.id || !/^[A-Za-z0-9]{22}$/.test(String(it.id))) return;
-      if (!isWithinDiscoverWindow(it.latestDate ?? null, cutoffTs)) return;
-      if (!uniq.has(it.id)) uniq.set(it.id, it);
-    });
-    return Array.from(uniq.values()).sort((a, b) => {
-      const ta = discoverDateTimestamp(a.latestDate ?? null);
-      const tb = discoverDateTimestamp(b.latestDate ?? null);
-      return tb - ta;
-    });
-  }, [forYouItems, recentByArtist, followedDetails]);
-
   const yourUpdatesLoading = pickedLoading || forYouLoading;
   const freshYourUpdatesReleases = useMemo(() => {
     const cutoffTs = Date.now() - UPDATES_DAYS * 24 * 60 * 60 * 1000;
     return yourUpdatesReleases.filter((item) => isWithinDiscoverWindow(item.releaseDate ?? null, cutoffTs));
   }, [yourUpdatesReleases]);
+  const followedArtists = useMemo<Array<{ id: string; name: string; imageUrl?: string | null; latestId?: string; latestDate?: string | null }>>(() => {
+    const fallbackByArtistId = new Map(forYouItems.map((artist) => [artist.id, artist]));
+    const uniq = new Map<string, { id: string; name: string; imageUrl?: string | null; latestId?: string; latestDate?: string | null }>();
+    freshYourUpdatesReleases.forEach((item) => {
+      const artistId = item.artistId ?? null;
+      if (!artistId || !/^[A-Za-z0-9]{22}$/.test(String(artistId))) return;
+      if (uniq.has(artistId)) return;
+      const detail = followedDetails[artistId];
+      const fallback = fallbackByArtistId.get(artistId);
+      uniq.set(artistId, {
+        id: artistId,
+        name: detail?.name || item.artist || fallback?.name || 'Unknown',
+        imageUrl: detail?.imageUrl ?? fallback?.imageUrl ?? null,
+        latestId: item.id,
+        latestDate: item.releaseDate ?? null,
+      });
+    });
+    return Array.from(uniq.values());
+  }, [followedDetails, forYouItems, freshYourUpdatesReleases]);
   const yourUpdatesVisible = useMemo(
     () => freshYourUpdatesReleases.slice(0, YOUR_UPDATES_CAP),
     [freshYourUpdatesReleases]
@@ -453,6 +450,11 @@ export default function DiscoverTab() {
     if (loggedLoadCycleRef.current === loadCycleId) return;
     if (topPicksLoading || yourUpdatesLoading) return;
     loggedLoadCycleRef.current = loadCycleId;
+    console.log('[following]', {
+      recent_release_artists: followedArtists.length,
+      recent_releases: freshYourUpdatesReleases.length,
+      shown: followedArtists.length,
+    });
     console.log('[discover][sections]', {
       loadCycleId,
       counts: {
