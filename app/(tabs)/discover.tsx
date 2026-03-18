@@ -39,6 +39,7 @@ const DISCOVER_VIEW_MODE_KEY = 'discover.viewMode';
 const DISCOVER_MARKETS = ['US', 'GB'];
 const DISCOVER_GENRE_DAYS = 30;
 const DISCOVER_TOP_PICKS_DAYS = 30;
+const UPDATES_DAYS = 14;
 const YOUR_UPDATES_CAP = 20;
 
 function spotifyKey(id?: string | null, spotifyUrl?: string | null) {
@@ -51,6 +52,28 @@ function spotifyKey(id?: string | null, spotifyUrl?: string | null) {
     return v;
   };
   return parse(id) || parse(spotifyUrl) || id || null;
+}
+
+function normalizeDiscoverDate(value?: string | null, precision?: string | null): string | null {
+  if (!value) return null;
+  let normalized = String(value);
+  const normalizedPrecision = (precision || '').toLowerCase();
+  if (normalizedPrecision === 'year') normalized = `${normalized}-01-01`;
+  else if (normalizedPrecision === 'month') normalized = `${normalized}-01`;
+  else if (/^\d{4}$/.test(normalized)) normalized = `${normalized}-07-01`;
+  else if (/^\d{4}-\d{2}$/.test(normalized)) normalized = `${normalized}-15`;
+  return normalized;
+}
+
+function discoverDateTimestamp(value?: string | null, precision?: string | null): number {
+  const normalized = normalizeDiscoverDate(value, precision);
+  if (!normalized) return 0;
+  const timestamp = Date.parse(normalized);
+  return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
+function isWithinDiscoverWindow(value: string | null | undefined, cutoffTs: number, precision?: string | null): boolean {
+  return discoverDateTimestamp(value, precision) >= cutoffTs;
 }
 
 const GENRE_OPTIONS: { key: CanonicalGenre | 'all'; label: string }[] = [
@@ -370,6 +393,7 @@ export default function DiscoverTab() {
   }, [selectedGenres]);
 
   const followedArtists = useMemo<Array<{ id: string; name: string; imageUrl?: string | null; latestId?: string; latestDate?: string | null }>>(() => {
+    const cutoffTs = Date.now() - UPDATES_DAYS * 24 * 60 * 60 * 1000;
     const fallbackItems = Object.keys(recentByArtist || {}).map((id) => {
       const det = followedDetails[id] || { name: 'Unknown', imageUrl: null };
       const rec = recentByArtist[id] || {} as { latestId?: string; latestDate?: string | null };
@@ -380,27 +404,32 @@ export default function DiscoverTab() {
     base.forEach((it) => {
       if (!it?.latestId) return;
       if (!it?.id || !/^[A-Za-z0-9]{22}$/.test(String(it.id))) return;
+      if (!isWithinDiscoverWindow(it.latestDate ?? null, cutoffTs)) return;
       if (!uniq.has(it.id)) uniq.set(it.id, it);
     });
     return Array.from(uniq.values()).sort((a, b) => {
-      const ta = a.latestDate ? Date.parse(a.latestDate) : 0;
-      const tb = b.latestDate ? Date.parse(b.latestDate) : 0;
+      const ta = discoverDateTimestamp(a.latestDate ?? null);
+      const tb = discoverDateTimestamp(b.latestDate ?? null);
       return tb - ta;
     });
   }, [forYouItems, recentByArtist, followedDetails]);
 
   const yourUpdatesLoading = pickedLoading || forYouLoading;
+  const freshYourUpdatesReleases = useMemo(() => {
+    const cutoffTs = Date.now() - UPDATES_DAYS * 24 * 60 * 60 * 1000;
+    return yourUpdatesReleases.filter((item) => isWithinDiscoverWindow(item.releaseDate ?? null, cutoffTs));
+  }, [yourUpdatesReleases]);
   const yourUpdatesVisible = useMemo(
-    () => yourUpdatesReleases.slice(0, YOUR_UPDATES_CAP),
-    [yourUpdatesReleases]
+    () => freshYourUpdatesReleases.slice(0, YOUR_UPDATES_CAP),
+    [freshYourUpdatesReleases]
   );
 
   const yourUpdatesState = useMemo<{ items: typeof yourUpdatesReleases; status: SectionStatus; error?: any }>(() => {
     if (yourUpdatesLoading) return { items: [], status: 'loading' };
     if (yourUpdatesError) return { items: [], status: 'error', error: yourUpdatesError };
-    if (!yourUpdatesReleases.length) return { items: [], status: 'empty' };
-    return { items: yourUpdatesReleases, status: 'success' };
-  }, [yourUpdatesError, yourUpdatesLoading, yourUpdatesReleases]);
+    if (!freshYourUpdatesReleases.length) return { items: [], status: 'empty' };
+    return { items: freshYourUpdatesReleases, status: 'success' };
+  }, [freshYourUpdatesReleases, yourUpdatesError, yourUpdatesLoading]);
 
   const topPicksState = useMemo<{ items: typeof filteredTopPicks; status: SectionStatus; error?: any }>(() => {
     if (topPicksLoading) return { items: [], status: 'loading' };
@@ -410,8 +439,8 @@ export default function DiscoverTab() {
   }, [filteredTopPicks, topPicksError, topPicksLoading]);
 
   const hasYourUpdates = useMemo(() => (
-    followedArtists.length > 0 || yourUpdatesReleases.length > 0
-  ), [followedArtists.length, yourUpdatesReleases.length]);
+    followedArtists.length > 0 || freshYourUpdatesReleases.length > 0
+  ), [followedArtists.length, freshYourUpdatesReleases.length]);
 
   const hasDiscoverContent = useMemo(() => {
     const genreContent = genreRows.length > 0;
@@ -427,7 +456,7 @@ export default function DiscoverTab() {
     console.log('[discover][sections]', {
       loadCycleId,
       counts: {
-        yourUpdatesReleases: yourUpdatesReleases.length,
+        yourUpdatesReleases: freshYourUpdatesReleases.length,
         followedArtists: followedArtists.length,
         topPicks: filteredTopPicks.length,
       },
@@ -453,7 +482,7 @@ export default function DiscoverTab() {
     topPicksState.status,
     yourUpdatesError,
     yourUpdatesLoading,
-    yourUpdatesReleases.length,
+    freshYourUpdatesReleases.length,
     yourUpdatesState.status,
   ]);
 
@@ -862,7 +891,6 @@ export default function DiscoverTab() {
   // Loader
   const load = useCallback(async () => {
     const NEW_RELEASE_DAYS = DISCOVER_GENRE_DAYS;
-    const UPDATES_DAYS = 36500;
     const cycleId = Date.now();
     lastFetchRef.current = cycleId;
     setLoadCycleId(cycleId);
@@ -982,16 +1010,6 @@ export default function DiscoverTab() {
             const sample = followed.slice(0, 3).map((f) => ({ id: f.id, name: f.name }));
             console.log('[updates] followed loaded', { count: followed.length, sample, cutoff: new Date(cutoffTs).toISOString().slice(0, 10) });
           }
-          const normalizeDate = (s?: string | null, precision?: string | null): string | null => {
-            if (!s) return null;
-            let x = String(s);
-            const p = (precision || '').toLowerCase();
-            if (p === 'year') x = `${x}-01-01`;
-            else if (p === 'month') x = `${x}-01`;
-            else if (/^\d{4}$/.test(x)) x = `${x}-07-01`;
-            else if (/^\d{4}-\d{2}$/.test(x)) x = `${x}-15`;
-            return x;
-          };
           const details: Record<string, { name: string; imageUrl?: string | null }> = {};
           const recents: Record<string, { latestId?: string; latestDate?: string | null }> = {};
           const debugAsap = async () => {
@@ -1019,7 +1037,7 @@ export default function DiscoverTab() {
               }));
               const stage_mapped = mapped.length;
               const parsed = mapped.map((m) => {
-                const norm = normalizeDate(m.releaseDate, m.releaseDatePrecision);
+                const norm = normalizeDiscoverDate(m.releaseDate, m.releaseDatePrecision);
                 const parsedDate = norm ? new Date(norm) : null;
                 const isIncluded = parsedDate ? parsedDate.getTime() >= cutoffTs : false;
                 return { ...m, norm, parsedDate: parsedDate?.toISOString(), isIncluded };
@@ -1067,7 +1085,10 @@ export default function DiscoverTab() {
 
           try {
             const feed = await fetchFeedForArtists({ artistIds: validFollowedIds, limit: 250 });
-            const recentFeed = (feed || []).filter((it) => followedIds.has(it.artist_id));
+            const recentFeed = (feed || []).filter((it) => (
+              followedIds.has(it.artist_id) &&
+              isWithinDiscoverWindow(it.release_date ?? null, cutoffTs)
+            ));
             if (recentFeed.length) {
               const releases: Array<{ id: string; title: string; artist: string; artistId?: string | null; releaseDate?: string | null; spotifyUrl?: string | null; imageUrl?: string | null; type?: 'album' | 'single' | 'ep' }> = [];
               const seenRelease = new Set<string>();
@@ -1101,19 +1122,19 @@ export default function DiscoverTab() {
                 });
 
                 const prev = byArtist.get(artistId);
-                const prevTs = prev?.latestDate ? Date.parse(prev.latestDate) : 0;
-                const ts = it.release_date ? Date.parse(normalizeDate(it.release_date, null) ?? '') : 0;
+                const prevTs = prev?.latestDate ? discoverDateTimestamp(prev.latestDate) : 0;
+                const ts = discoverDateTimestamp(it.release_date ?? null);
                 if (!prev || ts > prevTs) byArtist.set(artistId, { artistId, artistName, latestId: sid, latestDate: it.release_date ?? null });
               }
 
-              releases.sort((a, b) => (b.releaseDate ? Date.parse(b.releaseDate) : 0) - (a.releaseDate ? Date.parse(a.releaseDate) : 0));
+              releases.sort((a, b) => discoverDateTimestamp(b.releaseDate ?? null) - discoverDateTimestamp(a.releaseDate ?? null));
               setYourUpdatesReleases(releases.slice(0, 60));
 
               const items = Array.from(byArtist.values()).map((v) => {
                 const cachedImg = artistImageMapRef.current[v.artistId] ?? null;
                 return { id: v.artistId, name: v.artistName, imageUrl: cachedImg, latestId: v.latestId, latestDate: v.latestDate };
               });
-              items.sort((a, b) => (b.latestDate ? Date.parse(b.latestDate) : 0) - (a.latestDate ? Date.parse(a.latestDate) : 0));
+              items.sort((a, b) => discoverDateTimestamp(b.latestDate ?? null) - discoverDateTimestamp(a.latestDate ?? null));
 
               const detObj: Record<string, { name: string; imageUrl?: string | null }> = { ...details };
               const recObj: Record<string, { latestId?: string; latestDate?: string | null }> = {};
@@ -1162,6 +1183,7 @@ export default function DiscoverTab() {
             const idMatch = aid && followedIds.has(aid);
             const nameMatch = aname && followedNames.has(String(aname).toLowerCase().trim());
             if (!idMatch && !nameMatch) return false;
+            if (!isWithinDiscoverWindow(r.releaseDate ?? r.release_date ?? null, cutoffTs)) return false;
             return true;
           });
 	          if (fallbackFromNr.length) {
@@ -1191,8 +1213,8 @@ export default function DiscoverTab() {
               };
             });
             items.sort((a,b) => {
-              const ta = a.latestDate ? Date.parse(a.latestDate) : 0;
-              const tb = b.latestDate ? Date.parse(b.latestDate) : 0;
+              const ta = discoverDateTimestamp(a.latestDate ?? null);
+              const tb = discoverDateTimestamp(b.latestDate ?? null);
               return tb - ta;
             });
             const recObj: Record<string, { latestId?: string; latestDate?: string | null }> = {};
@@ -1258,8 +1280,8 @@ export default function DiscoverTab() {
                 }
               }
               if (rateLimitHits >= 3) break;
-              const normDateVal = (d?: string | null, p?: string | null) => Date.parse(normalizeDate(d, p) ?? '1970-01-01');
-              const recent = (albs || []);
+              const normDateVal = (d?: string | null, p?: string | null) => discoverDateTimestamp(d, p);
+              const recent = (albs || []).filter((album) => isWithinDiscoverWindow(album.releaseDate ?? null, cutoffTs, (album as any).releaseDatePrecision ?? null));
               if (__DEV__) {
                 debugPerArtist.push({
                   artist: fa.name,
@@ -1289,8 +1311,8 @@ export default function DiscoverTab() {
               latestDate: recents[id]?.latestDate ?? null,
             }));
             items.sort((a,b) => {
-              const ta = a.latestDate ? Date.parse(a.latestDate) : 0;
-              const tb = b.latestDate ? Date.parse(b.latestDate) : 0;
+              const ta = discoverDateTimestamp(a.latestDate ?? null);
+              const tb = discoverDateTimestamp(b.latestDate ?? null);
               return tb - ta;
             });
             if (items.length) {
@@ -1347,7 +1369,10 @@ export default function DiscoverTab() {
         const rawFy = await AsyncStorage.getItem(FOR_YOU_UPDATES_CACHE_KEY);
         if (rawFy && mounted) {
           const parsed = JSON.parse(rawFy);
-          const items = Array.isArray(parsed?.items) ? parsed.items : [];
+          const cutoffTs = Date.now() - UPDATES_DAYS * 24 * 60 * 60 * 1000;
+          const items = Array.isArray(parsed?.items)
+            ? parsed.items.filter((item: any) => isWithinDiscoverWindow(item?.latestDate ?? null, cutoffTs))
+            : [];
           const ts = typeof parsed?.ts === 'number' ? parsed.ts : 0;
           const HOUR_MS = 60 * 60 * 1000;
           if (items.length && (Date.now() - ts) < 6 * HOUR_MS) {
@@ -2009,8 +2034,8 @@ export default function DiscoverTab() {
                     <Ionicons name="notifications-outline" size={20} color={colors.text.secondary} />
                   </View>
                   <View style={{ flex: 1, gap: 4 }}>
-                    <Text style={{ fontSize: 16.5, fontWeight: '600', color: colors.text.secondary }} numberOfLines={1}>No new releases this week</Text>
-                    <Text style={{ fontSize: 13, color: colors.text.muted, opacity: 0.8 }} numberOfLines={2}>Follow more artists to fill this up.</Text>
+                    <Text style={{ fontSize: 16.5, fontWeight: '600', color: colors.text.secondary }} numberOfLines={1}>No recent artist activity</Text>
+                    <Text style={{ fontSize: 13, color: colors.text.muted, opacity: 0.8 }} numberOfLines={2}>Follow more artists to see fresh updates here.</Text>
                   </View>
                   <Pressable
                     onPress={() => router.push('/discover')}
@@ -2305,17 +2330,28 @@ export default function DiscoverTab() {
           </View>
         );
 
-        const renderInlineState = (message: string, tone: 'muted' | 'error' = 'muted') => (
-          <Text
-            style={{
-              color: tone === 'error' ? colors.accent.primary : colors.text.muted,
-              paddingHorizontal: horizontalPad,
-              marginBottom: 8,
-              fontSize: 13,
-            }}
-          >
-            {message}
-          </Text>
+        const renderInlineState = (message: string, tone: 'muted' | 'error' = 'muted', detail?: string) => (
+          <View style={{ paddingHorizontal: horizontalPad, marginBottom: 8, gap: detail ? 4 : 0 }}>
+            <Text
+              style={{
+                color: tone === 'error' ? colors.accent.primary : colors.text.muted,
+                fontSize: 13,
+                fontWeight: detail ? '700' : '400',
+              }}
+            >
+              {message}
+            </Text>
+            {detail ? (
+              <Text
+                style={{
+                  color: colors.text.muted,
+                  fontSize: 13,
+                }}
+              >
+                {detail}
+              </Text>
+            ) : null}
+          </View>
         );
 
         const hasAny =
@@ -2331,7 +2367,7 @@ export default function DiscoverTab() {
                 <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text.secondary }}>
                   Your updates
                 </Text>
-                {yourUpdatesReleases.length > YOUR_UPDATES_CAP ? (
+                {freshYourUpdatesReleases.length > YOUR_UPDATES_CAP ? (
                   <Text style={{ fontSize: 12, fontWeight: '700', color: colors.text.muted }}>
                     Latest {YOUR_UPDATES_CAP}
                   </Text>
@@ -2342,7 +2378,7 @@ export default function DiscoverTab() {
                 : yourUpdatesState.status === 'error'
                   ? renderInlineState('Could not load updates right now.', 'error')
                   : yourUpdatesState.status === 'empty'
-                    ? renderInlineState('No new releases from followed artists yet.')
+                    ? renderInlineState('No new releases right now', 'muted', 'Follow more artists to get fresh updates.')
                     : renderSection(yourUpdatesVisible, '', 'your-updates')}
             </View>
             <View key="top-picks" style={{ marginBottom: 16 }}>
