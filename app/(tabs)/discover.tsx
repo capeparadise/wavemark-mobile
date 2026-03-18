@@ -2180,7 +2180,6 @@ export default function DiscoverTab() {
                 onLongPress={() => setMenuRow({ ...item, artist_id: artistId, in_list: isAdded, done_at: stat?.done ? new Date().toISOString() : null } as any)}
                 delayLongPress={RELEASE_LONG_PRESS_MS}
                 style={({ pressed }) => ({
-                  position: 'relative',
                   flexDirection: 'row',
                   alignItems: 'center',
                   gap: 12,
@@ -2190,23 +2189,6 @@ export default function DiscoverTab() {
                   transform: [{ scale: pressed ? 0.995 : 1 }],
                 })}
               >
-                {moreCount ? (
-                  <View
-                    pointerEvents="none"
-                    style={{
-                      position: 'absolute',
-                      top: 10,
-                      left: 10,
-                      zIndex: 2,
-                      paddingHorizontal: 8,
-                      paddingVertical: 4,
-                      borderRadius: 999,
-                      backgroundColor: colors.overlay.dim,
-                    }}
-                  >
-                    <Text style={{ color: colors.text.inverted, fontSize: 11, fontWeight: '700' }}>+{moreCount}</Text>
-                  </View>
-                ) : null}
                 <View style={{ width: imageSize, height: imageSize, borderRadius: 14, backgroundColor: colors.bg.muted, overflow: 'hidden' }}>
                   {item.imageUrl ? (
                     <Image source={{ uri: item.imageUrl }} style={{ width: imageSize, height: imageSize }} />
@@ -2217,9 +2199,14 @@ export default function DiscoverTab() {
                   )}
                 </View>
                 <View style={{ flex: 1, gap: 4, minWidth: 0 }}>
-                  <Text style={{ fontWeight: '700', color: colors.text.secondary, lineHeight: 18 }} numberOfLines={1} ellipsizeMode="tail">
-                    {item.title}
-                  </Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                    <Text style={{ flex: 1, fontWeight: '700', color: colors.text.secondary, lineHeight: 18 }} numberOfLines={1} ellipsizeMode="tail">
+                      {item.title}
+                    </Text>
+                    {moreCount ? (
+                      <Text style={{ color: colors.text.muted, fontSize: 11, fontWeight: '600' }}>+{moreCount}</Text>
+                    ) : null}
+                  </View>
                   {!!item.artist && (
                     <Text style={{ color: colors.text.muted, lineHeight: 16 }} numberOfLines={1} ellipsizeMode="tail">
                       {item.artist}
@@ -2265,51 +2252,33 @@ export default function DiscoverTab() {
           };
 
           return (
-            <View style={{ width: heroCardWidth, height: heroCardHeight }}>
-              <HeroReleaseCard
-                title={item.title}
-                artist={item.artist || null}
-                imageUrl={item.imageUrl || null}
-                releaseDate={item.releaseDate ?? null}
-                saved={isAdded}
-                width={heroCardWidth}
-                height={heroCardHeight}
-                onPress={openRelease}
-                onLongPress={() => setMenuRow({ ...item, artist_id: artistId, in_list: isAdded, done_at: stat?.done ? new Date().toISOString() : null } as any)}
-                delayLongPress={RELEASE_LONG_PRESS_MS}
-                onSave={() =>
-                  onAddNew(
-                    {
-                      id: item.id,
-                      title: item.title,
-                      artist: item.artist || '',
-                      releaseDate: item.releaseDate ?? null,
-                      spotifyUrl: item.spotifyUrl ?? null,
-                      imageUrl: item.imageUrl ?? null,
-                      type: item.type ?? null,
-                    },
-                    stat
-                  )
-                }
-              />
-              {moreCount ? (
-                <View
-                  pointerEvents="none"
-                  style={{
-                    position: 'absolute',
-                    top: 12,
-                    left: 12,
-                    zIndex: 2,
-                    paddingHorizontal: 8,
-                    paddingVertical: 4,
-                    borderRadius: 999,
-                    backgroundColor: colors.overlay.dim,
-                  }}
-                >
-                  <Text style={{ color: colors.text.inverted, fontSize: 11, fontWeight: '700' }}>+{moreCount}</Text>
-                </View>
-              ) : null}
-            </View>
+            <HeroReleaseCard
+              title={item.title}
+              artist={item.artist || null}
+              imageUrl={item.imageUrl || null}
+              releaseDate={item.releaseDate ?? null}
+              saved={isAdded}
+              titleBadge={moreCount ? `+${moreCount}` : null}
+              width={heroCardWidth}
+              height={heroCardHeight}
+              onPress={openRelease}
+              onLongPress={() => setMenuRow({ ...item, artist_id: artistId, in_list: isAdded, done_at: stat?.done ? new Date().toISOString() : null } as any)}
+              delayLongPress={RELEASE_LONG_PRESS_MS}
+              onSave={() =>
+                onAddNew(
+                  {
+                    id: item.id,
+                    title: item.title,
+                    artist: item.artist || '',
+                    releaseDate: item.releaseDate ?? null,
+                    spotifyUrl: item.spotifyUrl ?? null,
+                    imageUrl: item.imageUrl ?? null,
+                    type: item.type ?? null,
+                  },
+                  stat
+                )
+              }
+            />
           );
         };
 

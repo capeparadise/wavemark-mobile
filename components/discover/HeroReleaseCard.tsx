@@ -11,6 +11,7 @@ export type HeroReleaseCardProps = {
   imageUrl?: string | null;
   releaseDate?: string | null;
   saved?: boolean;
+  titleBadge?: string | null;
   onPress?: () => void;
   onLongPress?: () => void;
   delayLongPress?: number;
@@ -25,6 +26,7 @@ export default function HeroReleaseCard({
   imageUrl,
   releaseDate,
   saved,
+  titleBadge,
   onPress,
   onLongPress,
   delayLongPress,
@@ -132,9 +134,16 @@ export default function HeroReleaseCard({
           </View>
 
           <View style={{ flex: 1, minWidth: 0, paddingBottom: 6 }}>
-            <Text style={{ color: '#fff', fontWeight: '900', fontSize: 18, letterSpacing: 0.2 }} numberOfLines={1} ellipsizeMode="tail">
-              {title}
-            </Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+              <Text style={{ flex: 1, color: '#fff', fontWeight: '900', fontSize: 18, letterSpacing: 0.2 }} numberOfLines={1} ellipsizeMode="tail">
+                {title}
+              </Text>
+              {titleBadge ? (
+                <Text style={{ color: colors.text.subtle, fontWeight: '700', fontSize: 12 }} numberOfLines={1}>
+                  {titleBadge}
+                </Text>
+              ) : null}
+            </View>
             {!!artist && (
               <Text style={{ color: 'rgba(255,255,255,0.84)', fontWeight: '600', fontSize: 13, marginTop: 4 }} numberOfLines={1} ellipsizeMode="tail">
                 {artist}
@@ -159,4 +168,3 @@ const StyleSheetFill = {
   top: 0,
   bottom: 0,
 };
-
