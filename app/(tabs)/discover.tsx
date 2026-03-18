@@ -76,6 +76,11 @@ function isWithinDiscoverWindow(value: string | null | undefined, cutoffTs: numb
   return discoverDateTimestamp(value, precision) >= cutoffTs;
 }
 
+function normalizeArtistIdentity(value?: string | null): string | null {
+  const normalized = (value || '').trim().toLowerCase();
+  return normalized || null;
+}
+
 const GENRE_OPTIONS: { key: CanonicalGenre | 'all'; label: string }[] = [
   { key: 'all', label: 'All' },
   { key: 'hiphop', label: 'Hip-Hop' },
@@ -420,6 +425,40 @@ export default function DiscoverTab() {
     () => freshYourUpdatesReleases.slice(0, YOUR_UPDATES_CAP),
     [freshYourUpdatesReleases]
   );
+  const yourUpdatesDisplayItems = useMemo(() => {
+    const artistTotals = new Map<string, number>();
+    yourUpdatesVisible.forEach((item) => {
+      const artistKey = item.artistId || normalizeArtistIdentity(item.artist) || spotifyKey(item.id, item.spotifyUrl) || item.id;
+      if (!artistKey) return;
+      artistTotals.set(artistKey, (artistTotals.get(artistKey) ?? 0) + 1);
+    });
+
+    const shownByArtist = new Map<string, number>();
+    const hiddenByArtist = new Set<string>();
+    const entries: Array<
+      | { kind: 'release'; item: typeof yourUpdatesVisible[number] }
+      | { kind: 'more'; artistKey: string; remaining: number; artistName?: string | null }
+    > = [];
+
+    yourUpdatesVisible.forEach((item) => {
+      const artistKey = item.artistId || normalizeArtistIdentity(item.artist) || spotifyKey(item.id, item.spotifyUrl) || item.id;
+      if (!artistKey) return;
+      const shown = shownByArtist.get(artistKey) ?? 0;
+      if (shown < 2) {
+        entries.push({ kind: 'release', item });
+        shownByArtist.set(artistKey, shown + 1);
+        if (shown + 1 === 2) {
+          const remaining = (artistTotals.get(artistKey) ?? 0) - 2;
+          if (remaining > 0 && !hiddenByArtist.has(artistKey)) {
+            entries.push({ kind: 'more', artistKey, remaining, artistName: item.artist ?? null });
+            hiddenByArtist.add(artistKey);
+          }
+        }
+      }
+    });
+
+    return entries;
+  }, [yourUpdatesVisible]);
 
   const yourUpdatesState = useMemo<{ items: typeof yourUpdatesReleases; status: SectionStatus; error?: any }>(() => {
     if (yourUpdatesLoading) return { items: [], status: 'loading' };
@@ -2279,6 +2318,63 @@ export default function DiscoverTab() {
           );
         };
 
+        const renderUpdatesMoreRow = (item: { artistKey: string; remaining: number }) => (
+          <View
+            key={`updates-more-${item.artistKey}`}
+            style={{
+              width: '100%',
+              paddingHorizontal: 12,
+              paddingVertical: 6,
+            }}
+          >
+            <Text
+              style={{
+                color: colors.text.muted,
+                fontSize: 12,
+                fontWeight: '600',
+              }}
+            >
+              +{item.remaining} more
+            </Text>
+          </View>
+        );
+
+        const renderUpdatesPillColumns = (
+          data: Array<
+            | { kind: 'release'; item: typeof yourUpdatesVisible[number] }
+            | { kind: 'more'; artistKey: string; remaining: number; artistName?: string | null }
+          >,
+          key: string
+        ) => {
+          const pages = chunk(data.slice(0, 120), rowsPerPage);
+          return (
+            <FlatList
+              data={pages}
+              keyExtractor={(_, idx) => `${key}-p${idx}`}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              decelerationRate="fast"
+              snapToAlignment="start"
+              snapToInterval={cardWidth + gap}
+              contentContainerStyle={{ paddingHorizontal: horizontalPad }}
+              ItemSeparatorComponent={() => <View style={{ width: gap }} />}
+              renderItem={({ item: page }) => (
+                <View style={{ width: cardWidth, rowGap: columnGap }}>
+                  {page.map((entry, idx) => (
+                    entry.kind === 'release'
+                      ? (
+                        <React.Fragment key={entry.item?.id ?? entry.item?.spotifyUrl ?? entry.item?.title ?? `${key}-${idx}`}>
+                          {renderReleaseCard(entry.item)}
+                        </React.Fragment>
+                      )
+                      : renderUpdatesMoreRow(entry)
+                  ))}
+                </View>
+              )}
+            />
+          );
+        };
+
         const renderHeroRow = (data: any[], key: string) => {
           if (!data.length) return null;
           return (
@@ -2318,6 +2414,40 @@ export default function DiscoverTab() {
               {title ? <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text.secondary, marginBottom: 10, paddingHorizontal: horizontalPad }}>{title}</Text> : null}
               {renderHeroRow(hero, `${key}-hero`)}
               {rest.length ? <View style={{ marginTop: 12 }}>{renderPillColumns(rest, `${key}-pills`)}</View> : null}
+            </View>
+          );
+        };
+
+        const renderUpdatesSection = (
+          data: Array<
+            | { kind: 'release'; item: typeof yourUpdatesVisible[number] }
+            | { kind: 'more'; artistKey: string; remaining: number; artistName?: string | null }
+          >,
+          key: string
+        ) => {
+          if (!data.length) return null;
+          if (viewMode === 'pills') {
+            return (
+              <View key={key} style={{ marginBottom: 18 }}>
+                {renderUpdatesPillColumns(data, key)}
+              </View>
+            );
+          }
+
+          const hero: typeof yourUpdatesVisible = [];
+          let heroEndIndex = 0;
+          while (heroEndIndex < data.length && hero.length < getHeroCount(yourUpdatesVisible.length)) {
+            const entry = data[heroEndIndex];
+            if (entry.kind !== 'release') break;
+            hero.push(entry.item);
+            heroEndIndex += 1;
+          }
+
+          const rest = data.slice(heroEndIndex);
+          return (
+            <View key={key} style={{ marginBottom: 18 }}>
+              {hero.length ? renderHeroRow(hero, `${key}-hero`) : null}
+              {rest.length ? <View style={{ marginTop: hero.length ? 12 : 0 }}>{renderUpdatesPillColumns(rest, `${key}-pills`)}</View> : null}
             </View>
           );
         };
@@ -2381,7 +2511,7 @@ export default function DiscoverTab() {
                   ? renderInlineState('Could not load updates right now.', 'error')
                   : yourUpdatesState.status === 'empty'
                     ? renderInlineState('No new releases right now', 'muted', 'Follow more artists to get fresh updates.')
-                    : renderSection(yourUpdatesVisible, '', 'your-updates')}
+                    : renderUpdatesSection(yourUpdatesDisplayItems, 'your-updates')}
             </View>
             <View key="top-picks" style={{ marginBottom: 16 }}>
               <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text.secondary, marginBottom: 10, paddingHorizontal: horizontalPad }}>
