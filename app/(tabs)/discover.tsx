@@ -434,26 +434,16 @@ export default function DiscoverTab() {
     });
 
     const shownByArtist = new Map<string, number>();
-    const hiddenByArtist = new Set<string>();
-    const entries: Array<
-      | { kind: 'release'; item: typeof yourUpdatesVisible[number] }
-      | { kind: 'more'; artistKey: string; remaining: number; artistName?: string | null }
-    > = [];
+    const entries: Array<{ item: typeof yourUpdatesVisible[number]; moreCount?: number }> = [];
 
     yourUpdatesVisible.forEach((item) => {
       const artistKey = item.artistId || normalizeArtistIdentity(item.artist) || spotifyKey(item.id, item.spotifyUrl) || item.id;
       if (!artistKey) return;
       const shown = shownByArtist.get(artistKey) ?? 0;
       if (shown < 2) {
-        entries.push({ kind: 'release', item });
         shownByArtist.set(artistKey, shown + 1);
-        if (shown + 1 === 2) {
-          const remaining = (artistTotals.get(artistKey) ?? 0) - 2;
-          if (remaining > 0 && !hiddenByArtist.has(artistKey)) {
-            entries.push({ kind: 'more', artistKey, remaining, artistName: item.artist ?? null });
-            hiddenByArtist.add(artistKey);
-          }
-        }
+        const remaining = shown + 1 === 2 ? (artistTotals.get(artistKey) ?? 0) - 2 : 0;
+        entries.push({ item, moreCount: remaining > 0 ? remaining : undefined });
       }
     });
 
@@ -2152,7 +2142,7 @@ export default function DiscoverTab() {
         const heroCardWidth = Math.floor((screenWidth - horizontalPad * 2) * 0.92);
         const heroCardHeight = 226;
 
-        const renderReleaseCard = (item: any) => {
+        const renderReleaseCard = (item: any, moreCount?: number) => {
           const stat = statusFor(item.id, item.spotifyUrl);
           const isAdded = isAddedFor(item.id, item.spotifyUrl) || !!stat;
           const label = tagLabel(stat, isAdded);
@@ -2190,6 +2180,7 @@ export default function DiscoverTab() {
                 onLongPress={() => setMenuRow({ ...item, artist_id: artistId, in_list: isAdded, done_at: stat?.done ? new Date().toISOString() : null } as any)}
                 delayLongPress={RELEASE_LONG_PRESS_MS}
                 style={({ pressed }) => ({
+                  position: 'relative',
                   flexDirection: 'row',
                   alignItems: 'center',
                   gap: 12,
@@ -2199,6 +2190,23 @@ export default function DiscoverTab() {
                   transform: [{ scale: pressed ? 0.995 : 1 }],
                 })}
               >
+                {moreCount ? (
+                  <View
+                    pointerEvents="none"
+                    style={{
+                      position: 'absolute',
+                      top: 10,
+                      left: 10,
+                      zIndex: 2,
+                      paddingHorizontal: 8,
+                      paddingVertical: 4,
+                      borderRadius: 999,
+                      backgroundColor: colors.overlay.dim,
+                    }}
+                  >
+                    <Text style={{ color: colors.text.inverted, fontSize: 11, fontWeight: '700' }}>+{moreCount}</Text>
+                  </View>
+                ) : null}
                 <View style={{ width: imageSize, height: imageSize, borderRadius: 14, backgroundColor: colors.bg.muted, overflow: 'hidden' }}>
                   {item.imageUrl ? (
                     <Image source={{ uri: item.imageUrl }} style={{ width: imageSize, height: imageSize }} />
@@ -2233,7 +2241,7 @@ export default function DiscoverTab() {
           );
         };
 
-        const renderHeroCard = (item: any) => {
+        const renderHeroCard = (item: any, moreCount?: number) => {
           const stat = statusFor(item.id, item.spotifyUrl);
           const isAdded = isAddedFor(item.id, item.spotifyUrl) || !!stat;
           const artistId = item.artistId || item.artist_id || null;
@@ -2257,32 +2265,51 @@ export default function DiscoverTab() {
           };
 
           return (
-            <HeroReleaseCard
-              title={item.title}
-              artist={item.artist || null}
-              imageUrl={item.imageUrl || null}
-              releaseDate={item.releaseDate ?? null}
-              saved={isAdded}
-              width={heroCardWidth}
-              height={heroCardHeight}
-              onPress={openRelease}
-              onLongPress={() => setMenuRow({ ...item, artist_id: artistId, in_list: isAdded, done_at: stat?.done ? new Date().toISOString() : null } as any)}
-              delayLongPress={RELEASE_LONG_PRESS_MS}
-              onSave={() =>
-                onAddNew(
-                  {
-                    id: item.id,
-                    title: item.title,
-                    artist: item.artist || '',
-                    releaseDate: item.releaseDate ?? null,
-                    spotifyUrl: item.spotifyUrl ?? null,
-                    imageUrl: item.imageUrl ?? null,
-                    type: item.type ?? null,
-                  },
-                  stat
-                )
-              }
-            />
+            <View style={{ width: heroCardWidth, height: heroCardHeight }}>
+              <HeroReleaseCard
+                title={item.title}
+                artist={item.artist || null}
+                imageUrl={item.imageUrl || null}
+                releaseDate={item.releaseDate ?? null}
+                saved={isAdded}
+                width={heroCardWidth}
+                height={heroCardHeight}
+                onPress={openRelease}
+                onLongPress={() => setMenuRow({ ...item, artist_id: artistId, in_list: isAdded, done_at: stat?.done ? new Date().toISOString() : null } as any)}
+                delayLongPress={RELEASE_LONG_PRESS_MS}
+                onSave={() =>
+                  onAddNew(
+                    {
+                      id: item.id,
+                      title: item.title,
+                      artist: item.artist || '',
+                      releaseDate: item.releaseDate ?? null,
+                      spotifyUrl: item.spotifyUrl ?? null,
+                      imageUrl: item.imageUrl ?? null,
+                      type: item.type ?? null,
+                    },
+                    stat
+                  )
+                }
+              />
+              {moreCount ? (
+                <View
+                  pointerEvents="none"
+                  style={{
+                    position: 'absolute',
+                    top: 12,
+                    left: 12,
+                    zIndex: 2,
+                    paddingHorizontal: 8,
+                    paddingVertical: 4,
+                    borderRadius: 999,
+                    backgroundColor: colors.overlay.dim,
+                  }}
+                >
+                  <Text style={{ color: colors.text.inverted, fontSize: 11, fontWeight: '700' }}>+{moreCount}</Text>
+                </View>
+              ) : null}
+            </View>
           );
         };
 
@@ -2318,32 +2345,8 @@ export default function DiscoverTab() {
           );
         };
 
-        const renderUpdatesMoreRow = (item: { artistKey: string; remaining: number }) => (
-          <View
-            key={`updates-more-${item.artistKey}`}
-            style={{
-              width: '100%',
-              paddingHorizontal: 12,
-              paddingVertical: 6,
-            }}
-          >
-            <Text
-              style={{
-                color: colors.text.muted,
-                fontSize: 12,
-                fontWeight: '600',
-              }}
-            >
-              +{item.remaining} more
-            </Text>
-          </View>
-        );
-
         const renderUpdatesPillColumns = (
-          data: Array<
-            | { kind: 'release'; item: typeof yourUpdatesVisible[number] }
-            | { kind: 'more'; artistKey: string; remaining: number; artistName?: string | null }
-          >,
+          data: Array<{ item: typeof yourUpdatesVisible[number]; moreCount?: number }>,
           key: string
         ) => {
           const pages = chunk(data.slice(0, 120), rowsPerPage);
@@ -2361,13 +2364,9 @@ export default function DiscoverTab() {
               renderItem={({ item: page }) => (
                 <View style={{ width: cardWidth, rowGap: columnGap }}>
                   {page.map((entry, idx) => (
-                    entry.kind === 'release'
-                      ? (
-                        <React.Fragment key={entry.item?.id ?? entry.item?.spotifyUrl ?? entry.item?.title ?? `${key}-${idx}`}>
-                          {renderReleaseCard(entry.item)}
-                        </React.Fragment>
-                      )
-                      : renderUpdatesMoreRow(entry)
+                    <React.Fragment key={entry.item?.id ?? entry.item?.spotifyUrl ?? entry.item?.title ?? `${key}-${idx}`}>
+                      {renderReleaseCard(entry.item, entry.moreCount)}
+                    </React.Fragment>
                   ))}
                 </View>
               )}
@@ -2419,10 +2418,7 @@ export default function DiscoverTab() {
         };
 
         const renderUpdatesSection = (
-          data: Array<
-            | { kind: 'release'; item: typeof yourUpdatesVisible[number] }
-            | { kind: 'more'; artistKey: string; remaining: number; artistName?: string | null }
-          >,
+          data: Array<{ item: typeof yourUpdatesVisible[number]; moreCount?: number }>,
           key: string
         ) => {
           if (!data.length) return null;
@@ -2434,19 +2430,24 @@ export default function DiscoverTab() {
             );
           }
 
-          const hero: typeof yourUpdatesVisible = [];
-          let heroEndIndex = 0;
-          while (heroEndIndex < data.length && hero.length < getHeroCount(yourUpdatesVisible.length)) {
-            const entry = data[heroEndIndex];
-            if (entry.kind !== 'release') break;
-            hero.push(entry.item);
-            heroEndIndex += 1;
-          }
-
-          const rest = data.slice(heroEndIndex);
+          const hero = data.slice(0, getHeroCount(data.length));
+          const rest = data.slice(hero.length);
           return (
             <View key={key} style={{ marginBottom: 18 }}>
-              {hero.length ? renderHeroRow(hero, `${key}-hero`) : null}
+              {hero.length ? (
+                <FlatList
+                  data={hero}
+                  keyExtractor={(entry, idx) => `${key}-hero-${entry.item?.id ?? entry.item?.spotifyUrl ?? entry.item?.title}-${idx}`}
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  decelerationRate="fast"
+                  snapToAlignment="start"
+                  snapToInterval={heroCardWidth + heroGap}
+                  contentContainerStyle={{ paddingHorizontal: horizontalPad }}
+                  ItemSeparatorComponent={() => <View style={{ width: heroGap }} />}
+                  renderItem={({ item: entry }) => renderHeroCard(entry.item, entry.moreCount)}
+                />
+              ) : null}
               {rest.length ? <View style={{ marginTop: hero.length ? 12 : 0 }}>{renderUpdatesPillColumns(rest, `${key}-pills`)}</View> : null}
             </View>
           );
