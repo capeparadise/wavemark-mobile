@@ -1,4 +1,3 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router, useLocalSearchParams } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -8,9 +7,10 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import GlassCard from '../../components/GlassCard';
 import { formatDate } from '../../lib/date';
 import { addToListFromSearch, getDefaultPlayer, openByDefaultPlayer, type ListenPlayer, type ListenRow } from '../../lib/listen';
-import { getMoreLikeThisForRelease, type SimpleAlbum } from '../../lib/recommend';
+import { type SimpleAlbum } from '../../lib/recommend';
 import { parseSpotifyUrlOrId, spotifyLookup } from '../../lib/spotify';
-import { buildAlbumUrl, buildTrackUrl, fetchCollectionById, fetchTrackById } from '../../lib/apple';
+import { buildAlbumUrl, buildTrackUrl, fetchAllAlbums, fetchCollectionById, fetchTrackById } from '../../lib/apple';
+import { artistAlbums } from '../../lib/spotifyArtist';
 import { supabase } from '../../lib/supabase';
 import { openArtist } from '../../lib/openArtist';
 import { useTheme } from '../../theme/useTheme';
@@ -50,6 +50,15 @@ const extractAppleId = (value: string): number | null => {
     if (song?.[1]) return Number(song[1]);
   } catch {}
   return null;
+};
+
+const releaseTimestamp = (value?: string | null) => {
+  if (!value) return 0;
+  let normalized = String(value);
+  if (/^\d{4}$/.test(normalized)) normalized = `${normalized}-07-01`;
+  else if (/^\d{4}-\d{2}$/.test(normalized)) normalized = `${normalized}-15`;
+  const timestamp = Date.parse(normalized);
+  return Number.isNaN(timestamp) ? 0 : timestamp;
 };
 
 export default function ReleaseScreen() {
@@ -133,15 +142,14 @@ export default function ReleaseScreen() {
   const [adding, setAdding] = useState(false);
   const [added, setAdded] = useState(false);
   const [preferredPlayer, setPreferredPlayer] = useState<ListenPlayer>('spotify');
-  const [moreLike, setMoreLike] = useState<SimpleAlbum[]>([]);
-  const [moreLikeLabel, setMoreLikeLabel] = useState<'More like this' | 'New releases' | 'Similar releases'>('Similar releases');
-  const [moreLikeLoading, setMoreLikeLoading] = useState(false);
-  const skeletonTiles = useMemo(() => Array.from({ length: 6 }, (_, i) => i), []);
-  const lastMoreKeyRef = React.useRef<string>('');
+  const [moreByArtist, setMoreByArtist] = useState<SimpleAlbum[]>([]);
+  const [moreByArtistLoading, setMoreByArtistLoading] = useState(false);
+  const skeletonTiles = useMemo(() => Array.from({ length: 5 }, (_, i) => i), []);
+  const lastMoreByKeyRef = React.useRef<string>('');
 
   const releaseKey = String(release?.spotifyId || release?.providerId || spotifyIdParam || releaseId || '').trim();
   const artistKey = String(release?.artistId || artistIdParam || '').trim();
-  const moreKey = releaseKey ? `${releaseKey}:${artistKey}` : '';
+  const moreByKey = artistKey ? `${release?.provider || 'unknown'}:${artistKey}:${releaseKey}` : '';
 
   const sameIds = useCallback((a: SimpleAlbum[], b: SimpleAlbum[]) => {
     if (a.length !== b.length) return false;
@@ -158,11 +166,11 @@ export default function ReleaseScreen() {
   }, []);
 
   useEffect(() => {
-    const urls = moreLike.map((it) => it.imageUrl).filter(Boolean) as string[];
+    const urls = moreByArtist.map((it) => it.imageUrl).filter(Boolean) as string[];
     urls.slice(0, 6).forEach((url) => {
       Image.prefetch(url).catch(() => {});
     });
-  }, [moreLike]);
+  }, [moreByArtist]);
 
   useEffect(() => {
     if (!paramDetail) return;
@@ -352,56 +360,101 @@ export default function ReleaseScreen() {
     };
   }, [releaseId]);
 
-  const loadMore = useCallback(async () => {
-    if (!releaseKey) return;
-    setMoreLikeLoading(true);
-    setMoreLikeLabel('Similar releases');
-    const cacheKey = `more_like_this:${releaseKey}`;
+  const loadMoreByArtist = useCallback(async () => {
+    if (!release || !artistKey) {
+      setMoreByArtist([]);
+      return;
+    }
+
+    setMoreByArtistLoading(true);
+    const currentIds = new Set(
+      [
+        release.id,
+        releaseId,
+        release.providerId,
+        release.spotifyId,
+        release.appleId,
+      ]
+        .map((value) => String(value || '').trim())
+        .filter(Boolean)
+    );
+    const currentUrlSet = new Set(
+      [release.spotifyUrl, release.appleUrl]
+        .map((value) => String(value || '').trim())
+        .filter(Boolean)
+    );
+    const currentTitleKey = `${(release.title || '').trim().toLowerCase()}::${String(release.releaseDate || '').trim()}`;
+
     try {
-      const cachedRaw = await AsyncStorage.getItem(cacheKey);
-      if (cachedRaw) {
-        const cached = JSON.parse(cachedRaw);
-        if (cached && Array.isArray(cached.items)) {
-          const nextItems = cached.items as SimpleAlbum[];
-          setMoreLike((prev) => (sameIds(prev, nextItems) ? prev : nextItems));
-          const nextLabel =
-            cached.label === 'New releases'
-              ? 'New releases'
-              : cached.label === 'Similar releases'
-                ? 'Similar releases'
-                : 'More like this';
-          setMoreLikeLabel((prev) => (prev === nextLabel ? prev : nextLabel));
+      let nextItems: SimpleAlbum[] = [];
+
+      if (release.provider === 'spotify' && /^[A-Za-z0-9]{22}$/.test(artistKey)) {
+        const albums = await artistAlbums(artistKey, 'from_token').catch(() => artistAlbums(artistKey, 'GB'));
+        nextItems = albums.map((item) => ({
+          id: item.id,
+          title: item.title,
+          artist: item.artist,
+          artistId: artistKey,
+          releaseDate: item.releaseDate ?? null,
+          spotifyUrl: item.spotifyUrl ?? null,
+          imageUrl: item.imageUrl ?? null,
+          type: item.type,
+        }));
+      } else if (release.provider === 'apple') {
+        const appleArtistId = extractAppleId(artistKey) ?? (/^\d+$/.test(artistKey) ? Number(artistKey) : null);
+        if (appleArtistId) {
+          const albums = await fetchAllAlbums(appleArtistId);
+          nextItems = albums.map((item) => ({
+            id: String(item.collectionId),
+            title: item.collectionName,
+            artist: item.artistName,
+            artistId: String(item.artistId),
+            releaseDate: item.releaseDate ?? null,
+            spotifyUrl: null,
+            imageUrl: item.artworkUrl ?? null,
+            type: 'album' as const,
+          }));
         }
       }
-    } catch {}
 
-    try {
-      const res = await getMoreLikeThisForRelease({
-        artistId: artistKey || null,
-        releaseId: releaseId || releaseKey,
-        days: 180,
-        strict: false,
-        mode: 'release_similar_strict',
+      nextItems = nextItems
+        .filter((item) => {
+          const itemIds = [item.id, item.spotifyUrl].map((value) => String(value || '').trim()).filter(Boolean);
+          if (itemIds.some((value) => currentIds.has(value) || currentUrlSet.has(value))) return false;
+          const itemTitleKey = `${(item.title || '').trim().toLowerCase()}::${String(item.releaseDate || '').trim()}`;
+          return itemTitleKey !== currentTitleKey;
+        })
+        .sort((a, b) => releaseTimestamp(b.releaseDate) - releaseTimestamp(a.releaseDate));
+
+      const deduped: SimpleAlbum[] = [];
+      const seen = new Set<string>();
+      nextItems.forEach((item) => {
+        const key = [item.id, item.spotifyUrl, `${(item.title || '').trim().toLowerCase()}::${String(item.releaseDate || '').trim()}`]
+          .map((value) => String(value || '').trim())
+          .find(Boolean);
+        if (!key || seen.has(key)) return;
+        seen.add(key);
+        deduped.push(item);
       });
-      const nextItems = res.items || [];
-      setMoreLike((prev) => (sameIds(prev, nextItems) ? prev : nextItems));
-      setMoreLikeLabel((prev) => (prev === res.label ? prev : res.label));
-      try {
-        await AsyncStorage.setItem(cacheKey, JSON.stringify({ ts: Date.now(), label: res.label, items: res.items }));
-      } catch {}
+
+      const limited = deduped.slice(0, 5);
+      setMoreByArtist((prev) => (sameIds(prev, limited) ? prev : limited));
     } catch {
-      setMoreLike((prev) => (prev.length ? prev : []));
+      setMoreByArtist((prev) => (prev.length ? prev : []));
     } finally {
-      setMoreLikeLoading(false);
+      setMoreByArtistLoading(false);
     }
-  }, [artistKey, releaseId, releaseKey, sameIds]);
+  }, [artistKey, release, releaseId, sameIds]);
 
   useEffect(() => {
-    if (!moreKey) return;
-    if (lastMoreKeyRef.current === moreKey) return;
-    lastMoreKeyRef.current = moreKey;
-    loadMore();
-  }, [moreKey, loadMore]);
+    if (!moreByKey) {
+      setMoreByArtist([]);
+      return;
+    }
+    if (lastMoreByKeyRef.current === moreByKey) return;
+    lastMoreByKeyRef.current = moreByKey;
+    loadMoreByArtist();
+  }, [loadMoreByArtist, moreByKey]);
 
   const metaLine = useMemo(() => {
     if (!release) return null;
@@ -534,6 +587,7 @@ export default function ReleaseScreen() {
 
   const openLabel = preferredPlayer === 'apple' ? 'Open in Apple Music' : 'Open in Spotify';
   const heroArtworkSize = 220;
+  const moreByLabel = release?.artistName ? `More by ${release.artistName}` : 'More by this artist';
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg.primary }}>
@@ -613,10 +667,7 @@ export default function ReleaseScreen() {
                 </View>
 
                 <View style={{ marginTop: 22, alignItems: 'center' }}>
-                  <Text style={{ color: colors.text.subtle, fontSize: 12, fontWeight: '700', letterSpacing: 1.4, textTransform: 'uppercase' }}>
-                    Release
-                  </Text>
-                  <Text style={{ marginTop: 10, fontSize: 31, lineHeight: 36, fontWeight: '900', color: colors.text.inverted, textAlign: 'center' }} numberOfLines={3}>
+                  <Text style={{ fontSize: 31, lineHeight: 36, fontWeight: '900', color: colors.text.inverted, textAlign: 'center' }} numberOfLines={3}>
                     {release?.title || 'Release'}
                   </Text>
                   {release?.artistName ? (
@@ -677,67 +728,73 @@ export default function ReleaseScreen() {
 
               <View style={{ marginTop: 34, paddingHorizontal: 20 }}>
                 <Text style={{ fontSize: 19, fontWeight: '800', color: colors.text.inverted, marginBottom: 12 }}>
-                  {moreLikeLabel}
+                  {moreByLabel}
                 </Text>
-                {moreLikeLoading && moreLike.length === 0 ? (
-                  <FlatList
-                    data={skeletonTiles}
-                    keyExtractor={(item) => `skeleton-${item}`}
-                    horizontal
-                    showsHorizontalScrollIndicator={false}
-                    ItemSeparatorComponent={() => <View style={{ width: 12 }} />}
-                    renderItem={() => (
-                      <View style={{ width: 140, padding: 10 }}>
-                        <View style={{ width: 120, height: 120, borderRadius: 12, backgroundColor: colors.bg.muted }} />
-                        <View style={{ height: 12, backgroundColor: colors.bg.muted, borderRadius: 6, marginTop: 10, width: 100 }} />
-                        <View style={{ height: 10, backgroundColor: colors.bg.muted, borderRadius: 6, marginTop: 6, width: 70 }} />
+                {moreByArtistLoading && moreByArtist.length === 0 ? (
+                  <View style={{ rowGap: 10 }}>
+                    {skeletonTiles.map((item) => (
+                      <View key={`skeleton-${item}`} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 4 }}>
+                        <View style={{ width: 56, height: 56, borderRadius: 14, backgroundColor: colors.bg.muted }} />
+                        <View style={{ flex: 1 }}>
+                          <View style={{ height: 12, backgroundColor: colors.bg.muted, borderRadius: 6, width: '64%' }} />
+                          <View style={{ height: 10, backgroundColor: colors.bg.muted, borderRadius: 6, marginTop: 8, width: '34%' }} />
+                        </View>
                       </View>
-                    )}
-                  />
-                ) : moreLike.length === 0 ? (
+                    ))}
+                  </View>
+                ) : moreByArtist.length === 0 ? (
                   <GlassCard style={{ padding: 18, borderRadius: 20 }}>
-                    <Text style={{ color: colors.text.secondary, fontWeight: '800', fontSize: 15 }}>Similar picks are coming together</Text>
+                    <Text style={{ color: colors.text.secondary, fontWeight: '800', fontSize: 15 }}>No more releases yet</Text>
                     <Text style={{ color: colors.text.muted, marginTop: 6, lineHeight: 20 }}>
-                      We do not have enough overlap yet to surface confident matches for this release.
+                      We do not have other recent releases for this artist right now.
                     </Text>
                   </GlassCard>
                 ) : (
-                  <FlatList
-                    data={moreLike}
-                    keyExtractor={(item) => item.id}
-                    horizontal
-                    showsHorizontalScrollIndicator={false}
-                    ItemSeparatorComponent={() => <View style={{ width: 12 }} />}
-                    renderItem={({ item }) => (
-                      <GlassCard asChild style={{ padding: 0, borderRadius: 16 }}>
+                  <View style={{ rowGap: 10 }}>
+                    {moreByArtist.map((item) => (
+                      <GlassCard key={item.id} asChild style={{ padding: 0, borderRadius: 18 }}>
                         <Pressable
-                          onPress={() => goToRelease(item.id)}
+                          onPress={() =>
+                            goToRelease(item.id, {
+                              title: item.title,
+                              artistName: item.artist,
+                              imageUrl: item.imageUrl ?? null,
+                              artistId: item.artistId ?? null,
+                              releaseDate: item.releaseDate ?? null,
+                              type: item.type ?? null,
+                              spotifyUrl: item.spotifyUrl ?? null,
+                            })
+                          }
                           style={({ pressed }) => ({
-                            width: 140,
-                            padding: 10,
-                            borderRadius: 16,
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            gap: 12,
+                            padding: 12,
                             opacity: pressed ? 0.9 : 1,
                           })}
                         >
-                          <View style={{ width: 120, height: 120, borderRadius: 12, overflow: 'hidden', backgroundColor: colors.bg.muted }}>
+                          <View style={{ width: 56, height: 56, borderRadius: 14, overflow: 'hidden', backgroundColor: colors.bg.muted }}>
                             {item.imageUrl ? (
-                              <Image source={{ uri: item.imageUrl }} style={{ width: 120, height: 120 }} />
+                              <Image source={{ uri: item.imageUrl }} style={{ width: 56, height: 56 }} />
                             ) : (
                               <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
                                 <Text style={{ color: colors.text.muted, fontWeight: '900' }}>{(item.title || '?').slice(0, 1)}</Text>
                               </View>
                             )}
                           </View>
-                          <Text style={{ marginTop: 8, fontWeight: '700', color: colors.text.secondary }} numberOfLines={1}>
-                            {item.title}
-                          </Text>
-                          <Text style={{ color: colors.text.muted, fontSize: 12 }} numberOfLines={1}>
-                            {item.artist}
-                          </Text>
+                          <View style={{ flex: 1, minWidth: 0 }}>
+                            <Text style={{ color: colors.text.secondary, fontWeight: '700' }} numberOfLines={1}>
+                              {item.title}
+                            </Text>
+                            <Text style={{ color: colors.text.muted, fontSize: 12, marginTop: 4 }} numberOfLines={1}>
+                              {item.releaseDate ? formatDate(item.releaseDate) : (item.type ? String(item.type).toUpperCase() : 'Release')}
+                            </Text>
+                          </View>
+                          <Ionicons name="chevron-forward" size={16} color={colors.text.muted} />
                         </Pressable>
                       </GlassCard>
-                    )}
-                  />
+                    ))}
+                  </View>
                 )}
               </View>
             </>
