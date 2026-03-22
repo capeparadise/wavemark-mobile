@@ -3,9 +3,9 @@ import { router, useLocalSearchParams } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { LinearGradient } from 'expo-linear-gradient';
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { ActivityIndicator, Alert, FlatList, Image, Linking, Pressable, ScrollView, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, FlatList, Image, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import GlassCard from '../../components/GlassCard';
-import Screen from '../../components/Screen';
 import { formatDate } from '../../lib/date';
 import { addToListFromSearch, getDefaultPlayer, openByDefaultPlayer, type ListenPlayer, type ListenRow } from '../../lib/listen';
 import { getMoreLikeThisForRelease, type SimpleAlbum } from '../../lib/recommend';
@@ -536,212 +536,214 @@ export default function ReleaseScreen() {
   const heroArtworkSize = 220;
 
   return (
-    <Screen style={{ paddingHorizontal: 0, paddingTop: 0 }}>
-      <View pointerEvents="none" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}>
+    <View style={{ flex: 1, backgroundColor: colors.bg.primary }}>
+      <View pointerEvents="none" style={StyleSheet.absoluteFill}>
         {release?.artworkUrl ? (
           <Image
             source={{ uri: release.artworkUrl }}
-            style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, width: '100%', height: '100%' }}
+            style={StyleSheet.absoluteFill}
             blurRadius={28}
           />
         ) : null}
         <LinearGradient
           colors={['rgba(5,8,14,0.18)', 'rgba(7,10,16,0.74)', 'rgba(7,10,16,0.96)']}
           locations={[0, 0.38, 1]}
-          style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
+          style={StyleSheet.absoluteFill}
         />
         <LinearGradient
-          colors={['rgba(0,0,0,0.48)', 'transparent', 'rgba(0,0,0,0.35)']}
-          locations={[0, 0.28, 1]}
-          style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 300 }}
+          colors={['rgba(0,0,0,0.62)', 'rgba(0,0,0,0.18)', 'transparent']}
+          locations={[0, 0.38, 1]}
+          style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 320 }}
         />
       </View>
 
-      <ScrollView contentContainerStyle={{ paddingBottom: 44 }}>
-        <View style={{ paddingHorizontal: 20, paddingTop: 14 }}>
-          <Pressable
-            onPress={() => router.back()}
-            hitSlop={10}
-            style={({ pressed }) => ({
-              width: 42,
-              height: 42,
-              borderRadius: 21,
-              alignItems: 'center',
-              justifyContent: 'center',
-              backgroundColor: colors.overlay.dim,
-              borderWidth: 1,
-              borderColor: colors.overlay.softLight,
-              opacity: pressed ? 0.9 : 1,
-            })}
-          >
-            <Ionicons name="chevron-back" size={20} color={colors.text.inverted} />
-          </Pressable>
-        </View>
-
-        {loading && !release ? (
-          <View style={{ paddingVertical: 48, alignItems: 'center' }}>
-            <ActivityIndicator />
+      <SafeAreaView style={{ flex: 1 }} edges={['top', 'left', 'right']}>
+        <ScrollView contentContainerStyle={{ paddingBottom: 44 }}>
+          <View style={{ paddingHorizontal: 20, paddingTop: 14 }}>
+            <Pressable
+              onPress={() => router.back()}
+              hitSlop={10}
+              style={({ pressed }) => ({
+                width: 42,
+                height: 42,
+                borderRadius: 21,
+                alignItems: 'center',
+                justifyContent: 'center',
+                backgroundColor: colors.overlay.dim,
+                borderWidth: 1,
+                borderColor: colors.overlay.softLight,
+                opacity: pressed ? 0.9 : 1,
+              })}
+            >
+              <Ionicons name="chevron-back" size={20} color={colors.text.inverted} />
+            </Pressable>
           </View>
-        ) : (
-          <>
-            {error ? (
-              <Text style={{ color: colors.text.muted, paddingHorizontal: 20 }}>{error}</Text>
-            ) : null}
 
-            <View style={{ paddingHorizontal: 20, paddingTop: 18 }}>
-              <View style={{ alignItems: 'center' }}>
-                <View
-                  style={{
-                    width: heroArtworkSize,
-                    height: heroArtworkSize,
-                    borderRadius: 30,
-                    overflow: 'hidden',
-                    backgroundColor: colors.bg.muted,
-                    borderWidth: 1,
-                    borderColor: colors.overlay.softLight,
-                  }}
-                >
-                  {release?.artworkUrl ? (
-                    <Image source={{ uri: release.artworkUrl }} style={{ width: heroArtworkSize, height: heroArtworkSize }} />
-                  ) : (
-                    <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-                      <Text style={{ color: colors.text.muted, fontWeight: '900', fontSize: 40 }}>{(release?.title || 'R').slice(0, 1)}</Text>
-                    </View>
-                  )}
+          {loading && !release ? (
+            <View style={{ paddingVertical: 48, alignItems: 'center' }}>
+              <ActivityIndicator />
+            </View>
+          ) : (
+            <>
+              {error ? (
+                <Text style={{ color: colors.text.muted, paddingHorizontal: 20 }}>{error}</Text>
+              ) : null}
+
+              <View style={{ paddingHorizontal: 20, paddingTop: 18 }}>
+                <View style={{ alignItems: 'center' }}>
+                  <View
+                    style={{
+                      width: heroArtworkSize,
+                      height: heroArtworkSize,
+                      borderRadius: 30,
+                      overflow: 'hidden',
+                      backgroundColor: colors.bg.muted,
+                      borderWidth: 1,
+                      borderColor: colors.overlay.softLight,
+                    }}
+                  >
+                    {release?.artworkUrl ? (
+                      <Image source={{ uri: release.artworkUrl }} style={{ width: heroArtworkSize, height: heroArtworkSize }} />
+                    ) : (
+                      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+                        <Text style={{ color: colors.text.muted, fontWeight: '900', fontSize: 40 }}>{(release?.title || 'R').slice(0, 1)}</Text>
+                      </View>
+                    )}
+                  </View>
+                </View>
+
+                <View style={{ marginTop: 22, alignItems: 'center' }}>
+                  <Text style={{ color: colors.text.subtle, fontSize: 12, fontWeight: '700', letterSpacing: 1.4, textTransform: 'uppercase' }}>
+                    Release
+                  </Text>
+                  <Text style={{ marginTop: 10, fontSize: 31, lineHeight: 36, fontWeight: '900', color: colors.text.inverted, textAlign: 'center' }} numberOfLines={3}>
+                    {release?.title || 'Release'}
+                  </Text>
+                  {release?.artistName ? (
+                    <Pressable onPress={onOpenArtist} disabled={!release?.artistName} hitSlop={8} style={{ marginTop: 10 }}>
+                      <Text style={{ color: colors.text.subtle, fontWeight: '700', fontSize: 16 }} numberOfLines={1}>
+                        {release.artistName}
+                      </Text>
+                    </Pressable>
+                  ) : null}
+                  {metaLine ? (
+                    <Text style={{ color: colors.text.subtle, marginTop: 12, fontWeight: '700', fontSize: 12, letterSpacing: 1.1, textTransform: 'uppercase' }}>
+                      {metaLine}
+                    </Text>
+                  ) : null}
+                  {!!release?.releaseDate ? (
+                    <Text style={{ color: colors.text.muted, marginTop: 6, fontSize: 13 }}>
+                      {formatDate(release.releaseDate)}
+                    </Text>
+                  ) : null}
                 </View>
               </View>
 
-              <View style={{ marginTop: 22, alignItems: 'center' }}>
-                <Text style={{ color: colors.text.subtle, fontSize: 12, fontWeight: '700', letterSpacing: 1.4, textTransform: 'uppercase' }}>
-                  Release
-                </Text>
-                <Text style={{ marginTop: 10, fontSize: 31, lineHeight: 36, fontWeight: '900', color: colors.text.inverted, textAlign: 'center' }} numberOfLines={3}>
-                  {release?.title || 'Release'}
-                </Text>
-                {release?.artistName ? (
-                  <Pressable onPress={onOpenArtist} disabled={!release?.artistName} hitSlop={8} style={{ marginTop: 10 }}>
-                    <Text style={{ color: colors.text.subtle, fontWeight: '700', fontSize: 16 }} numberOfLines={1}>
-                      {release.artistName}
-                    </Text>
-                  </Pressable>
-                ) : null}
-                {metaLine ? (
-                  <Text style={{ color: colors.text.subtle, marginTop: 12, fontWeight: '700', fontSize: 12, letterSpacing: 1.1, textTransform: 'uppercase' }}>
-                    {metaLine}
+              <View style={{ paddingHorizontal: 20, marginTop: 24 }}>
+                <Pressable
+                  onPress={onAdd}
+                  disabled={adding || added}
+                  style={({ pressed }) => ({
+                    paddingVertical: 15,
+                    borderRadius: 16,
+                    backgroundColor: added ? colors.overlay.softLight : colors.accent.primary,
+                    borderWidth: 1,
+                    borderColor: added ? colors.overlay.softLight : colors.accent.primary,
+                    opacity: pressed ? 0.92 : 1,
+                  })}
+                >
+                  <Text style={{ textAlign: 'center', fontWeight: '800', color: added ? colors.text.inverted : colors.text.inverted }}>
+                    {added ? 'Added to Listen list' : adding ? 'Adding...' : 'Add to Listen list'}
                   </Text>
-                ) : null}
-                {!!release?.releaseDate ? (
-                  <Text style={{ color: colors.text.muted, marginTop: 6, fontSize: 13 }}>
-                    {formatDate(release.releaseDate)}
-                  </Text>
-                ) : null}
+                </Pressable>
+
+                <Pressable
+                  onPress={onOpenExternal}
+                  style={({ pressed }) => ({
+                    alignSelf: 'center',
+                    marginTop: 12,
+                    paddingHorizontal: 16,
+                    paddingVertical: 10,
+                    borderRadius: 999,
+                    backgroundColor: 'transparent',
+                    borderWidth: 1,
+                    borderColor: colors.overlay.softLight,
+                    opacity: pressed ? 0.88 : 1,
+                  })}
+                >
+                  <Text style={{ textAlign: 'center', fontWeight: '700', color: colors.text.subtle, fontSize: 13 }}>{openLabel}</Text>
+                </Pressable>
               </View>
-            </View>
 
-            <View style={{ paddingHorizontal: 20, marginTop: 24 }}>
-              <Pressable
-                onPress={onAdd}
-                disabled={adding || added}
-                style={({ pressed }) => ({
-                  paddingVertical: 15,
-                  borderRadius: 16,
-                  backgroundColor: added ? colors.overlay.softLight : colors.accent.primary,
-                  borderWidth: 1,
-                  borderColor: added ? colors.overlay.softLight : colors.accent.primary,
-                  opacity: pressed ? 0.92 : 1,
-                })}
-              >
-                <Text style={{ textAlign: 'center', fontWeight: '800', color: added ? colors.text.inverted : colors.text.inverted }}>
-                  {added ? 'Added to Listen list' : adding ? 'Adding...' : 'Add to Listen list'}
+              <View style={{ marginTop: 34, paddingHorizontal: 20 }}>
+                <Text style={{ fontSize: 19, fontWeight: '800', color: colors.text.inverted, marginBottom: 12 }}>
+                  {moreLikeLabel}
                 </Text>
-              </Pressable>
-
-              <Pressable
-                onPress={onOpenExternal}
-                style={({ pressed }) => ({
-                  alignSelf: 'center',
-                  marginTop: 12,
-                  paddingHorizontal: 16,
-                  paddingVertical: 10,
-                  borderRadius: 999,
-                  backgroundColor: 'transparent',
-                  borderWidth: 1,
-                  borderColor: colors.overlay.softLight,
-                  opacity: pressed ? 0.88 : 1,
-                })}
-              >
-                <Text style={{ textAlign: 'center', fontWeight: '700', color: colors.text.subtle, fontSize: 13 }}>{openLabel}</Text>
-              </Pressable>
-            </View>
-
-            <View style={{ marginTop: 34, paddingHorizontal: 20 }}>
-              <Text style={{ fontSize: 19, fontWeight: '800', color: colors.text.inverted, marginBottom: 12 }}>
-                {moreLikeLabel}
-              </Text>
-              {moreLikeLoading && moreLike.length === 0 ? (
-                <FlatList
-                  data={skeletonTiles}
-                  keyExtractor={(item) => `skeleton-${item}`}
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  ItemSeparatorComponent={() => <View style={{ width: 12 }} />}
-                  renderItem={() => (
-                    <View style={{ width: 140, padding: 10 }}>
-                      <View style={{ width: 120, height: 120, borderRadius: 12, backgroundColor: colors.bg.muted }} />
-                      <View style={{ height: 12, backgroundColor: colors.bg.muted, borderRadius: 6, marginTop: 10, width: 100 }} />
-                      <View style={{ height: 10, backgroundColor: colors.bg.muted, borderRadius: 6, marginTop: 6, width: 70 }} />
-                    </View>
-                  )}
-                />
-              ) : moreLike.length === 0 ? (
-                <GlassCard style={{ padding: 18, borderRadius: 20 }}>
-                  <Text style={{ color: colors.text.secondary, fontWeight: '800', fontSize: 15 }}>Similar picks are coming together</Text>
-                  <Text style={{ color: colors.text.muted, marginTop: 6, lineHeight: 20 }}>
-                    We do not have enough overlap yet to surface confident matches for this release.
-                  </Text>
-                </GlassCard>
-              ) : (
-                <FlatList
-                  data={moreLike}
-                  keyExtractor={(item) => item.id}
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  ItemSeparatorComponent={() => <View style={{ width: 12 }} />}
-                  renderItem={({ item }) => (
-                    <GlassCard asChild style={{ padding: 0, borderRadius: 16 }}>
-                      <Pressable
-                        onPress={() => goToRelease(item.id)}
-                        style={({ pressed }) => ({
-                          width: 140,
-                          padding: 10,
-                          borderRadius: 16,
-                          opacity: pressed ? 0.9 : 1,
-                        })}
-                      >
-                        <View style={{ width: 120, height: 120, borderRadius: 12, overflow: 'hidden', backgroundColor: colors.bg.muted }}>
-                          {item.imageUrl ? (
-                            <Image source={{ uri: item.imageUrl }} style={{ width: 120, height: 120 }} />
-                          ) : (
-                            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-                              <Text style={{ color: colors.text.muted, fontWeight: '900' }}>{(item.title || '?').slice(0, 1)}</Text>
-                            </View>
-                          )}
-                        </View>
-                        <Text style={{ marginTop: 8, fontWeight: '700', color: colors.text.secondary }} numberOfLines={1}>
-                          {item.title}
-                        </Text>
-                        <Text style={{ color: colors.text.muted, fontSize: 12 }} numberOfLines={1}>
-                          {item.artist}
-                        </Text>
-                      </Pressable>
-                    </GlassCard>
-                  )}
-                />
-              )}
-            </View>
-          </>
-        )}
-      </ScrollView>
-    </Screen>
+                {moreLikeLoading && moreLike.length === 0 ? (
+                  <FlatList
+                    data={skeletonTiles}
+                    keyExtractor={(item) => `skeleton-${item}`}
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    ItemSeparatorComponent={() => <View style={{ width: 12 }} />}
+                    renderItem={() => (
+                      <View style={{ width: 140, padding: 10 }}>
+                        <View style={{ width: 120, height: 120, borderRadius: 12, backgroundColor: colors.bg.muted }} />
+                        <View style={{ height: 12, backgroundColor: colors.bg.muted, borderRadius: 6, marginTop: 10, width: 100 }} />
+                        <View style={{ height: 10, backgroundColor: colors.bg.muted, borderRadius: 6, marginTop: 6, width: 70 }} />
+                      </View>
+                    )}
+                  />
+                ) : moreLike.length === 0 ? (
+                  <GlassCard style={{ padding: 18, borderRadius: 20 }}>
+                    <Text style={{ color: colors.text.secondary, fontWeight: '800', fontSize: 15 }}>Similar picks are coming together</Text>
+                    <Text style={{ color: colors.text.muted, marginTop: 6, lineHeight: 20 }}>
+                      We do not have enough overlap yet to surface confident matches for this release.
+                    </Text>
+                  </GlassCard>
+                ) : (
+                  <FlatList
+                    data={moreLike}
+                    keyExtractor={(item) => item.id}
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    ItemSeparatorComponent={() => <View style={{ width: 12 }} />}
+                    renderItem={({ item }) => (
+                      <GlassCard asChild style={{ padding: 0, borderRadius: 16 }}>
+                        <Pressable
+                          onPress={() => goToRelease(item.id)}
+                          style={({ pressed }) => ({
+                            width: 140,
+                            padding: 10,
+                            borderRadius: 16,
+                            opacity: pressed ? 0.9 : 1,
+                          })}
+                        >
+                          <View style={{ width: 120, height: 120, borderRadius: 12, overflow: 'hidden', backgroundColor: colors.bg.muted }}>
+                            {item.imageUrl ? (
+                              <Image source={{ uri: item.imageUrl }} style={{ width: 120, height: 120 }} />
+                            ) : (
+                              <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+                                <Text style={{ color: colors.text.muted, fontWeight: '900' }}>{(item.title || '?').slice(0, 1)}</Text>
+                              </View>
+                            )}
+                          </View>
+                          <Text style={{ marginTop: 8, fontWeight: '700', color: colors.text.secondary }} numberOfLines={1}>
+                            {item.title}
+                          </Text>
+                          <Text style={{ color: colors.text.muted, fontSize: 12 }} numberOfLines={1}>
+                            {item.artist}
+                          </Text>
+                        </Pressable>
+                      </GlassCard>
+                    )}
+                  />
+                )}
+              </View>
+            </>
+          )}
+        </ScrollView>
+      </SafeAreaView>
+    </View>
   );
 }
