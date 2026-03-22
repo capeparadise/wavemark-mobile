@@ -132,6 +132,7 @@ export default function DiscoverTab() {
   const [forYouItems, setForYouItems] = useState<Array<{ id: string; name: string; imageUrl?: string | null; latestId?: string; latestDate?: string | null }>>([]);
   const [forYouLoading, setForYouLoading] = useState<boolean>(true);
   const [yourUpdatesReleases, setYourUpdatesReleases] = useState<Array<{ id: string; title: string; artist: string; artistId?: string | null; releaseDate?: string | null; spotifyUrl?: string | null; imageUrl?: string | null; type?: 'album' | 'single' | 'ep' }>>([]);
+  const [expandedUpdateArtists, setExpandedUpdateArtists] = useState<Set<string>>(new Set());
   const [topPicksLoading, setTopPicksLoading] = useState<boolean>(true);
   const [topPicksError, setTopPicksError] = useState<any | null>(null);
   const [yourUpdatesError, setYourUpdatesError] = useState<any | null>(null);
@@ -425,30 +426,66 @@ export default function DiscoverTab() {
     () => freshYourUpdatesReleases.slice(0, YOUR_UPDATES_CAP),
     [freshYourUpdatesReleases]
   );
-  const yourUpdatesDisplayItems = useMemo(() => {
-    const artistTotals = new Map<string, number>();
+  const yourUpdatesGroups = useMemo(() => {
+    const groups: Array<{
+      artistKey: string;
+      artistName?: string | null;
+      items: typeof yourUpdatesVisible;
+    }> = [];
+    const groupByArtist = new Map<string, { artistKey: string; artistName?: string | null; items: typeof yourUpdatesVisible }>();
+
     yourUpdatesVisible.forEach((item) => {
       const artistKey = item.artistId || normalizeArtistIdentity(item.artist) || spotifyKey(item.id, item.spotifyUrl) || item.id;
       if (!artistKey) return;
-      artistTotals.set(artistKey, (artistTotals.get(artistKey) ?? 0) + 1);
+      const existing = groupByArtist.get(artistKey);
+      if (existing) {
+        existing.items.push(item);
+        return;
+      }
+      const group = { artistKey, artistName: item.artist ?? null, items: [item] };
+      groupByArtist.set(artistKey, group);
+      groups.push(group);
     });
 
-    const shownByArtist = new Map<string, number>();
-    const entries: Array<{ item: typeof yourUpdatesVisible[number]; moreCount?: number }> = [];
+    return groups;
+  }, [yourUpdatesVisible]);
+  useEffect(() => {
+    setExpandedUpdateArtists(new Set());
+  }, [yourUpdatesVisible]);
+  const expandUpdateGroup = useCallback((artistKey: string) => {
+    setExpandedUpdateArtists((prev) => {
+      if (prev.has(artistKey)) return prev;
+      const next = new Set(prev);
+      next.add(artistKey);
+      return next;
+    });
+  }, []);
+  const yourUpdatesDisplayItems = useMemo(() => {
+    const entries: Array<{
+      item: typeof yourUpdatesVisible[number];
+      artistKey: string;
+      moreCount?: number;
+      hideArtist?: boolean;
+      expandOnPress?: boolean;
+    }> = [];
 
-    yourUpdatesVisible.forEach((item) => {
-      const artistKey = item.artistId || normalizeArtistIdentity(item.artist) || spotifyKey(item.id, item.spotifyUrl) || item.id;
-      if (!artistKey) return;
-      const shown = shownByArtist.get(artistKey) ?? 0;
-      if (shown < 2) {
-        shownByArtist.set(artistKey, shown + 1);
-        const remaining = shown + 1 === 2 ? (artistTotals.get(artistKey) ?? 0) - 2 : 0;
-        entries.push({ item, moreCount: remaining > 0 ? remaining : undefined });
-      }
+    yourUpdatesGroups.forEach((group) => {
+      const isExpanded = expandedUpdateArtists.has(group.artistKey);
+      const visibleItems = isExpanded ? group.items : group.items.slice(0, 2);
+      visibleItems.forEach((item, index) => {
+        const isCollapsedGroup = !isExpanded && group.items.length > 2;
+        entries.push({
+          item,
+          artistKey: group.artistKey,
+          moreCount: isCollapsedGroup && index === 1 ? group.items.length - 2 : undefined,
+          hideArtist: isExpanded && index >= 2,
+          expandOnPress: isCollapsedGroup,
+        });
+      });
     });
 
     return entries;
-  }, [yourUpdatesVisible]);
+  }, [expandedUpdateArtists, yourUpdatesGroups]);
 
   const yourUpdatesState = useMemo<{ items: typeof yourUpdatesReleases; status: SectionStatus; error?: any }>(() => {
     if (yourUpdatesLoading) return { items: [], status: 'loading' };
@@ -2142,7 +2179,11 @@ export default function DiscoverTab() {
         const heroCardWidth = Math.floor((screenWidth - horizontalPad * 2) * 0.92);
         const heroCardHeight = 226;
 
-        const renderReleaseCard = (item: any, moreCount?: number) => {
+        const renderReleaseCard = (
+          item: any,
+          options?: { moreCount?: number; hideArtist?: boolean; onPress?: () => void }
+        ) => {
+          const moreCount = options?.moreCount;
           const stat = statusFor(item.id, item.spotifyUrl);
           const isAdded = isAddedFor(item.id, item.spotifyUrl) || !!stat;
           const label = tagLabel(stat, isAdded);
@@ -2164,6 +2205,7 @@ export default function DiscoverTab() {
             }
             setMenuRow({ ...item, artist_id: artistId, in_list: isAdded, done_at: stat?.done ? new Date().toISOString() : null } as any);
           };
+          const handlePress = options?.onPress ?? openRelease;
           return (
             <GlassCard
               key={item.id || item.title}
@@ -2176,7 +2218,7 @@ export default function DiscoverTab() {
               }}
             >
               <Pressable
-                onPress={openRelease}
+                onPress={handlePress}
                 onLongPress={() => setMenuRow({ ...item, artist_id: artistId, in_list: isAdded, done_at: stat?.done ? new Date().toISOString() : null } as any)}
                 delayLongPress={RELEASE_LONG_PRESS_MS}
                 style={({ pressed }) => ({
@@ -2207,7 +2249,7 @@ export default function DiscoverTab() {
                       <Text style={{ color: colors.text.muted, fontSize: 11, fontWeight: '600' }}>+{moreCount}</Text>
                     ) : null}
                   </View>
-                  {!!item.artist && (
+                  {!options?.hideArtist && !!item.artist && (
                     <Text style={{ color: colors.text.muted, lineHeight: 16 }} numberOfLines={1} ellipsizeMode="tail">
                       {item.artist}
                     </Text>
@@ -2228,7 +2270,11 @@ export default function DiscoverTab() {
           );
         };
 
-        const renderHeroCard = (item: any, moreCount?: number) => {
+        const renderHeroCard = (
+          item: any,
+          options?: { moreCount?: number; hideArtist?: boolean; onPress?: () => void }
+        ) => {
+          const moreCount = options?.moreCount;
           const stat = statusFor(item.id, item.spotifyUrl);
           const isAdded = isAddedFor(item.id, item.spotifyUrl) || !!stat;
           const artistId = item.artistId || item.artist_id || null;
@@ -2250,18 +2296,19 @@ export default function DiscoverTab() {
             }
             setMenuRow({ ...item, artist_id: artistId, in_list: isAdded, done_at: stat?.done ? new Date().toISOString() : null } as any);
           };
+          const handlePress = options?.onPress ?? openRelease;
 
           return (
             <HeroReleaseCard
               title={item.title}
-              artist={item.artist || null}
+              artist={options?.hideArtist ? null : item.artist || null}
               imageUrl={item.imageUrl || null}
               releaseDate={item.releaseDate ?? null}
               saved={isAdded}
               titleBadge={moreCount ? `+${moreCount}` : null}
               width={heroCardWidth}
               height={heroCardHeight}
-              onPress={openRelease}
+              onPress={handlePress}
               onLongPress={() => setMenuRow({ ...item, artist_id: artistId, in_list: isAdded, done_at: stat?.done ? new Date().toISOString() : null } as any)}
               delayLongPress={RELEASE_LONG_PRESS_MS}
               onSave={() =>
@@ -2315,7 +2362,7 @@ export default function DiscoverTab() {
         };
 
         const renderUpdatesPillColumns = (
-          data: Array<{ item: typeof yourUpdatesVisible[number]; moreCount?: number }>,
+          data: Array<{ item: typeof yourUpdatesVisible[number]; artistKey: string; moreCount?: number; hideArtist?: boolean; expandOnPress?: boolean }>,
           key: string
         ) => {
           const pages = chunk(data.slice(0, 120), rowsPerPage);
@@ -2334,7 +2381,11 @@ export default function DiscoverTab() {
                 <View style={{ width: cardWidth, rowGap: columnGap }}>
                   {page.map((entry, idx) => (
                     <React.Fragment key={entry.item?.id ?? entry.item?.spotifyUrl ?? entry.item?.title ?? `${key}-${idx}`}>
-                      {renderReleaseCard(entry.item, entry.moreCount)}
+                      {renderReleaseCard(entry.item, {
+                        moreCount: entry.moreCount,
+                        hideArtist: entry.hideArtist,
+                        onPress: entry.expandOnPress ? () => expandUpdateGroup(entry.artistKey) : undefined,
+                      })}
                     </React.Fragment>
                   ))}
                 </View>
@@ -2387,7 +2438,7 @@ export default function DiscoverTab() {
         };
 
         const renderUpdatesSection = (
-          data: Array<{ item: typeof yourUpdatesVisible[number]; moreCount?: number }>,
+          data: Array<{ item: typeof yourUpdatesVisible[number]; artistKey: string; moreCount?: number; hideArtist?: boolean; expandOnPress?: boolean }>,
           key: string
         ) => {
           if (!data.length) return null;
@@ -2414,7 +2465,11 @@ export default function DiscoverTab() {
                   snapToInterval={heroCardWidth + heroGap}
                   contentContainerStyle={{ paddingHorizontal: horizontalPad }}
                   ItemSeparatorComponent={() => <View style={{ width: heroGap }} />}
-                  renderItem={({ item: entry }) => renderHeroCard(entry.item, entry.moreCount)}
+                  renderItem={({ item: entry }) => renderHeroCard(entry.item, {
+                    moreCount: entry.moreCount,
+                    hideArtist: entry.hideArtist,
+                    onPress: entry.expandOnPress ? () => expandUpdateGroup(entry.artistKey) : undefined,
+                  })}
                 />
               ) : null}
               {rest.length ? <View style={{ marginTop: hero.length ? 12 : 0 }}>{renderUpdatesPillColumns(rest, `${key}-pills`)}</View> : null}
