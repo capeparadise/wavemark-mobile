@@ -1,9 +1,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router, useLocalSearchParams } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { LinearGradient } from 'expo-linear-gradient';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { ActivityIndicator, Alert, FlatList, Image, Linking, Pressable, ScrollView, Text, View } from 'react-native';
 import GlassCard from '../../components/GlassCard';
-import Screen from '../../components/StackScreen';
+import Screen from '../../components/Screen';
 import { formatDate } from '../../lib/date';
 import { addToListFromSearch, getDefaultPlayer, openByDefaultPlayer, type ListenPlayer, type ListenRow } from '../../lib/listen';
 import { getMoreLikeThisForRelease, type SimpleAlbum } from '../../lib/recommend';
@@ -14,7 +16,7 @@ import { openArtist } from '../../lib/openArtist';
 import { useTheme } from '../../theme/useTheme';
 import { goToRelease } from '../../lib/navigation';
 
-export const options = { title: 'Release' };
+export const options = { title: 'Release', headerShown: false };
 
 type ReleaseDetails = {
   id: string;
@@ -531,96 +533,149 @@ export default function ReleaseScreen() {
   }, [release]);
 
   const openLabel = preferredPlayer === 'apple' ? 'Open in Apple Music' : 'Open in Spotify';
+  const heroArtworkSize = 220;
 
   return (
-    <Screen>
-      <ScrollView contentContainerStyle={{ paddingBottom: 40 }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 16 }}>
-          <Pressable onPress={() => router.back()} hitSlop={8} style={{ paddingVertical: 6, paddingHorizontal: 8, marginLeft: -6 }}>
-            <Text style={{ color: colors.text.secondary, fontWeight: '800', fontSize: 16 }}>{'<'}</Text>
+    <Screen style={{ paddingHorizontal: 0, paddingTop: 0 }}>
+      <View pointerEvents="none" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}>
+        {release?.artworkUrl ? (
+          <Image
+            source={{ uri: release.artworkUrl }}
+            style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, width: '100%', height: '100%' }}
+            blurRadius={28}
+          />
+        ) : null}
+        <LinearGradient
+          colors={['rgba(5,8,14,0.18)', 'rgba(7,10,16,0.74)', 'rgba(7,10,16,0.96)']}
+          locations={[0, 0.38, 1]}
+          style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
+        />
+        <LinearGradient
+          colors={['rgba(0,0,0,0.48)', 'transparent', 'rgba(0,0,0,0.35)']}
+          locations={[0, 0.28, 1]}
+          style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 300 }}
+        />
+      </View>
+
+      <ScrollView contentContainerStyle={{ paddingBottom: 44 }}>
+        <View style={{ paddingHorizontal: 20, paddingTop: 14 }}>
+          <Pressable
+            onPress={() => router.back()}
+            hitSlop={10}
+            style={({ pressed }) => ({
+              width: 42,
+              height: 42,
+              borderRadius: 21,
+              alignItems: 'center',
+              justifyContent: 'center',
+              backgroundColor: colors.overlay.dim,
+              borderWidth: 1,
+              borderColor: colors.overlay.softLight,
+              opacity: pressed ? 0.9 : 1,
+            })}
+          >
+            <Ionicons name="chevron-back" size={20} color={colors.text.inverted} />
           </Pressable>
-          <Text style={{ fontSize: 18, fontWeight: '800', color: colors.text.secondary, marginLeft: 8 }}>Release</Text>
         </View>
 
         {loading && !release ? (
-          <View style={{ paddingVertical: 24, alignItems: 'center' }}>
+          <View style={{ paddingVertical: 48, alignItems: 'center' }}>
             <ActivityIndicator />
           </View>
         ) : (
           <>
             {error ? (
-              <Text style={{ color: colors.text.muted }}>{error}</Text>
+              <Text style={{ color: colors.text.muted, paddingHorizontal: 20 }}>{error}</Text>
             ) : null}
 
-            <View style={{ flexDirection: 'row', gap: 16, alignItems: 'center' }}>
-              <View style={{ width: 120, height: 120, borderRadius: 16, overflow: 'hidden', backgroundColor: colors.bg.muted }}>
-                {release?.artworkUrl ? (
-                  <Image source={{ uri: release.artworkUrl }} style={{ width: 120, height: 120 }} />
-                ) : (
-                  <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-                    <Text style={{ color: colors.text.muted, fontWeight: '900', fontSize: 24 }}>{(release?.title || 'R').slice(0, 1)}</Text>
-                  </View>
-                )}
+            <View style={{ paddingHorizontal: 20, paddingTop: 18 }}>
+              <View style={{ alignItems: 'center' }}>
+                <View
+                  style={{
+                    width: heroArtworkSize,
+                    height: heroArtworkSize,
+                    borderRadius: 30,
+                    overflow: 'hidden',
+                    backgroundColor: colors.bg.muted,
+                    borderWidth: 1,
+                    borderColor: colors.overlay.softLight,
+                  }}
+                >
+                  {release?.artworkUrl ? (
+                    <Image source={{ uri: release.artworkUrl }} style={{ width: heroArtworkSize, height: heroArtworkSize }} />
+                  ) : (
+                    <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+                      <Text style={{ color: colors.text.muted, fontWeight: '900', fontSize: 40 }}>{(release?.title || 'R').slice(0, 1)}</Text>
+                    </View>
+                  )}
+                </View>
               </View>
-              <View style={{ flex: 1, minWidth: 0 }}>
-                <Text style={{ fontSize: 20, fontWeight: '900', color: colors.text.secondary }} numberOfLines={2}>
+
+              <View style={{ marginTop: 22, alignItems: 'center' }}>
+                <Text style={{ color: colors.text.subtle, fontSize: 12, fontWeight: '700', letterSpacing: 1.4, textTransform: 'uppercase' }}>
+                  Release
+                </Text>
+                <Text style={{ marginTop: 10, fontSize: 31, lineHeight: 36, fontWeight: '900', color: colors.text.inverted, textAlign: 'center' }} numberOfLines={3}>
                   {release?.title || 'Release'}
                 </Text>
                 {release?.artistName ? (
-                  <Pressable onPress={onOpenArtist} disabled={!release?.artistName} hitSlop={6}>
-                    <Text style={{ color: colors.accent.primary, fontWeight: '700', marginTop: 6 }} numberOfLines={1}>
+                  <Pressable onPress={onOpenArtist} disabled={!release?.artistName} hitSlop={8} style={{ marginTop: 10 }}>
+                    <Text style={{ color: colors.text.subtle, fontWeight: '700', fontSize: 16 }} numberOfLines={1}>
                       {release.artistName}
                     </Text>
                   </Pressable>
                 ) : null}
                 {metaLine ? (
-                  <Text style={{ color: colors.text.muted, marginTop: 6, fontWeight: '700', fontSize: 12 }}>
+                  <Text style={{ color: colors.text.subtle, marginTop: 12, fontWeight: '700', fontSize: 12, letterSpacing: 1.1, textTransform: 'uppercase' }}>
                     {metaLine}
                   </Text>
                 ) : null}
                 {!!release?.releaseDate ? (
-                  <Text style={{ color: colors.text.muted, marginTop: 4, fontSize: 12 }}>
+                  <Text style={{ color: colors.text.muted, marginTop: 6, fontSize: 13 }}>
                     {formatDate(release.releaseDate)}
                   </Text>
                 ) : null}
               </View>
             </View>
 
-            <Pressable
-              onPress={onAdd}
-              disabled={adding || added}
-              style={({ pressed }) => ({
-                marginTop: 18,
-                paddingVertical: 14,
-                borderRadius: 14,
-                backgroundColor: added ? colors.bg.muted : colors.accent.primary,
-                borderWidth: 1,
-                borderColor: added ? colors.border.subtle : colors.accent.primary,
-                opacity: pressed ? 0.9 : 1,
-              })}
-            >
-              <Text style={{ textAlign: 'center', fontWeight: '800', color: added ? colors.text.secondary : colors.text.inverted }}>
-                {added ? 'Added to Listen list' : adding ? 'Adding...' : 'Add to Listen list'}
-              </Text>
-            </Pressable>
+            <View style={{ paddingHorizontal: 20, marginTop: 24 }}>
+              <Pressable
+                onPress={onAdd}
+                disabled={adding || added}
+                style={({ pressed }) => ({
+                  paddingVertical: 15,
+                  borderRadius: 16,
+                  backgroundColor: added ? colors.overlay.softLight : colors.accent.primary,
+                  borderWidth: 1,
+                  borderColor: added ? colors.overlay.softLight : colors.accent.primary,
+                  opacity: pressed ? 0.92 : 1,
+                })}
+              >
+                <Text style={{ textAlign: 'center', fontWeight: '800', color: added ? colors.text.inverted : colors.text.inverted }}>
+                  {added ? 'Added to Listen list' : adding ? 'Adding...' : 'Add to Listen list'}
+                </Text>
+              </Pressable>
 
-            <Pressable
-              onPress={onOpenExternal}
-              style={({ pressed }) => ({
-                marginTop: 10,
-                paddingVertical: 12,
-                borderRadius: 12,
-                backgroundColor: colors.bg.secondary,
-                borderWidth: 1,
-                borderColor: colors.border.subtle,
-                opacity: pressed ? 0.92 : 1,
-              })}
-            >
-              <Text style={{ textAlign: 'center', fontWeight: '700', color: colors.text.secondary }}>{openLabel}</Text>
-            </Pressable>
+              <Pressable
+                onPress={onOpenExternal}
+                style={({ pressed }) => ({
+                  alignSelf: 'center',
+                  marginTop: 12,
+                  paddingHorizontal: 16,
+                  paddingVertical: 10,
+                  borderRadius: 999,
+                  backgroundColor: 'transparent',
+                  borderWidth: 1,
+                  borderColor: colors.overlay.softLight,
+                  opacity: pressed ? 0.88 : 1,
+                })}
+              >
+                <Text style={{ textAlign: 'center', fontWeight: '700', color: colors.text.subtle, fontSize: 13 }}>{openLabel}</Text>
+              </Pressable>
+            </View>
 
-            <View style={{ marginTop: 24 }}>
-              <Text style={{ fontSize: 18, fontWeight: '800', color: colors.text.secondary, marginBottom: 10 }}>
+            <View style={{ marginTop: 34, paddingHorizontal: 20 }}>
+              <Text style={{ fontSize: 19, fontWeight: '800', color: colors.text.inverted, marginBottom: 12 }}>
                 {moreLikeLabel}
               </Text>
               {moreLikeLoading && moreLike.length === 0 ? (
@@ -639,7 +694,12 @@ export default function ReleaseScreen() {
                   )}
                 />
               ) : moreLike.length === 0 ? (
-                <Text style={{ color: colors.text.muted }}>No similar releases yet.</Text>
+                <GlassCard style={{ padding: 18, borderRadius: 20 }}>
+                  <Text style={{ color: colors.text.secondary, fontWeight: '800', fontSize: 15 }}>Similar picks are coming together</Text>
+                  <Text style={{ color: colors.text.muted, marginTop: 6, lineHeight: 20 }}>
+                    We do not have enough overlap yet to surface confident matches for this release.
+                  </Text>
+                </GlassCard>
               ) : (
                 <FlatList
                   data={moreLike}
@@ -678,10 +738,6 @@ export default function ReleaseScreen() {
                   )}
                 />
               )}
-            </View>
-
-            <View style={{ marginTop: 18 }}>
-              <Text style={{ color: colors.text.muted, fontSize: 12 }}>Release ID: {releaseId}</Text>
             </View>
           </>
         )}
