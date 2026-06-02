@@ -34,14 +34,6 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     ensureMyProfile().catch(() => {});
   }, [session?.user?.id]);
 
-  useEffect(() => {
-    if (!__DEV__) return;
-    if (session?.access_token) {
-      // TEMP: remove after JWT curl test
-      console.log('[session][access_token]', session.access_token);
-    }
-  }, [session?.access_token]);
-
   return (
     <SessionContext.Provider value={{ session, user: session?.user ?? null, loading }}>
       {children}

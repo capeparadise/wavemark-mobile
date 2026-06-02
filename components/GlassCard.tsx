@@ -25,7 +25,10 @@ export default function GlassCard({ children, style, onPress, disabled, asChild,
       {...rest}
     >
       <LinearGradient
-        colors={['rgba(255,255,255,0.08)', 'transparent']}
+        colors={[
+          isDark ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.22)',
+          'transparent',
+        ]}
         start={{ x: 0, y: 0 }}
         end={{ x: 0, y: 0.6 }}
         style={[StyleSheet.absoluteFill, { borderRadius: base.borderRadius }]}

@@ -5,6 +5,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ActivityIndicator, Alert, Animated, AppState, Dimensions, FlatList, Image, Pressable, ScrollView, SectionList, Text, TextInput, View, Modal } from 'react-native';
 import FollowButton from '../../components/FollowButton';
 import { H } from '../../components/haptics';
+import BrandLogo from '../../components/BrandLogo';
 import Screen from '../../components/Screen';
 import StatusMenu from '../../components/StatusMenu';
 import GlassCard from '../../components/GlassCard';
@@ -95,9 +96,20 @@ const GENRE_OPTIONS: { key: CanonicalGenre | 'all'; label: string }[] = [
   { key: 'jazz', label: 'Jazz' },
   { key: 'classical', label: 'Classical' },
   { key: 'metal', label: 'Metal' },
-  { key: 'gospel', label: 'Gospel' },
   { key: 'kpop', label: 'K-Pop' },
 ];
+
+const VISIBLE_GENRE_KEYS = new Set<CanonicalGenre>(
+  GENRE_OPTIONS
+    .filter((g) => g.key !== 'all')
+    .map((g) => g.key as CanonicalGenre)
+);
+
+const toVisibleGenreSet = (genres: Iterable<CanonicalGenre>) => (
+  new Set(Array.from(genres).filter((g) => VISIBLE_GENRE_KEYS.has(g)))
+);
+
+type DiscoverLoad = (opts?: { preserveExisting?: boolean }) => Promise<void>;
 
 export default function DiscoverTab() {
   const { colors } = useTheme();
@@ -145,6 +157,12 @@ export default function DiscoverTab() {
   const [debugWide, setDebugWide] = useState<DebugFetchResult | null>(null);
   const [debugGenre, setDebugGenre] = useState<DebugFetchResult | null>(null);
   const [reasonRow, setReasonRow] = useState<any | null>(null);
+  const loadRef = useRef<DiscoverLoad | null>(null);
+  const allDiscoverSnapshotRef = useRef<{
+    topPicks: Awaited<ReturnType<typeof getWesternNewReleases>>;
+    genreRows: Array<{ genre: CanonicalGenre; items: Awaited<ReturnType<typeof getWesternNewReleases>> }>;
+    youMightLike: Array<any>;
+  } | null>(null);
   // Track items saved during this session to show a ✓ instead of Save/Add
   const [addedIds, setAddedIds] = useState<Record<string, true>>({});
   // Listen state map (by spotify_id/provider_id) to surface rating/done status
@@ -395,7 +413,8 @@ export default function DiscoverTab() {
   }, [selectedGenres, topPicksRaw.length]);
 
   useEffect(() => {
-    setDraftGenres(selectedGenres.size ? new Set(selectedGenres) : new Set(['all']));
+    const visibleGenres = toVisibleGenreSet(selectedGenres);
+    setDraftGenres(visibleGenres.size ? new Set(visibleGenres) : new Set(['all']));
   }, [selectedGenres]);
 
   const yourUpdatesLoading = pickedLoading || forYouLoading;
@@ -495,8 +514,8 @@ export default function DiscoverTab() {
   }, [freshYourUpdatesReleases, yourUpdatesError, yourUpdatesLoading]);
 
   const topPicksState = useMemo<{ items: typeof filteredTopPicks; status: SectionStatus; error?: any }>(() => {
-    if (topPicksLoading) return { items: [], status: 'loading' };
-    if (topPicksError) return { items: [], status: 'error', error: topPicksError };
+    if (topPicksLoading && !filteredTopPicks.length) return { items: [], status: 'loading' };
+    if (topPicksError && !filteredTopPicks.length) return { items: [], status: 'error', error: topPicksError };
     if (!filteredTopPicks.length) return { items: [], status: 'empty' };
     return { items: filteredTopPicks, status: 'success' };
   }, [filteredTopPicks, topPicksError, topPicksLoading]);
@@ -509,6 +528,37 @@ export default function DiscoverTab() {
     const genreContent = genreRows.length > 0;
     return hasYourUpdates || topPicksState.status !== 'empty' || youMightLike.length > 0 || genreContent;
   }, [genreRows.length, hasYourUpdates, topPicksState.status, youMightLike.length]);
+
+  useEffect(() => {
+    if (selectedGenres.size) return;
+    if (!filteredTopPicks.length && !genreRows.length && !youMightLike.length) return;
+    allDiscoverSnapshotRef.current = {
+      topPicks: filteredTopPicks,
+      genreRows,
+      youMightLike,
+    };
+  }, [filteredTopPicks, genreRows, selectedGenres.size, youMightLike]);
+
+  const restoreAllSnapshot = useCallback(() => {
+    const snapshot = allDiscoverSnapshotRef.current;
+    if (!snapshot) return false;
+    setFilteredTopPicks(snapshot.topPicks);
+    setGenreRows(snapshot.genreRows);
+    setYouMightLike(snapshot.youMightLike);
+    setTopPicksLoading(false);
+    return true;
+  }, []);
+
+  const refreshDiscoverPreservingContent = useCallback(async () => {
+    const runner = loadRef.current;
+    if (!runner) return;
+    setRefreshing(true);
+    try {
+      await runner({ preserveExisting: true });
+    } finally {
+      setRefreshing(false);
+    }
+  }, []);
 
   useEffect(() => {
     if (!__DEV__) return;
@@ -569,18 +619,22 @@ export default function DiscoverTab() {
   };
 
   const applyGenres = async () => {
-    const next = draftGenres.has('all') ? new Set<CanonicalGenre>() : new Set(Array.from(draftGenres) as CanonicalGenre[]);
+    const next = draftGenres.has('all') ? new Set<CanonicalGenre>() : toVisibleGenreSet(Array.from(draftGenres) as CanonicalGenre[]);
+    if (next.size === 0) restoreAllSnapshot();
     setSelectedGenres(next);
-    await saveIncludedGenres(next);
     setFilterVisible(false);
+    await saveIncludedGenres(next);
+    await refreshDiscoverPreservingContent();
   };
 
   const clearGenres = useCallback(async () => {
     const empty = new Set<CanonicalGenre>();
+    restoreAllSnapshot();
     setDraftGenres(new Set(['all']));
     setSelectedGenres(empty);
     await saveIncludedGenres(empty);
-  }, []);
+    await refreshDiscoverPreservingContent();
+  }, [refreshDiscoverPreservingContent, restoreAllSnapshot]);
 
   const renderEmpty = useCallback(() => {
     if (hasDiscoverContent) return null;
@@ -957,7 +1011,8 @@ export default function DiscoverTab() {
   };
 
   // Loader
-  const load = useCallback(async () => {
+  const load = useCallback<DiscoverLoad>(async (opts) => {
+    const preserveExisting = !!opts?.preserveExisting;
     const NEW_RELEASE_DAYS = DISCOVER_GENRE_DAYS;
     const cycleId = Date.now();
     lastFetchRef.current = cycleId;
@@ -1022,7 +1077,9 @@ export default function DiscoverTab() {
         debugSetNewReleases('from getWesternNewReleases', nr);
         cacheNewReleases(nr);
       } else {
-        debugSetNewReleases('from getWesternNewReleases (error)', []);
+        if (!preserveExisting) {
+          debugSetNewReleases('from getWesternNewReleases (error)', []);
+        }
         if (__DEV__) {
           console.warn('[discover rails][new releases failed]', nrResult.reason);
         }
@@ -1034,15 +1091,20 @@ export default function DiscoverTab() {
           console.log('[discover][wire]', { topPicksLength: topPicksResult.value?.length ?? 0 });
         }
       } else {
-        setTopPicksRaw([]);
+        if (!preserveExisting) {
+          setTopPicksRaw([]);
+        }
         setTopPicksError(topPicksResult.reason);
         if (__DEV__) console.warn('[discover top-picks][failed]', topPicksResult.reason);
       }
 
       if (genresResult.status === 'fulfilled') {
-        const genres = genresResult.value;
+        const genres = toVisibleGenreSet(genresResult.value);
         setSelectedGenres(genres);
         setDraftGenres(genres.size ? new Set(genres) : new Set(['all']));
+        if (genres.size !== genresResult.value.size) {
+          void saveIncludedGenres(genres);
+        }
       } else if (__DEV__) {
         console.warn('[discover rails][genres failed]', genresResult.reason);
       }
@@ -1412,6 +1474,10 @@ export default function DiscoverTab() {
       setInitialLoading(false);
     }
   }, [refreshListenStatus]);
+
+  useEffect(() => {
+    loadRef.current = load;
+  }, [load]);
 
   useEffect(() => {
     const handler = () => { load(); };
@@ -1922,6 +1988,7 @@ export default function DiscoverTab() {
     const isAdded = isAddedFor(r.id, r.spotifyUrl) || !!stat;
     const label = tagLabel(stat, isAdded);
     const artUrl = r.imageUrl || artistImageMap[r.id] || null;
+    const releaseDateLabel = formatDate(r.releaseDate);
     return (
       <GlassCard asChild style={{ marginVertical: 4, padding: 0 }}>
         <View style={{ paddingVertical: 10, paddingHorizontal: 6, opacity: 1 }}>
@@ -1948,9 +2015,9 @@ export default function DiscoverTab() {
             <View style={{ flex: 1, paddingRight: 12 }}>
               <Text style={{ fontSize: 16, fontWeight: '500', color: colors.text.secondary }} numberOfLines={1}>{r.title}</Text>
               <Text style={{ color: colors.text.muted, marginTop: 2 }} numberOfLines={1}>{r.artist ?? typeLabel}</Text>
-              {!!r.releaseDate && (
+              {!!releaseDateLabel && (
                 <Text style={{ color: presave ? colors.accent.success : colors.text.muted, marginTop: 2 }}>
-                  {presave ? `Presave · ${formatDate(r.releaseDate)}` : `Released · ${formatDate(r.releaseDate)}`}
+                  {presave ? `Presave · ${releaseDateLabel}` : `Released · ${releaseDateLabel}`}
                 </Text>
               )}
             </View>
@@ -1992,6 +2059,7 @@ export default function DiscoverTab() {
   const stat = statusFor(item.id, item.spotifyUrl);
   const isAdded = isAddedFor(item.id, item.spotifyUrl) || !!stat;
   const label = tagLabel(stat, isAdded);
+  const releaseDateLabel = formatDate(item.releaseDate);
     return (
       <GlassCard asChild style={{ marginVertical: 4, padding: 0, opacity: isAdded ? 0.82 : 1 }}>
         <View style={{ paddingVertical: 10, paddingHorizontal: 6 }}>
@@ -2007,9 +2075,9 @@ export default function DiscoverTab() {
                 )}
               </View>
               <Text style={{ color: colors.text.muted, marginTop: 2 }} numberOfLines={1}>{item.artist}</Text>
-              {!!item.releaseDate && (
+              {!!releaseDateLabel && (
                 <Text style={{ color: presave ? colors.accent.success : colors.text.muted, marginTop: 2 }}>
-                  {presave ? `Presave · ${formatDate(item.releaseDate)}` : `Released · ${formatDate(item.releaseDate)}`}
+                  {presave ? `Presave · ${releaseDateLabel}` : `Released · ${releaseDateLabel}`}
                 </Text>
               )}
             </View>
@@ -2609,6 +2677,9 @@ export default function DiscoverTab() {
   return (
     <Screen>
       {offlineBanner}
+      <View style={{ alignItems: 'center', marginTop: 8, marginBottom: 6 }}>
+        <BrandLogo height={22} />
+      </View>
       <View style={{ marginTop: 8, marginBottom: 12, flexDirection: 'row', gap: 8, alignItems: 'center' }}>
         <TextInput
           value={q}
@@ -2672,6 +2743,7 @@ export default function DiscoverTab() {
         <SectionList
           sections={groupedSections}
           keyExtractor={(item, index) => `sec-${item.type}-${item.id}-${index}`}
+          contentContainerStyle={{ paddingBottom: 112 }}
           renderSectionHeader={({ section }) => (
             <Text style={{ fontSize: 18, fontWeight: '600', marginTop: 16, marginBottom: 8, color: colors.text.secondary }}>{section.title}</Text>
           )}
@@ -2689,6 +2761,7 @@ export default function DiscoverTab() {
           extraData={viewMode}
           ListHeaderComponent={ReleasesHeader}
           ListEmptyComponent={renderEmpty}
+          contentContainerStyle={{ paddingBottom: 112 }}
           refreshing={refreshing}
           onRefresh={onRefresh}
           keyboardShouldPersistTaps="handled"
@@ -2697,8 +2770,11 @@ export default function DiscoverTab() {
       <Modal visible={filterVisible} transparent animationType="slide" onRequestClose={() => setFilterVisible(false)}>
         <Pressable style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.4)' }} onPress={() => setFilterVisible(false)} />
         <View style={{ position: 'absolute', left: 0, right: 0, bottom: 0, padding: 16 }}>
-          <GlassCard style={{ padding: 16 }}>
-            <Text style={{ fontSize: 18, fontWeight: '800', color: colors.text.secondary, marginBottom: 10 }}>Filter by genre</Text>
+          <GlassCard style={{ padding: 18 }}>
+            <View style={{ marginBottom: 14 }}>
+              <Text style={{ fontSize: 22, fontWeight: '900', color: colors.text.secondary }}>Filter Discover</Text>
+              <Text style={{ color: colors.text.muted, marginTop: 4, fontSize: 13 }}>Explore ripples by genre.</Text>
+            </View>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
               {GENRE_OPTIONS.map((opt) => (
                 <Chip
@@ -2706,14 +2782,32 @@ export default function DiscoverTab() {
                   label={opt.label}
                   selected={draftGenres.has(opt.key)}
                   onPress={() => toggleDraftGenre(opt.key)}
+                  style={{
+                    borderWidth: 1,
+                    borderColor: draftGenres.has(opt.key) ? colors.accent.primary : colors.border.subtle,
+                    backgroundColor: draftGenres.has(opt.key) ? accentSoft : colors.bg.muted,
+                  }}
                 />
               ))}
             </View>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 10, marginTop: 16 }}>
-              <Pressable onPress={clearGenres} style={{ flex: 1, paddingVertical: 10, borderRadius: 10, backgroundColor: colors.bg.muted }}>
-                <Text style={{ textAlign: 'center', fontWeight: '700', color: colors.text.secondary }}>Clear filters</Text>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 10, marginTop: 18 }}>
+              <Pressable
+                onPress={() => {
+                  setFilterVisible(false);
+                  void clearGenres();
+                }}
+                style={{
+                  flex: 1,
+                  paddingVertical: 12,
+                  borderRadius: 12,
+                  backgroundColor: colors.bg.muted,
+                  borderWidth: 1,
+                  borderColor: colors.border.subtle,
+                }}
+              >
+                <Text style={{ textAlign: 'center', fontWeight: '800', color: colors.text.secondary }}>Reset / All</Text>
               </Pressable>
-              <Pressable onPress={applyGenres} style={{ flex: 1, paddingVertical: 10, borderRadius: 10, backgroundColor: colors.accent.primary }}>
+              <Pressable onPress={applyGenres} style={{ flex: 1, paddingVertical: 12, borderRadius: 12, backgroundColor: colors.accent.primary }}>
                 <Text style={{ textAlign: 'center', fontWeight: '800', color: colors.text.inverted }}>Apply</Text>
               </Pressable>
             </View>

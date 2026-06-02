@@ -75,7 +75,7 @@ export default function DiscographyScreen() {
     <Screen edges={["left", "right"]}>
       <ScrollView contentContainerStyle={{ padding: 16, gap: 18 }}>
         <Text style={{ fontSize: 24, fontWeight: "700", color: colors.text.secondary }}>
-          {name}'s discography
+          {name}&apos;s discography
         </Text>
 
         {loading ? (

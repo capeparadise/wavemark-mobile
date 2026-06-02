@@ -51,20 +51,20 @@ export const themeList: ThemeDefinition[] = [
   {
     name: 'dawn',
     label: 'Citrine',
-    description: 'Electric yellow with midnight ink.',
+    description: 'Soft citrine with midnight ink.',
     isDark: false,
     colors: {
       bg: {
-        primary: '#f7e65a',
-        secondary: '#fff3b0',
-        muted: '#e6d15b',
+        primary: '#ead98f',
+        secondary: '#fff6d2',
+        muted: '#dcc770',
         elevated: '#1a1a22',
       },
       blend: {
-        top: '#fff7c7',
-        mid: '#f7d658',
-        bottom: '#2b1f66',
-        glow: '#7a4bff',
+        top: '#fff8de',
+        mid: '#dfca79',
+        bottom: '#46375f',
+        glow: '#7b65c7',
       },
       text: {
         primary: '#1a1a22',
@@ -74,41 +74,41 @@ export const themeList: ThemeDefinition[] = [
         inverted: '#ffffff',
       },
       accent: {
-        primary: '#2c2178',
-        subtle: '#8c7b3a',
+        primary: '#3e2f86',
+        subtle: '#857746',
         success: '#0b7a4b',
       },
       border: {
-        subtle: '#e0cb66',
+        subtle: '#d5c071',
         strong: '#1a1a22',
-        muted: '#d2be69',
+        muted: '#c5b36d',
       },
       overlay: {
         dim: 'rgba(0,0,0,0.4)',
         softLight: 'rgba(255,255,255,0.12)',
       },
       shadow: {
-        light: 'rgba(26,26,34,0.2)',
+        light: 'rgba(26,26,34,0.14)',
       },
     },
   },
   {
     name: 'grove',
     label: 'Sage',
-    description: 'Smoky green with deep moss.',
+    description: 'Smoky sage with deep moss.',
     isDark: false,
     colors: {
       bg: {
-        primary: '#a7bca3',
-        secondary: '#e1e9d9',
-        muted: '#c7d4bf',
+        primary: '#9fb49f',
+        secondary: '#dde8d9',
+        muted: '#bdcdb7',
         elevated: '#1c2a24',
       },
       blend: {
-        top: '#d7e4ce',
-        mid: '#a6b8a1',
-        bottom: '#1c2a24',
-        glow: '#3f7c62',
+        top: '#dbe8d3',
+        mid: '#9fb39d',
+        bottom: '#263b34',
+        glow: '#4c8068',
       },
       text: {
         primary: '#1c2a24',
@@ -118,14 +118,14 @@ export const themeList: ThemeDefinition[] = [
         inverted: '#f9fff4',
       },
       accent: {
-        primary: '#1f6f5c',
-        subtle: '#7c9b8c',
+        primary: '#1f725f',
+        subtle: '#7c988b',
         success: '#2d8a3a',
       },
       border: {
-        subtle: '#c4d2bb',
+        subtle: '#bfceb8',
         strong: '#1c2a24',
-        muted: '#b1c2aa',
+        muted: '#adbea8',
       },
       overlay: {
         dim: 'rgba(0,0,0,0.4)',
@@ -139,20 +139,20 @@ export const themeList: ThemeDefinition[] = [
   {
     name: 'harbor',
     label: 'Violet',
-    description: 'Electric purple with velvet depth.',
+    description: 'Soft violet with velvet depth.',
     isDark: false,
     colors: {
       bg: {
-        primary: '#b38bff',
-        secondary: '#e7daff',
-        muted: '#cdb4ff',
+        primary: '#aa91e6',
+        secondary: '#e8ddff',
+        muted: '#c8b6ef',
         elevated: '#271b4a',
       },
       blend: {
-        top: '#e8dbff',
-        mid: '#b48cff',
-        bottom: '#2a1a59',
-        glow: '#7b4bff',
+        top: '#ede4ff',
+        mid: '#aa8fe8',
+        bottom: '#33265f',
+        glow: '#7557dd',
       },
       text: {
         primary: '#271b4a',
@@ -162,14 +162,14 @@ export const themeList: ThemeDefinition[] = [
         inverted: '#ffffff',
       },
       accent: {
-        primary: '#6e40ff',
-        subtle: '#8a74c7',
+        primary: '#6847dc',
+        subtle: '#8975c2',
         success: '#26a269',
       },
       border: {
-        subtle: '#c7b0f2',
+        subtle: '#c3b1ea',
         strong: '#271b4a',
-        muted: '#b7a0ea',
+        muted: '#b3a1df',
       },
       overlay: {
         dim: 'rgba(0,0,0,0.4)',
@@ -187,16 +187,16 @@ export const themeList: ThemeDefinition[] = [
     isDark: true,
     colors: {
       bg: {
-        primary: '#0b0b0f',
-        secondary: '#14151b',
-        muted: '#1e2028',
-        elevated: '#0a0a0e',
+        primary: '#0d0e13',
+        secondary: '#171922',
+        muted: '#222633',
+        elevated: '#090a0f',
       },
       blend: {
-        top: '#1d1f2a',
-        mid: '#151822',
-        bottom: '#0b0b0f',
-        glow: '#3b2333',
+        top: '#202331',
+        mid: '#151823',
+        bottom: '#0d0e13',
+        glow: '#432736',
       },
       text: {
         primary: '#f8fafc',
@@ -211,9 +211,9 @@ export const themeList: ThemeDefinition[] = [
         success: '#22c55e',
       },
       border: {
-        subtle: '#262b36',
-        strong: '#3b4454',
-        muted: '#2f3644',
+        subtle: '#293040',
+        strong: '#3f485c',
+        muted: '#333b4c',
       },
       overlay: {
         dim: 'rgba(0,0,0,0.7)',

@@ -4,6 +4,7 @@ import * as WebBrowser from 'expo-web-browser';
 import { router } from 'expo-router';
 import { useState } from 'react';
 import { Alert, Pressable, Text, View } from 'react-native';
+import BrandLogo from '../../components/BrandLogo';
 import Screen from '../../components/Screen';
 import { supabase } from '../../lib/supabase';
 import type { ThemeColors } from '../../theme/themes';
@@ -147,7 +148,10 @@ export default function WelcomeScreen() {
 
   return (
     <Screen edges={['left', 'right']}>
-      <View style={{ paddingTop: 6 }}>
+      <View style={{ paddingTop: 14 }}>
+        <View style={{ alignItems: 'center', marginBottom: 24 }}>
+          <BrandLogo height={34} />
+        </View>
         <Text style={{ fontSize: 28, fontWeight: '800', color: colors.text.secondary }}>Welcome</Text>
         <Text style={{ marginTop: 8, color: colors.text.muted }}>
           Sign in to sync your listens across devices.

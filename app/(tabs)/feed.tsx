@@ -9,6 +9,7 @@ import { H } from '../../components/haptics';
 import Screen from '../../components/Screen';
 import Snackbar from '../../components/Snackbar';
 import GlassCard from '../../components/GlassCard';
+import Chip from '../../components/Chip';
 import StatusMenu from '../../components/StatusMenu';
 import FeedHeader, { type FeedMode } from '../../components/feed/FeedHeader';
 import { formatDate } from '../../lib/date';
@@ -871,23 +872,13 @@ export default function FeedTab() {
           {filterOptions.map(({ key, label }) => {
             const selected = filter === key;
             return (
-              <Pressable key={key} onPress={() => setFilter(key as any)}>
-                <View style={{
-                  paddingHorizontal: 16,
-                paddingVertical: 12,
-                borderRadius: 20,
-                backgroundColor: selected ? colors.accent.primary : colors.bg.muted,
-                minHeight: 40,
-                borderWidth: selected ? 0 : 1,
-                borderColor: selected ? colors.accent.primary : colors.border.subtle,
-                shadowColor: colors.shadow.light,
-                shadowOpacity: selected ? 0.12 : 0.04,
-                shadowRadius: selected ? 8 : 4,
-                shadowOffset: { width: 0, height: 2 },
-              }}>
-                <Text style={{ color: selected ? colors.text.inverted : colors.text.secondary, fontWeight: '800', lineHeight: 18 }}>{label}</Text>
-              </View>
-            </Pressable>
+              <Chip
+                key={key}
+                label={label}
+                selected={selected}
+                onPress={() => setFilter(key as any)}
+                style={{ paddingHorizontal: 16, minHeight: 40 }}
+              />
           );
           })}
         </View>
@@ -926,7 +917,7 @@ export default function FeedTab() {
           ref={artistListRef}
           sections={sections}
           keyExtractor={(i) => String(i.id ?? i.spotify_url ?? i.apple_url ?? `${i.title}__${i.artist_id}`)}
-          contentContainerStyle={{ paddingBottom: 24, paddingTop: 8 }}
+          contentContainerStyle={{ paddingBottom: 112, paddingTop: 8 }}
           onLayout={attemptRestoreScroll}
           onContentSizeChange={attemptRestoreScroll}
           onScroll={(e) => {
@@ -1143,7 +1134,7 @@ export default function FeedTab() {
                     </View>
                   </View>
                 ) : null}
-                contentContainerStyle={{ paddingBottom: 24, paddingTop: hasExpandableGroups ? 0 : 8 }}
+                contentContainerStyle={{ paddingBottom: 112, paddingTop: hasExpandableGroups ? 0 : 8 }}
                 onLayout={attemptRestoreScroll}
                 onContentSizeChange={attemptRestoreScroll}
                 onScroll={(e) => {

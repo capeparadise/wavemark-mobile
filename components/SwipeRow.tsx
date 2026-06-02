@@ -3,7 +3,7 @@
    PURPOSE: Animated, polished swipe with full-swipe actions (no extra taps).
    VISUALS: Soft reveal, bold pill chip, stable labels, icons.
    ======================================================================== */
-import React, { useMemo, useRef } from 'react';
+import React, { useRef } from 'react';
 import { Animated, Text, View } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
 import { useTheme } from '../theme/useTheme';
@@ -81,42 +81,36 @@ export default function SwipeRow({
   };
 
   // Renderers receive "progress" (0..1) and "dragX". We animate the pill.
-  const left = useMemo(
-    () => (progress: Animated.AnimatedInterpolation<number>) => (
-      <View style={{ flex: 1, justifyContent: 'center', backgroundColor: colors.bg.muted }}>
-        <Pill
-          text={isDone ? 'Not listened' : 'Listened'}
-          bg={colors.accent.primary}
-          textColor={colors.text.inverted}
-          align="left"
-          progress={progress}
-        />
-      </View>
-    ),
-    [colors, isDone]
+  const renderLeftActions = (progress: Animated.AnimatedInterpolation<number>) => (
+    <View style={{ flex: 1, justifyContent: 'center', backgroundColor: colors.bg.muted }}>
+      <Pill
+        text={isDone ? 'Not listened' : 'Listened'}
+        bg={colors.accent.primary}
+        textColor={colors.text.inverted}
+        align="left"
+        progress={progress}
+      />
+    </View>
   );
 
-  const right = useMemo(
-    () => (progress: Animated.AnimatedInterpolation<number>) => (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'flex-end', backgroundColor: colors.bg.muted }}>
-        <Pill
-          text="Remove"
-          bg={colors.accent.primary}
-          textColor={colors.text.inverted}
-          align="right"
-          progress={progress}
-        />
-      </View>
-    ),
-    [colors]
+  const renderRightActions = (progress: Animated.AnimatedInterpolation<number>) => (
+    <View style={{ flex: 1, justifyContent: 'center', alignItems: 'flex-end', backgroundColor: colors.bg.muted }}>
+      <Pill
+        text="Remove"
+        bg={colors.accent.primary}
+        textColor={colors.text.inverted}
+        align="right"
+        progress={progress}
+      />
+    </View>
   );
 
   return (
     <Swipeable
       ref={ref}
       enabled={!disabled}
-      renderLeftActions={left}
-      renderRightActions={right}
+      renderLeftActions={renderLeftActions}
+      renderRightActions={renderRightActions}
       leftThreshold={leftThreshold}
       rightThreshold={rightThreshold}
       friction={2.2}             // a bit of resistance for a premium feel

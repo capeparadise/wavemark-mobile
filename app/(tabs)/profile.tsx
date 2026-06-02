@@ -198,8 +198,8 @@ export default function ProfileTab() {
   const levelProgressPct = Math.min(100, Math.round(level.progress * 100));
 
   return (
-    <Screen style={{ paddingHorizontal: 18, paddingTop: 8, paddingBottom: 28 }}>
-      <ScrollView contentContainerStyle={{ gap: 18, paddingBottom: 32 }}>
+    <Screen style={{ paddingHorizontal: 18, paddingTop: 64, paddingBottom: 0 }}>
+      <ScrollView contentContainerStyle={{ gap: 18, paddingBottom: 124 }}>
         <GlassCard>
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>

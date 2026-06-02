@@ -498,6 +498,7 @@ export default function ListenTab() {
           <FlatList
             data={visibleRows}
             keyExtractor={(r) => r.id}
+            contentContainerStyle={{ paddingBottom: 112 }}
             refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
             ListHeaderComponent={upcoming.length ? (
               <View style={{ paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.border.subtle }}>

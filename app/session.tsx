@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 import { router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { hasSeenFirstLogin } from '../lib/firstLogin';
+import { getHasSeenOnboarding } from '../lib/onboarding';
 import { useSession } from '../lib/session';
 
 const POST_AUTH_REDIRECT_KEY = 'wavemark:post-auth-redirect';
@@ -18,6 +18,16 @@ export default function SessionGateScreen() {
         router.replace('/(auth)/welcome');
         return;
       }
+      const hasSeenOnboarding = await getHasSeenOnboarding();
+      if (cancelled) return;
+      if (!hasSeenOnboarding) {
+        try {
+          await AsyncStorage.removeItem(POST_AUTH_REDIRECT_KEY);
+        } catch {}
+        if (cancelled) return;
+        router.replace('/onboarding');
+        return;
+      }
       try {
         const redirect = await AsyncStorage.getItem(POST_AUTH_REDIRECT_KEY);
         if (cancelled) return;
@@ -28,10 +38,7 @@ export default function SessionGateScreen() {
           return;
         }
       } catch {}
-      const seen = await hasSeenFirstLogin(session.user.id);
-      if (cancelled) return;
-      if (!seen) router.replace('/(onboarding)/welcome');
-      else router.replace('/(tabs)');
+      router.replace('/(tabs)');
     })();
     return () => { cancelled = true; };
   }, [loading, session]);

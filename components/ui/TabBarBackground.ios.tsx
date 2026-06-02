@@ -9,19 +9,20 @@ export default function BlurTabBarBackground() {
   const isDark = themeByName[themeName]?.isDark ?? false;
 
   return (
-    <View style={StyleSheet.absoluteFill}>
-      <View style={[StyleSheet.absoluteFill, { backgroundColor: colors.bg.primary }]} />
+    <View style={[StyleSheet.absoluteFill, styles.clip]}>
       <BlurView
         tint={isDark ? 'dark' : 'light'}
-        intensity={80}
+        intensity={isDark ? 74 : 64}
         style={StyleSheet.absoluteFill}
       />
       <View
         style={[
           StyleSheet.absoluteFill,
-          { backgroundColor: colors.blend.bottom, opacity: isDark ? 0.5 : 0.2 },
+          { backgroundColor: colors.bg.secondary, opacity: isDark ? 0.38 : 0.42 },
         ]}
       />
+      <View style={[StyleSheet.absoluteFill, { backgroundColor: colors.blend.bottom, opacity: isDark ? 0.16 : 0.06 }]} />
+      <View style={[StyleSheet.absoluteFill, { borderWidth: 1, borderColor: colors.overlay.softLight, borderRadius: 999 }]} />
     </View>
   );
 }
@@ -29,3 +30,10 @@ export default function BlurTabBarBackground() {
 export function useBottomTabOverflow() {
   return useBottomTabBarHeight();
 }
+
+const styles = StyleSheet.create({
+  clip: {
+    borderRadius: 999,
+    overflow: 'hidden',
+  },
+});
