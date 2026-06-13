@@ -5,7 +5,7 @@ import Screen from '../../components/StackScreen';
 import { emit } from '../../lib/events';
 import { backfillArtworkMissing, bulkRefreshAppleLinks } from '../../lib/listen';
 import { getMarketOverride, initMarketOverride, setMarketOverride } from '../../lib/market';
-import { getMarket as getDeviceMarket, spotifyLookup } from '../../lib/spotify';
+import { spotifyLookup } from '../../lib/spotify';
 import { supabase } from '../../lib/supabase';
 import { getAdvancedRatingsEnabled, setAdvancedRatingsEnabled } from '../../lib/user';
 import { isHapticsEnabled, setHapticsEnabled } from '../../components/haptics';
@@ -293,37 +293,8 @@ export default function ProfileSettingsPage() {
                 const { data: auth } = await supabase.auth.getUser();
                 const user = auth?.user;
                 if (!user) throw new Error('Not signed in');
-                const { data: rows } = await supabase
-                  .from('listen_list')
-                  .select('id,item_type,title,artist_name,apple_url,apple_id,provider_id,release_date')
-                  .eq('user_id', user.id);
-                const targets = (rows || []).filter(r => !r.apple_url || !/https:\/\/music\.apple\.com\//.test(r.apple_url));
-                let fixed = 0;
-                const cc = (getDeviceMarket() || 'US').toUpperCase();
-                const ccLower = cc.toLowerCase();
-                const norm = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,' ').trim();
-                for (const r of targets) {
-                  try {
-                    let url: string | null = null;
-                    const term = encodeURIComponent([r.title, r.artist_name].filter(Boolean).join(' '));
-                    const entity = r.item_type === 'track' ? 'musicTrack' : 'album';
-                    const searchRes = await fetch(`https://itunes.apple.com/search?term=${term}&country=${cc}&entity=${entity}&limit=8`).then(x => x.ok ? x.json() : null).catch(() => null) as any;
-                    const picks = Array.isArray(searchRes?.results) ? searchRes.results : [];
-                    const wantTitle = norm(r.title);
-                    const match = picks.find((p: any) => norm(r.item_type==='track'?p.trackName:p.collectionName) === wantTitle);
-                    if (match) {
-                      const albumId = match.collectionId ? String(match.collectionId) : null;
-                      const trackId = match.trackId ? String(match.trackId) : null;
-                      if (r.item_type === 'track' && albumId && trackId) url = `https://music.apple.com/${ccLower}/album/${albumId}?i=${trackId}`;
-                      else if (albumId) url = `https://music.apple.com/${ccLower}/album/${albumId}`;
-                    }
-                    if (url) {
-                      await supabase.from('listen_list').update({ apple_url: url }).eq('id', r.id);
-                      fixed++;
-                    }
-                  } catch {}
-                }
-                setRepairCount(fixed);
+                const res = await bulkRefreshAppleLinks(150);
+                setRepairCount(res.updated);
                 setRepairDone(true);
               } catch (e:any) {
                 Alert.alert('Repair failed', String(e?.message || e));

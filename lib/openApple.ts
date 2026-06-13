@@ -21,6 +21,7 @@ async function safeOpen(url: string): Promise<boolean> {
 
 export async function openInApple(opts: {
   rowId?: string; // listen_list.id for caching/persisting
+  appleUrl?: string | null;
   appleTrackId?: string | null;
   appleAlbumId?: string | null;
   isrc?: string | null;
@@ -35,6 +36,22 @@ export async function openInApple(opts: {
     debug('cache:hit', cached);
     return await safeOpen(cached);
   }
+  const remember = async (url: string) => {
+    if (key) {
+      memCache.set(key, url);
+      try { await supabase.from('listen_list').update({ apple_url: url }).eq('id', key); } catch {}
+    }
+  };
+
+  const storedUrl = opts.appleUrl?.trim();
+  if (storedUrl) {
+    debug('storedUrl:try', storedUrl);
+    if (await safeOpen(storedUrl)) {
+      await remember(storedUrl);
+      return true;
+    }
+  }
+
   const resolved = await resolveAppleUrl({
     appleTrackId: opts.appleTrackId ?? undefined,
     appleAlbumId: opts.appleAlbumId ?? undefined,
@@ -144,11 +161,27 @@ export async function openInApple(opts: {
 
   for (const v of variants) {
     if (await safeOpen(v)) {
-      if (key) {
-        memCache.set(key, v);
-        try { await supabase.from('listen_list').update({ apple_url: v }).eq('id', key); } catch {}
-      }
+      await remember(v);
       return true;
+    }
+  }
+
+  if (opts.title) {
+    try {
+      const { data } = await supabase.functions.invoke('apple-resolve', {
+        body: {
+          type: opts.itemType === 'album' ? 'album' : 'track',
+          title: opts.title,
+          artist: opts.artist ?? undefined,
+        },
+      });
+      const resolvedUrl = typeof data?.url === 'string' ? data.url : null;
+      if (resolvedUrl && await safeOpen(resolvedUrl)) {
+        await remember(resolvedUrl);
+        return true;
+      }
+    } catch (e) {
+      debug('edgeResolve:fail', { error: (e as any)?.message ?? String(e) });
     }
   }
 
