@@ -37,7 +37,7 @@ export type ThemeColors = {
   };
 };
 
-export type ThemeName = 'dawn' | 'grove' | 'harbor' | 'noir';
+export type ThemeName = 'dark';
 
 export type ThemeDefinition = {
   name: ThemeName;
@@ -47,143 +47,17 @@ export type ThemeDefinition = {
   colors: ThemeColors;
 };
 
+const accent = {
+  primary: '#6847dc',
+  subtle: '#8975c2',
+  success: '#26a269',
+};
+
 export const themeList: ThemeDefinition[] = [
   {
-    name: 'dawn',
-    label: 'Citrine',
-    description: 'Soft citrine with midnight ink.',
-    isDark: false,
-    colors: {
-      bg: {
-        primary: '#ead98f',
-        secondary: '#fff6d2',
-        muted: '#dcc770',
-        elevated: '#1a1a22',
-      },
-      blend: {
-        top: '#fff8de',
-        mid: '#dfca79',
-        bottom: '#46375f',
-        glow: '#7b65c7',
-      },
-      text: {
-        primary: '#1a1a22',
-        secondary: '#242632',
-        muted: '#4b5563',
-        subtle: '#f9f3d1',
-        inverted: '#ffffff',
-      },
-      accent: {
-        primary: '#3e2f86',
-        subtle: '#857746',
-        success: '#0b7a4b',
-      },
-      border: {
-        subtle: '#d5c071',
-        strong: '#1a1a22',
-        muted: '#c5b36d',
-      },
-      overlay: {
-        dim: 'rgba(0,0,0,0.4)',
-        softLight: 'rgba(255,255,255,0.12)',
-      },
-      shadow: {
-        light: 'rgba(26,26,34,0.14)',
-      },
-    },
-  },
-  {
-    name: 'grove',
-    label: 'Sage',
-    description: 'Smoky sage with deep moss.',
-    isDark: false,
-    colors: {
-      bg: {
-        primary: '#9fb49f',
-        secondary: '#dde8d9',
-        muted: '#bdcdb7',
-        elevated: '#1c2a24',
-      },
-      blend: {
-        top: '#dbe8d3',
-        mid: '#9fb39d',
-        bottom: '#263b34',
-        glow: '#4c8068',
-      },
-      text: {
-        primary: '#1c2a24',
-        secondary: '#22332c',
-        muted: '#4c5b55',
-        subtle: '#e8f0e2',
-        inverted: '#f9fff4',
-      },
-      accent: {
-        primary: '#1f725f',
-        subtle: '#7c988b',
-        success: '#2d8a3a',
-      },
-      border: {
-        subtle: '#bfceb8',
-        strong: '#1c2a24',
-        muted: '#adbea8',
-      },
-      overlay: {
-        dim: 'rgba(0,0,0,0.4)',
-        softLight: 'rgba(255,255,255,0.12)',
-      },
-      shadow: {
-        light: 'rgba(28,42,36,0.2)',
-      },
-    },
-  },
-  {
-    name: 'harbor',
-    label: 'Violet',
-    description: 'Soft violet with velvet depth.',
-    isDark: false,
-    colors: {
-      bg: {
-        primary: '#aa91e6',
-        secondary: '#e8ddff',
-        muted: '#c8b6ef',
-        elevated: '#271b4a',
-      },
-      blend: {
-        top: '#ede4ff',
-        mid: '#aa8fe8',
-        bottom: '#33265f',
-        glow: '#7557dd',
-      },
-      text: {
-        primary: '#271b4a',
-        secondary: '#2e2158',
-        muted: '#54428c',
-        subtle: '#efe6ff',
-        inverted: '#ffffff',
-      },
-      accent: {
-        primary: '#6847dc',
-        subtle: '#8975c2',
-        success: '#26a269',
-      },
-      border: {
-        subtle: '#c3b1ea',
-        strong: '#271b4a',
-        muted: '#b3a1df',
-      },
-      overlay: {
-        dim: 'rgba(0,0,0,0.4)',
-        softLight: 'rgba(255,255,255,0.12)',
-      },
-      shadow: {
-        light: 'rgba(39,27,74,0.2)',
-      },
-    },
-  },
-  {
-    name: 'noir',
-    label: 'Noir',
-    description: 'Ink black with hot accents.',
+    name: 'dark',
+    label: 'Dark',
+    description: 'Deep mode.',
     isDark: true,
     colors: {
       bg: {
@@ -196,7 +70,7 @@ export const themeList: ThemeDefinition[] = [
         top: '#202331',
         mid: '#151823',
         bottom: '#0d0e13',
-        glow: '#432736',
+        glow: '#2f244d',
       },
       text: {
         primary: '#f8fafc',
@@ -205,11 +79,7 @@ export const themeList: ThemeDefinition[] = [
         subtle: '#cbd5e1',
         inverted: '#ffffff',
       },
-      accent: {
-        primary: '#f43f5e',
-        subtle: '#475569',
-        success: '#22c55e',
-      },
+      accent,
       border: {
         subtle: '#293040',
         strong: '#3f485c',

@@ -140,14 +140,12 @@ export async function artistAlbums(artistId: string, market = 'GB'): Promise<Art
     };
   });
 
-  const effectiveMarket = market === 'from_token' ? (hasToken ? 'from_token' : 'GB') : (market || 'GB');
+  const useTokenMarket = market === 'from_token' && hasToken;
+  const effectiveMarket = market === 'from_token' ? 'GB' : (market || 'GB');
 
   // Try direct Spotify API if a token is available, otherwise fall back to Supabase function
-  const params = new URLSearchParams({
-    include_groups: 'album,single,appears_on',
-    market: effectiveMarket,
-    limit: '50',
-  });
+  const params = new URLSearchParams({ include_groups: 'album,single,appears_on', limit: '50' });
+  if (!useTokenMarket) params.set('market', effectiveMarket);
   const directUrl = `https://api.spotify.com/v1/artists/${artistId}/albums?${params.toString()}`;
 
   if (hasToken) {

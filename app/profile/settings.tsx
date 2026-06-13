@@ -1,19 +1,18 @@
 import React, { useEffect, useState } from 'react';
+import { router } from 'expo-router';
 import { ActivityIndicator, Alert, Pressable, ScrollView, Switch, Text, TextInput, View } from 'react-native';
 import Screen from '../../components/StackScreen';
 import { emit } from '../../lib/events';
-import { bulkRefreshAppleLinks } from '../../lib/listen';
+import { backfillArtworkMissing, bulkRefreshAppleLinks } from '../../lib/listen';
 import { getMarketOverride, initMarketOverride, setMarketOverride } from '../../lib/market';
 import { getMarket as getDeviceMarket, spotifyLookup } from '../../lib/spotify';
 import { supabase } from '../../lib/supabase';
 import { getAdvancedRatingsEnabled, setAdvancedRatingsEnabled } from '../../lib/user';
 import { isHapticsEnabled, setHapticsEnabled } from '../../components/haptics';
-import { themeList } from '../../theme/themes';
 import { useTheme } from '../../theme/useTheme';
-import { backfillArtworkMissing } from '../../lib/listen';
 
 export default function ProfileSettingsPage() {
-  const { colors, themeName, setThemeName } = useTheme();
+  const { colors } = useTheme();
   const [market, setMarket] = useState<string>('');
   const [saved, setSaved] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
@@ -80,7 +79,11 @@ export default function ProfileSettingsPage() {
           try {
             setSigningOut(true);
             const { error } = await supabase.auth.signOut();
-            if (error) Alert.alert('Sign out failed', error.message);
+            if (error) {
+              Alert.alert('Sign out failed', error.message);
+              return;
+            }
+            router.replace('/session');
           } finally {
             setSigningOut(false);
           }
@@ -94,48 +97,6 @@ export default function ProfileSettingsPage() {
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 28 }}>
         <Text style={{ fontSize: 22, fontWeight: '700', marginBottom: 8, color: colors.text.secondary }}>Settings</Text>
         <Text style={{ color: colors.text.muted, marginBottom: 18 }}>Personalize how results are fetched.</Text>
-
-      <View style={{ marginBottom: 20 }}>
-        <Text style={{ fontWeight: '700', marginBottom: 6, color: colors.text.secondary }}>Appearance</Text>
-        <Text style={{ color: colors.text.muted, marginBottom: 10 }}>Pick a color mood for the app.</Text>
-        <View style={{ gap: 10 }}>
-          {themeList.map((theme) => {
-            const active = theme.name === themeName;
-            return (
-              <Pressable
-                key={theme.name}
-                onPress={() => { if (!active) setThemeName(theme.name); }}
-                style={{
-                  padding: 12,
-                  borderRadius: 14,
-                  backgroundColor: colors.bg.secondary,
-                  borderWidth: 1,
-                  borderColor: active ? colors.accent.primary : colors.border.subtle,
-                }}
-              >
-                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ fontWeight: '700', color: colors.text.secondary }}>{theme.label}</Text>
-                    <Text style={{ color: colors.text.muted, marginTop: 2 }}>{theme.description}</Text>
-                  </View>
-                  <View style={{ alignItems: 'flex-end', gap: 6 }}>
-                    <View style={{ flexDirection: 'row', gap: 6 }}>
-                      <View style={{ width: 16, height: 16, borderRadius: 8, backgroundColor: theme.colors.blend.top, borderWidth: 1, borderColor: theme.colors.border.subtle }} />
-                      <View style={{ width: 16, height: 16, borderRadius: 8, backgroundColor: theme.colors.blend.mid, borderWidth: 1, borderColor: theme.colors.border.subtle }} />
-                      <View style={{ width: 16, height: 16, borderRadius: 8, backgroundColor: theme.colors.bg.primary, borderWidth: 1, borderColor: theme.colors.border.subtle }} />
-                      <View style={{ width: 16, height: 16, borderRadius: 8, backgroundColor: theme.colors.accent.primary }} />
-                      <View style={{ width: 16, height: 16, borderRadius: 8, backgroundColor: theme.colors.bg.elevated }} />
-                    </View>
-                    <Text style={{ fontSize: 11, fontWeight: '700', color: active ? colors.accent.primary : colors.text.muted }}>
-                      {active ? 'Active' : 'Tap to apply'}
-                    </Text>
-                  </View>
-                </View>
-              </Pressable>
-            );
-          })}
-        </View>
-      </View>
 
       <View style={{ marginBottom: 16 }}>
         <Text style={{ fontWeight: '700', marginBottom: 6, color: colors.text.secondary }}>Market override</Text>

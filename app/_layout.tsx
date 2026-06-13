@@ -24,7 +24,7 @@ function AuthSync() {
     let cancelled = false;
     (async () => {
       const root = segments[0];
-      const isProtectedRoot = root === '(tabs)' || root === 'onboarding';
+      const isProtectedRoot = root === '(tabs)' || root === 'onboarding' || root === 'profile';
 
       if (root === 'session') {
         setCheckingAccess(false);

@@ -5,16 +5,22 @@ import { themes, type ThemeName } from './themes';
 const THEME_KEY = 'prefs_theme_v1';
 const THEME_EVENT = 'prefs:theme';
 
-let currentTheme: ThemeName = 'dawn';
+let currentTheme: ThemeName = 'dark';
 let initPromise: Promise<void> | null = null;
+
+function normalizeThemeName(_value: string | null): ThemeName {
+  return 'dark';
+}
 
 export async function initTheme() {
   if (!initPromise) {
     initPromise = (async () => {
       try {
         const stored = await AsyncStorage.getItem(THEME_KEY);
-        if (stored && stored in themes) {
-          currentTheme = stored as ThemeName;
+        const normalized = normalizeThemeName(stored);
+        currentTheme = normalized;
+        if (stored !== normalized) {
+          await AsyncStorage.setItem(THEME_KEY, normalized);
         }
       } catch {
         // ignore storage failures
@@ -43,6 +49,9 @@ export async function setThemeName(name: ThemeName) {
 }
 
 export function subscribeTheme(handler: (name: ThemeName) => void) {
-  on(THEME_EVENT, handler);
-  return () => off(THEME_EVENT, handler);
+  const eventHandler = (name?: ThemeName) => {
+    handler(name ?? currentTheme);
+  };
+  on(THEME_EVENT, eventHandler);
+  return () => off(THEME_EVENT, eventHandler);
 }

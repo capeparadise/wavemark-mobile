@@ -1,11 +1,12 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { BlurView } from 'expo-blur';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { router } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Animated, AppState, Dimensions, FlatList, Image, Pressable, ScrollView, SectionList, Text, TextInput, View, Modal } from 'react-native';
+import { ActivityIndicator, Alert, Animated, AppState, Dimensions, FlatList, Image, Keyboard, Pressable, ScrollView, SectionList, Text, TextInput, View, Modal } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import FollowButton from '../../components/FollowButton';
 import { H } from '../../components/haptics';
-import BrandLogo from '../../components/BrandLogo';
 import Screen from '../../components/Screen';
 import StatusMenu from '../../components/StatusMenu';
 import GlassCard from '../../components/GlassCard';
@@ -33,6 +34,8 @@ type Row = { kind: 'section-title'; title: string }
   | { kind: 'search'; r: SpotifyResult };
 type DebugFetchResult = { url: string; status: number; build: string | null; body: string; ok: boolean };
 type SectionStatus = 'loading' | 'success' | 'empty' | 'error';
+type FollowedUpdateArtist = { id: string; name: string; imageUrl?: string | null; latestId?: string; latestDate?: string | null };
+type FollowedArtistDetails = Record<string, { name: string; imageUrl?: string | null }>;
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 type DiscoverViewMode = 'mixed' | 'pills';
@@ -42,6 +45,9 @@ const DISCOVER_GENRE_DAYS = 30;
 const DISCOVER_TOP_PICKS_DAYS = 30;
 const UPDATES_DAYS = 14;
 const YOUR_UPDATES_CAP = 20;
+const DISCOVER_HEADER_HEIGHT = 76;
+const UPDATES_DEEP_REFRESH_TTL_MS = 15 * 60 * 1000;
+const UPDATES_SCAN_BATCH_SIZE = 3;
 
 function spotifyKey(id?: string | null, spotifyUrl?: string | null) {
   const parse = (v?: string | null) => {
@@ -75,6 +81,13 @@ function discoverDateTimestamp(value?: string | null, precision?: string | null)
 
 function isWithinDiscoverWindow(value: string | null | undefined, cutoffTs: number, precision?: string | null): boolean {
   return discoverDateTimestamp(value, precision) >= cutoffTs;
+}
+
+function discoverWindowCutoff(days: number) {
+  const date = new Date();
+  date.setHours(0, 0, 0, 0);
+  date.setDate(date.getDate() - days);
+  return date.getTime();
 }
 
 function normalizeArtistIdentity(value?: string | null): string | null {
@@ -113,11 +126,15 @@ type DiscoverLoad = (opts?: { preserveExisting?: boolean }) => Promise<void>;
 
 export default function DiscoverTab() {
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
   const accentSoft = colors.accent.primary + '1a';
   const successSoft = colors.accent.success + '1a';
   const navigation = useNavigation();
   const [viewMode, setViewMode] = useState<DiscoverViewMode>('mixed');
   const viewAnim = useRef(new Animated.Value(1)).current;
+  const headerAnim = useRef(new Animated.Value(1)).current;
+  const headerVisibleRef = useRef(true);
+  const lastScrollYRef = useRef(0);
   const [q, setQ] = useState('');
   const [busy, setBusy] = useState(false);
   const [searchRows, setSearchRows] = useState<SpotifyResult[]>([]);
@@ -143,6 +160,7 @@ export default function DiscoverTab() {
   const [pickedLoading, setPickedLoading] = useState(false);
   const [forYouItems, setForYouItems] = useState<Array<{ id: string; name: string; imageUrl?: string | null; latestId?: string; latestDate?: string | null }>>([]);
   const [forYouLoading, setForYouLoading] = useState<boolean>(true);
+  const [followedArtistRows, setFollowedArtistRows] = useState<FollowedUpdateArtist[]>([]);
   const [yourUpdatesReleases, setYourUpdatesReleases] = useState<Array<{ id: string; title: string; artist: string; artistId?: string | null; releaseDate?: string | null; spotifyUrl?: string | null; imageUrl?: string | null; type?: 'album' | 'single' | 'ep' }>>([]);
   const [expandedUpdateArtists, setExpandedUpdateArtists] = useState<Set<string>>(new Set());
   const [topPicksLoading, setTopPicksLoading] = useState<boolean>(true);
@@ -168,7 +186,7 @@ export default function DiscoverTab() {
   // Listen state map (by spotify_id/provider_id) to surface rating/done status
   const [listenStatus, setListenStatus] = useState<Record<string, { rating?: number | null; done?: boolean; details?: any }>>({});
   // Clean-bubble data: details (name/photo) and latest recent release per followed artist
-  const [followedDetails, setFollowedDetails] = useState<Record<string, { name: string; imageUrl?: string | null }>>({});
+  const [followedDetails, setFollowedDetails] = useState<FollowedArtistDetails>({});
   const [recentByArtist, setRecentByArtist] = useState<Record<string, { latestId?: string; latestDate?: string | null }>>({});
   // Cache for artist profile images used in the "picked for you" lane
   const [artistImageMap, setArtistImageMap] = useState<Record<string, string>>({});
@@ -177,6 +195,9 @@ export default function DiscoverTab() {
   const [menuRow, setMenuRow] = useState<any | null>(null);
   const lastFetchRef = useRef<number>(0);
   const artistImageMapRef = useRef<Record<string, string>>({});
+  const updatesLastDeepScanAtRef = useRef<number>(0);
+  const forYouItemsRef = useRef<typeof forYouItems>([]);
+  const yourUpdatesReleasesRef = useRef<typeof yourUpdatesReleases>([]);
   const loggedLoadCycleRef = useRef<number>(0);
   const { offline } = useOffline();
   const debugSetNewReleases = useCallback(
@@ -228,6 +249,14 @@ export default function DiscoverTab() {
   }, [artistImageMap]);
 
   useEffect(() => {
+    forYouItemsRef.current = forYouItems;
+  }, [forYouItems]);
+
+  useEffect(() => {
+    yourUpdatesReleasesRef.current = yourUpdatesReleases;
+  }, [yourUpdatesReleases]);
+
+  useEffect(() => {
     let mounted = true;
     (async () => {
       try {
@@ -256,6 +285,30 @@ export default function DiscoverTab() {
     animateViewTransition();
     AsyncStorage.setItem(DISCOVER_VIEW_MODE_KEY, next).catch(() => {});
   }, [animateViewTransition, viewMode]);
+
+  const setHeaderVisible = useCallback((visible: boolean) => {
+    if (headerVisibleRef.current === visible) return;
+    headerVisibleRef.current = visible;
+    Animated.timing(headerAnim, {
+      toValue: visible ? 1 : 0,
+      duration: visible ? 180 : 140,
+      useNativeDriver: true,
+    }).start();
+  }, [headerAnim]);
+
+  const handleDiscoverScroll = useCallback((event: any) => {
+    const y = Math.max(0, event?.nativeEvent?.contentOffset?.y ?? 0);
+    const lastY = lastScrollYRef.current;
+    const delta = y - lastY;
+    lastScrollYRef.current = y;
+
+    if (y < 8) {
+      setHeaderVisible(true);
+      return;
+    }
+    if (delta > 4) setHeaderVisible(false);
+    else if (delta < -3) setHeaderVisible(true);
+  }, [setHeaderVisible]);
 
   const formatDebugBody = useCallback((text: string) => {
     try {
@@ -419,16 +472,32 @@ export default function DiscoverTab() {
 
   const yourUpdatesLoading = pickedLoading || forYouLoading;
   const freshYourUpdatesReleases = useMemo(() => {
-    const cutoffTs = Date.now() - UPDATES_DAYS * 24 * 60 * 60 * 1000;
+    const cutoffTs = discoverWindowCutoff(UPDATES_DAYS);
     return yourUpdatesReleases.filter((item) => isWithinDiscoverWindow(item.releaseDate ?? null, cutoffTs));
   }, [yourUpdatesReleases]);
-  const followedArtists = useMemo<Array<{ id: string; name: string; imageUrl?: string | null; latestId?: string; latestDate?: string | null }>>(() => {
+  const followedArtists = useMemo<FollowedUpdateArtist[]>(() => {
+    const cutoffTs = discoverWindowCutoff(UPDATES_DAYS);
     const fallbackByArtistId = new Map(forYouItems.map((artist) => [artist.id, artist]));
     const uniq = new Map<string, { id: string; name: string; imageUrl?: string | null; latestId?: string; latestDate?: string | null }>();
+    const addRecentArtist = (artist: FollowedUpdateArtist) => {
+      if (!artist.id || uniq.has(artist.id)) return;
+      const detail = followedDetails[artist.id];
+      const fallback = fallbackByArtistId.get(artist.id);
+      const latestDate = artist.latestDate ?? fallback?.latestDate ?? null;
+      if (!isWithinDiscoverWindow(latestDate, cutoffTs)) return;
+      uniq.set(artist.id, {
+        id: artist.id,
+        name: detail?.name || artist.name || fallback?.name || 'Unknown',
+        imageUrl: detail?.imageUrl ?? artist.imageUrl ?? fallback?.imageUrl ?? null,
+        latestId: artist.latestId ?? fallback?.latestId,
+        latestDate,
+      });
+    };
+    forYouItems.forEach(addRecentArtist);
+    followedArtistRows.forEach(addRecentArtist);
     freshYourUpdatesReleases.forEach((item) => {
       const artistId = item.artistId ?? null;
       if (!artistId || !/^[A-Za-z0-9]{22}$/.test(String(artistId))) return;
-      if (uniq.has(artistId)) return;
       const detail = followedDetails[artistId];
       const fallback = fallbackByArtistId.get(artistId);
       uniq.set(artistId, {
@@ -440,7 +509,7 @@ export default function DiscoverTab() {
       });
     });
     return Array.from(uniq.values());
-  }, [followedDetails, forYouItems, freshYourUpdatesReleases]);
+  }, [followedArtistRows, followedDetails, forYouItems, freshYourUpdatesReleases]);
   const yourUpdatesVisible = useMemo(
     () => freshYourUpdatesReleases.slice(0, YOUR_UPDATES_CAP),
     [freshYourUpdatesReleases]
@@ -926,6 +995,42 @@ export default function DiscoverTab() {
     } catch {}
   }, []);
 
+  const hydrateFollowedArtistImages = useCallback(async (
+    items: FollowedUpdateArtist[],
+    existingDetails: FollowedArtistDetails = {}
+  ): Promise<FollowedArtistDetails> => {
+    const details: FollowedArtistDetails = { ...existingDetails };
+    const imageUpdates: Record<string, string> = {};
+
+    for (const item of items.filter((it) => it.id && !it.imageUrl).slice(0, 12)) {
+      const cached = artistImageMapRef.current[item.id];
+      if (cached) {
+        item.imageUrl = cached;
+        details[item.id] = { name: item.name || details[item.id]?.name || 'Unknown', imageUrl: cached };
+        continue;
+      }
+
+      try {
+        const detail = await fetchArtistDetails(item.id);
+        const url = detail?.imageUrl ?? null;
+        if (!url) {
+          details[item.id] = { name: detail?.name || item.name || details[item.id]?.name || 'Unknown', imageUrl: null };
+          continue;
+        }
+
+        if (detail?.name) item.name = detail.name;
+        item.imageUrl = url;
+        details[item.id] = { name: detail?.name || item.name || 'Unknown', imageUrl: url };
+        imageUpdates[item.id] = url;
+      } catch {
+        details[item.id] = { name: item.name || details[item.id]?.name || 'Unknown', imageUrl: null };
+      }
+    }
+
+    await cacheArtistImagesV2(imageUpdates);
+    return details;
+  }, [cacheArtistImagesV2]);
+
   // Load persistent cache (24h TTL)
   useEffect(() => {
     (async () => {
@@ -1017,7 +1122,7 @@ export default function DiscoverTab() {
     const cycleId = Date.now();
     lastFetchRef.current = cycleId;
     setLoadCycleId(cycleId);
-    setTopPicksLoading(true);
+    if (!preserveExisting) setTopPicksLoading(true);
     setTopPicksError(null);
     setYourUpdatesError(null);
     try {
@@ -1122,20 +1227,30 @@ export default function DiscoverTab() {
 
       // Build clean bubbles from followed artists only
       try {
-        setPickedLoading(true);
-        setForYouLoading(true);
+        if (!preserveExisting) {
+          setPickedLoading(true);
+          setForYouLoading(true);
+        }
         const followed = await listFollowedArtists();
         if (!followed || followed.length === 0) {
           setFollowedDetails({});
           setRecentByArtist({});
           setForYouItems([]);
+          setFollowedArtistRows([]);
           setYourUpdatesReleases([]);
         } else {
-          setForYouItems([]);
-          setRecentByArtist({});
-          setYourUpdatesReleases([]);
+          setFollowedArtistRows(followed.map((artist) => ({
+            id: artist.id,
+            name: artist.name || 'Unknown',
+            imageUrl: null,
+          })));
+          if (!preserveExisting) {
+            setForYouItems([]);
+            setRecentByArtist({});
+            setYourUpdatesReleases([]);
+          }
           const market = getMarket();
-          const cutoffTs = Date.now() - UPDATES_DAYS * 24 * 60 * 60 * 1000;
+          const cutoffTs = discoverWindowCutoff(UPDATES_DAYS);
           if (__DEV__) {
             const sample = followed.slice(0, 3).map((f) => ({ id: f.id, name: f.name }));
             console.log('[updates] followed loaded', { count: followed.length, sample, cutoff: new Date(cutoffTs).toISOString().slice(0, 10) });
@@ -1208,10 +1323,15 @@ export default function DiscoverTab() {
 
           // Prefer the server-side feed (triggered on follow) to avoid hammering Spotify from the client.
           const followedIds = new Set(followed.map((f) => f.id));
-          const followedNames = new Set(followed.map((f) => (f.name || '').toLowerCase().trim()));
           const followedNameById = new Map<string, string>(followed.map((f) => [f.id, f.name]));
+          const followedIdByName = new Map<string, string>(followed.map((f) => [(f.name || '').toLowerCase().trim(), f.id]));
           const validFollowedIds = Array.from(followedIds).filter((id) => /^[A-Za-z0-9]{22}$/.test(id));
+          let seedYourUpdatesReleases: Array<{ id: string; title: string; artist: string; artistId?: string | null; releaseDate?: string | null; spotifyUrl?: string | null; imageUrl?: string | null; type?: 'album' | 'single' | 'ep' }> = [];
+          let seedFollowedItems: FollowedUpdateArtist[] = [];
           let builtFromFeed = false;
+          const hasVisibleUpdates = forYouItemsRef.current.length > 0 || yourUpdatesReleasesRef.current.length > 0;
+          const deepScanFresh = (Date.now() - updatesLastDeepScanAtRef.current) < UPDATES_DEEP_REFRESH_TTL_MS;
+          const skipDeepUpdateScan = preserveExisting && hasVisibleUpdates && deepScanFresh;
 
           try {
             const feed = await fetchFeedForArtists({ artistIds: validFollowedIds, limit: 250 });
@@ -1288,17 +1408,110 @@ export default function DiscoverTab() {
               }
               await cacheArtistImagesV2(imgUpdates);
 
+              seedYourUpdatesReleases = releases.slice(0, 60);
+              seedFollowedItems = items;
+              Object.assign(details, detObj);
               setFollowedDetails(detObj);
               setRecentByArtist(recObj);
               setForYouItems(items);
+              setFollowedArtistRows((prev) => prev.map((artist) => {
+                const update = items.find((item) => item.id === artist.id);
+                return update ? { ...artist, ...update } : artist;
+              }));
               cacheForYou(items, FOR_YOU_UPDATES_CACHE_KEY);
               if (__DEV__) console.log('[updates] recents built (feed)', { total: items.length, releases: releases.length, cutoff: new Date(cutoffTs).toISOString().slice(0, 10) });
               builtFromFeed = true;
             }
           } catch {}
 
-          if (builtFromFeed) {
-            // Data is set; continue so listen status + loading flags update normally.
+          if (!builtFromFeed && validFollowedIds.length && !skipDeepUpdateScan) {
+            try {
+              const refreshIds = validFollowedIds;
+              for (let index = 0; index < refreshIds.length; index += UPDATES_SCAN_BATCH_SIZE) {
+                const batch = refreshIds.slice(index, index + UPDATES_SCAN_BATCH_SIZE);
+                await Promise.all(batch.map((artistId) => (
+                  fetchFn(`${FN}/check-new-releases?` + new URLSearchParams({ artistId, market })).catch(() => null)
+                )));
+              }
+              const feed = await fetchFeedForArtists({ artistIds: validFollowedIds, limit: 250 });
+              const recentFeed = (feed || []).filter((it) => (
+                followedIds.has(it.artist_id) &&
+                isWithinDiscoverWindow(it.release_date ?? null, cutoffTs)
+              ));
+              if (recentFeed.length) {
+                const releases: Array<{ id: string; title: string; artist: string; artistId?: string | null; releaseDate?: string | null; spotifyUrl?: string | null; imageUrl?: string | null; type?: 'album' | 'single' | 'ep' }> = [];
+                const seenRelease = new Set<string>();
+                const byArtist = new Map<string, { artistId: string; artistName: string; latestId: string; latestDate: string | null }>();
+                const toType = (t?: string | null): 'album' | 'single' | 'ep' | undefined => {
+                  const x = (t || '').toLowerCase();
+                  if (x === 'single') return 'single';
+                  if (x === 'album' || x === 'compilation') return 'album';
+                  return undefined;
+                };
+                for (const it of recentFeed) {
+                  const sid = spotifyKey(null, it.spotify_url ?? null) || it.provider_id || it.spotify_id || it.id;
+                  if (!sid) continue;
+                  const relKey = it.spotify_url || sid;
+                  if (seenRelease.has(relKey)) continue;
+                  seenRelease.add(relKey);
+                  const artistId = it.artist_id;
+                  const artistName = it.artist_name || followedNameById.get(artistId) || 'Unknown';
+                  releases.push({
+                    id: sid,
+                    title: it.title,
+                    artist: artistName,
+                    artistId,
+                    releaseDate: it.release_date ?? null,
+                    spotifyUrl: it.spotify_url ?? null,
+                    imageUrl: it.image_url ?? it.artwork_url ?? null,
+                    type: toType((it as any).release_type ?? (it as any).item_type ?? null),
+                  });
+                  const prev = byArtist.get(artistId);
+                  const prevTs = prev?.latestDate ? discoverDateTimestamp(prev.latestDate) : 0;
+                  const ts = discoverDateTimestamp(it.release_date ?? null);
+                  if (!prev || ts > prevTs) byArtist.set(artistId, { artistId, artistName, latestId: sid, latestDate: it.release_date ?? null });
+                }
+                releases.sort((a, b) => discoverDateTimestamp(b.releaseDate ?? null) - discoverDateTimestamp(a.releaseDate ?? null));
+                setYourUpdatesReleases(releases.slice(0, 60));
+                const items: FollowedUpdateArtist[] = Array.from(byArtist.values()).map((v) => ({
+                  id: v.artistId,
+                  name: v.artistName,
+                  imageUrl: artistImageMapRef.current[v.artistId] ?? null,
+                  latestId: v.latestId,
+                  latestDate: v.latestDate,
+                }));
+                items.sort((a, b) => discoverDateTimestamp(b.latestDate ?? null) - discoverDateTimestamp(a.latestDate ?? null));
+                const detObj = await hydrateFollowedArtistImages(items, details);
+                const recObj: Record<string, { latestId?: string; latestDate?: string | null }> = {};
+                items.forEach((it) => {
+                  recObj[it.id] = { latestId: it.latestId, latestDate: it.latestDate ?? null };
+                });
+                seedYourUpdatesReleases = releases.slice(0, 60);
+                seedFollowedItems = items;
+                Object.assign(details, detObj);
+                setFollowedDetails(detObj);
+                setRecentByArtist(recObj);
+                setForYouItems(items);
+                setFollowedArtistRows((prev) => prev.map((artist) => {
+                  const update = items.find((item) => item.id === artist.id);
+                  return update ? { ...artist, ...update } : artist;
+                }));
+                cacheForYou(items, FOR_YOU_UPDATES_CACHE_KEY);
+                builtFromFeed = true;
+                if (__DEV__) console.log('[updates] recents built (feed refresh)', { total: items.length, releases: releases.length, cutoff: new Date(cutoffTs).toISOString().slice(0, 10) });
+              }
+            } catch {}
+          }
+
+          {
+          if (skipDeepUpdateScan) {
+            if (__DEV__) {
+              console.log('[updates] skipped deep scan', {
+                ageMs: Date.now() - updatesLastDeepScanAtRef.current,
+                visibleArtists: forYouItemsRef.current.length,
+                visibleReleases: yourUpdatesReleasesRef.current.length,
+              });
+            }
           } else {
           // Fast fallback: if we already have newReleases, pull followed-artist matches within window
           const primaryArtist = (r: any): { id?: string | null; name?: string | null } => {
@@ -1308,23 +1521,32 @@ export default function DiscoverTab() {
             }
             return { id: null, name: r.artist || r.artist_name || null };
           };
-          const fallbackFromNr = (newReleases || []).filter((r) => {
+          const followedArtistIdForRelease = (r: any): string | null => {
             const { id: aid, name: aname } = primaryArtist(r);
-            const idMatch = aid && followedIds.has(aid);
-            const nameMatch = aname && followedNames.has(String(aname).toLowerCase().trim());
-            if (!idMatch && !nameMatch) return false;
+            if (aid && followedIds.has(aid)) return aid;
+            const normalizedName = String(aname || '').toLowerCase().trim();
+            if (!normalizedName) return null;
+            const exact = followedIdByName.get(normalizedName);
+            if (exact) return exact;
+            const partial = Array.from(followedIdByName.entries()).find(([name]) => !!name && normalizedName.includes(name));
+            return partial?.[1] ?? null;
+          };
+          const fallbackFromNr = (nr || []).filter((r: any) => {
+            if (!followedArtistIdForRelease(r)) return false;
             if (!isWithinDiscoverWindow(r.releaseDate ?? r.release_date ?? null, cutoffTs)) return false;
             return true;
           });
-	          if (fallbackFromNr.length) {
+          const useGlobalNewReleaseFallbackForUpdates = false;
+	          if (useGlobalNewReleaseFallbackForUpdates && fallbackFromNr.length) {
 	            const releases = fallbackFromNr.slice(0, 60).map((r: any) => {
-	              const { id: aid, name: aname } = primaryArtist(r);
+	              const { name: aname } = primaryArtist(r);
+                const artistId = followedArtistIdForRelease(r);
 	              const sid = spotifyKey(r.id, r.spotifyUrl ?? null) || String(r.id || '');
 	              return {
                 id: sid,
                 title: r.title,
                 artist: r.artist || r.artist_name || aname || 'Unknown',
-                artistId: aid || null,
+                artistId,
                 releaseDate: r.releaseDate ?? r.release_date ?? null,
                 spotifyUrl: r.spotifyUrl ?? null,
                 imageUrl: r.imageUrl || r.image_url || null,
@@ -1332,36 +1554,48 @@ export default function DiscoverTab() {
               };
             }).filter((x: any) => !!x.id);
             setYourUpdatesReleases(releases);
-            const items = fallbackFromNr.slice(0, 12).map((r: any) => {
-              const aid = r.artistId || r.artist_id || (Array.isArray(r.artists) ? r.artists?.[0]?.id : null);
-              return {
-                id: aid || r.id,
-                name: r.artist || r.artist_name || details[aid]?.name || 'Unknown',
-                imageUrl: r.imageUrl || r.image_url || null,
+            const byArtist = new Map<string, FollowedUpdateArtist>();
+            fallbackFromNr.forEach((r: any) => {
+              const aid = followedArtistIdForRelease(r);
+              if (!aid) return;
+              const date = r.releaseDate ?? r.release_date ?? null;
+              const existing = byArtist.get(aid);
+              if (existing && discoverDateTimestamp(existing.latestDate ?? null) >= discoverDateTimestamp(date)) return;
+              byArtist.set(aid, {
+                id: aid,
+                name: r.artist || r.artist_name || details[aid]?.name || followedNameById.get(aid) || 'Unknown',
+                imageUrl: artistImageMapRef.current[aid] ?? null,
                 latestId: r.id,
-                latestDate: r.releaseDate ?? r.release_date ?? null,
-              };
+                latestDate: date,
+              });
             });
+            const items = Array.from(byArtist.values());
             items.sort((a,b) => {
               const ta = discoverDateTimestamp(a.latestDate ?? null);
               const tb = discoverDateTimestamp(b.latestDate ?? null);
               return tb - ta;
             });
             const recObj: Record<string, { latestId?: string; latestDate?: string | null }> = {};
-            const detObj: Record<string, { name: string; imageUrl?: string | null }> = { ...details };
+            const detObj = await hydrateFollowedArtistImages(items, details);
             items.forEach((it) => {
               if (it.id) {
                 recObj[it.id] = { latestId: it.latestId, latestDate: it.latestDate ?? null };
-                detObj[it.id] = { name: it.name || 'Unknown', imageUrl: it.imageUrl ?? null };
+                detObj[it.id] = { name: detObj[it.id]?.name || it.name || 'Unknown', imageUrl: detObj[it.id]?.imageUrl ?? it.imageUrl ?? null };
               }
             });
             setFollowedDetails(detObj);
             setRecentByArtist(recObj);
             setForYouItems(items);
+            setFollowedArtistRows((prev) => prev.map((artist) => {
+              const update = items.find((item) => item.id === artist.id);
+              return update ? { ...artist, ...update } : artist;
+            }));
             cacheForYou(items, FOR_YOU_UPDATES_CACHE_KEY);
             if (__DEV__) console.log('[updates] recents built (fallback new releases)', { total: items.length, cutoff: new Date(cutoffTs).toISOString().slice(0,10) });
           } else {
-            for (const fa of followed) {
+            const releases: Array<{ id: string; title: string; artist: string; artistId?: string | null; releaseDate?: string | null; spotifyUrl?: string | null; imageUrl?: string | null; type?: 'album' | 'single' | 'ep' }> = [];
+            const seenRelease = new Set<string>();
+            const scanFollowedArtist = async (fa: (typeof followed)[number]) => {
               const id = fa.id;
             // details (name/photo)
             try {
@@ -1372,46 +1606,72 @@ export default function DiscoverTab() {
             // albums and recent pick
             try {
               let albs: Awaited<ReturnType<typeof artistAlbums>> = [];
-              const hasToken = !!process.env.EXPO_PUBLIC_SPOTIFY_TOKEN;
-              const mkts = hasToken ? ['from_token', market || 'GB'] : [market || 'GB'];
+              let tracks: Awaited<ReturnType<typeof artistTopTracks>> = [];
+              const seenAlbumIds = new Set<string>();
+              const seenTrackIds = new Set<string>();
+              const mkts = Array.from(new Set(['from_token', market || 'GB', 'US', 'GB'].filter(Boolean)));
               for (const mk of mkts) {
                 try {
                   const url = `https://api.spotify.com/v1/artists/${id}/albums?` + new URLSearchParams({ include_groups: 'album,single,appears_on', market: mk, limit: '50' });
                   const attempt = async () => artistAlbums(id, mk);
+                  let marketAlbums: Awaited<ReturnType<typeof artistAlbums>> = [];
                   try {
-                    albs = await attempt();
+                    marketAlbums = await attempt();
                   } catch (err: any) {
                     const msg = String(err || '').toLowerCase();
                     if (msg.includes('rate')) {
                       rateLimitHits += 1;
                       if (rateLimitHits >= 3) break;
                       await new Promise((res) => setTimeout(res, 800));
-                      albs = await attempt();
+                      marketAlbums = await attempt();
                     } else {
                       throw err;
                     }
                   }
+                  for (const album of marketAlbums || []) {
+                    const albumKey = album.id || album.spotifyUrl || `${album.title}-${album.releaseDate}`;
+                    if (!albumKey || seenAlbumIds.has(albumKey)) continue;
+                    seenAlbumIds.add(albumKey);
+                    albs.push(album);
+                  }
                   if (__DEV__) {
-                    const newest = albs?.[0];
+                    const newest = marketAlbums?.[0];
                     console.log('[updates] artist albums', {
                       artist: fa.name,
                       id,
                       url,
                       market: mk,
-                      count: albs?.length ?? 0,
-                      total: (albs as any)?._total ?? null,
+                      count: marketAlbums?.length ?? 0,
+                      total: (marketAlbums as any)?._total ?? null,
                       newest: newest ? { name: newest.title, date: newest.releaseDate, prec: (newest as any).releaseDatePrecision, group: newest.albumGroup } : null,
                     });
                   }
-                  if (albs?.length) break;
-                  if (rateLimitHits >= 3) break;
+                  if (rateLimitHits >= 3) {
+                    await new Promise((res) => setTimeout(res, 1200));
+                    rateLimitHits = 0;
+                  }
                 } catch (err) {
                   console.log('[updates] artist albums ERROR', { artist: fa.name, id, market: mk, message: String(err) });
                 }
               }
-              if (rateLimitHits >= 3) break;
               const normDateVal = (d?: string | null, p?: string | null) => discoverDateTimestamp(d, p);
-              const recent = (albs || []).filter((album) => isWithinDiscoverWindow(album.releaseDate ?? null, cutoffTs, (album as any).releaseDatePrecision ?? null));
+              let recent = (albs || []).filter((album) => isWithinDiscoverWindow(album.releaseDate ?? null, cutoffTs, (album as any).releaseDatePrecision ?? null));
+              if (!recent.length) {
+                for (const mk of mkts) {
+                  try {
+                    const marketTracks = await artistTopTracks(id, mk);
+                    for (const track of marketTracks || []) {
+                      const trackKey = track.id || track.spotifyUrl || `${track.title}-${track.releaseDate}`;
+                      if (!trackKey || seenTrackIds.has(trackKey)) continue;
+                      seenTrackIds.add(trackKey);
+                      tracks.push(track);
+                    }
+                  } catch (err) {
+                    console.log('[updates] artist top tracks ERROR', { artist: fa.name, id, market: mk, message: String(err) });
+                  }
+                }
+              }
+              const recentTracks = (tracks || []).filter((track) => isWithinDiscoverWindow(track.releaseDate ?? null, cutoffTs));
               if (__DEV__) {
                 debugPerArtist.push({
                   artist: fa.name,
@@ -1419,27 +1679,106 @@ export default function DiscoverTab() {
                   total: (albs as any)?._total ?? null,
                   pulled: albs?.length ?? 0,
                   recent: recent.length,
+                  recentTracks: recentTracks.length,
                   firstDates: (albs || []).slice(0, 3).map(a => ({ date: a.releaseDate, prec: (a as any).releaseDatePrecision, group: a.albumGroup })),
                 });
+              }
+              if (!recent.length && recentTracks.length) {
+                recent = recentTracks.map((track) => ({
+                  id: track.id,
+                  title: track.title,
+                  artist: track.artist,
+                  releaseDate: track.releaseDate ?? null,
+                  releaseDatePrecision: 'day',
+                  spotifyUrl: track.spotifyUrl ?? null,
+                  imageUrl: details[id]?.imageUrl ?? null,
+                  type: 'single',
+                  albumGroup: 'single',
+                }));
+              }
+              if (!recent.length && fa.name) {
+                try {
+                  const year = String(new Date().getFullYear());
+                  const searchRows = await spotifySearch(`artist:"${fa.name}" year:${year}`, 'album,track');
+                  const normalizedFollowedName = normalizeArtistIdentity(fa.name);
+                  const searchRecents = (searchRows || []).filter((row) => {
+                    const idMatch = row.artistId && row.artistId === id;
+                    const nameMatch = normalizeArtistIdentity(row.artist) === normalizedFollowedName;
+                    return (idMatch || nameMatch) && isWithinDiscoverWindow(row.releaseDate ?? null, cutoffTs);
+                  });
+                  if (searchRecents.length) {
+                    recent = searchRecents.map((row) => ({
+                      id: row.albumId || row.id,
+                      title: row.type === 'track' ? row.title : row.title,
+                      artist: row.artist || details[id]?.name || fa.name || 'Unknown',
+                      releaseDate: row.releaseDate ?? null,
+                      releaseDatePrecision: 'day',
+                      spotifyUrl: row.spotifyUrl ?? null,
+                      imageUrl: row.imageUrl ?? null,
+                      type: row.type === 'track' ? 'single' : (row.albumType === 'single' ? 'single' : 'album'),
+                      albumGroup: row.type === 'track' ? 'single' : row.albumType,
+                    }));
+                  }
+                } catch (err) {
+                  console.log('[updates] artist search fallback ERROR', { artist: fa.name, id, message: String(err) });
+                }
               }
               if (recent.length) {
                 recent.sort((a,b) => normDateVal(b.releaseDate, (b as any).releaseDatePrecision) - normDateVal(a.releaseDate, (a as any).releaseDatePrecision));
                 recents[id] = { latestId: recent[0].id, latestDate: recent[0].releaseDate ?? null };
+                recent.forEach((album: any) => {
+                  const sid = spotifyKey(album.id ?? null, album.spotifyUrl ?? null) || String(album.id || '');
+                  if (!sid) return;
+                  const releaseKey = album.spotifyUrl || sid;
+                  if (seenRelease.has(releaseKey)) return;
+                  seenRelease.add(releaseKey);
+                  const albumType = String(album.type || album.albumType || '').toLowerCase();
+                  releases.push({
+                    id: sid,
+                    title: album.title,
+                    artist: album.artist || details[id]?.name || fa.name || 'Unknown',
+                    artistId: id,
+                    releaseDate: album.releaseDate ?? null,
+                    spotifyUrl: album.spotifyUrl ?? null,
+                    imageUrl: album.imageUrl ?? null,
+                    type: albumType === 'single' ? 'single' : albumType === 'ep' ? 'ep' : 'album',
+                  });
+                });
               }
             } catch (err) {
               console.log('[updates] artist albums ERROR', { artist: fa.name, id, message: String(err) });
             }
-              await new Promise((res) => setTimeout(res, 250));
-          }
+            };
+            for (let index = 0; index < followed.length; index += UPDATES_SCAN_BATCH_SIZE) {
+              const batch = followed.slice(index, index + UPDATES_SCAN_BATCH_SIZE);
+              await Promise.all(batch.map(scanFollowedArtist));
+              if (rateLimitHits >= 3) {
+                await new Promise((res) => setTimeout(res, 1200));
+                rateLimitHits = 0;
+              }
+            }
+            seedFollowedItems.forEach((item) => {
+              if (!item.id || !isWithinDiscoverWindow(item.latestDate ?? null, cutoffTs)) return;
+              if (!recents[item.id]) recents[item.id] = { latestId: item.latestId, latestDate: item.latestDate ?? null };
+              if (!details[item.id]) details[item.id] = { name: item.name || 'Unknown', imageUrl: item.imageUrl ?? null };
+            });
             setFollowedDetails(details);
             setRecentByArtist(recents);
-            const items = Object.keys(recents || {}).map((id) => ({
-              id,
-              name: (details[id]?.name) ?? 'Unknown',
-              imageUrl: details[id]?.imageUrl ?? null,
-              latestId: recents[id]?.latestId,
-              latestDate: recents[id]?.latestDate ?? null,
-            }));
+            const itemById = new Map<string, FollowedUpdateArtist>();
+            seedFollowedItems.forEach((item) => {
+              if (!item.id || !isWithinDiscoverWindow(item.latestDate ?? null, cutoffTs)) return;
+              itemById.set(item.id, item);
+            });
+            Object.keys(recents || {}).forEach((id) => {
+              itemById.set(id, {
+                id,
+                name: (details[id]?.name) ?? 'Unknown',
+                imageUrl: details[id]?.imageUrl ?? null,
+                latestId: recents[id]?.latestId,
+                latestDate: recents[id]?.latestDate ?? null,
+              });
+            });
+            const items = Array.from(itemById.values());
             items.sort((a,b) => {
               const ta = discoverDateTimestamp(a.latestDate ?? null);
               const tb = discoverDateTimestamp(b.latestDate ?? null);
@@ -1447,15 +1786,31 @@ export default function DiscoverTab() {
             });
             if (items.length) {
               setForYouItems(items);
+              setFollowedArtistRows((prev) => prev.map((artist) => {
+                const update = items.find((item) => item.id === artist.id);
+                return update ? { ...artist, ...update } : artist;
+              }));
               cacheForYou(items, FOR_YOU_UPDATES_CACHE_KEY);
             }
+            const releaseByKey = new Map<string, { id: string; title: string; artist: string; artistId?: string | null; releaseDate?: string | null; spotifyUrl?: string | null; imageUrl?: string | null; type?: 'album' | 'single' | 'ep' }>();
+            [...seedYourUpdatesReleases, ...releases].forEach((release) => {
+              const key = spotifyKey(release.id, release.spotifyUrl ?? null) || `${release.artistId || release.artist}-${release.title}-${release.releaseDate || ''}`;
+              if (!key || releaseByKey.has(key)) return;
+              if (!isWithinDiscoverWindow(release.releaseDate ?? null, cutoffTs)) return;
+              releaseByKey.set(key, release);
+            });
+            const mergedReleases = Array.from(releaseByKey.values())
+              .sort((a, b) => discoverDateTimestamp(b.releaseDate ?? null) - discoverDateTimestamp(a.releaseDate ?? null));
+            setYourUpdatesReleases(mergedReleases.slice(0, 60));
+            updatesLastDeepScanAtRef.current = Date.now();
             if (__DEV__) {
               const sample = items.slice(0, 3);
-              console.log('[updates] recents built', { total: items.length, sample, cutoff: new Date(cutoffTs).toISOString().slice(0,10), artistsDebug: debugPerArtist.slice(0,5) });
+              console.log('[updates] recents built', { total: items.length, releases: mergedReleases.length, seeded: seedFollowedItems.length, sample, cutoff: new Date(cutoffTs).toISOString().slice(0,10), artistsDebug: debugPerArtist.slice(0,5) });
             }
             if (!items.length) {
               setForYouItems([]);
             }
+          }
           }
           }
         }
@@ -1466,24 +1821,24 @@ export default function DiscoverTab() {
       finally { setPickedLoading(false); setForYouLoading(false); }
       await refreshListenStatus();
     } catch (err) {
-      setTopPicksError((prev) => prev ?? err);
+      setTopPicksError((prev: any | null) => prev ?? err);
       if (__DEV__) console.warn('[discover] load failed', err);
     }
     finally {
       setTopPicksLoading(false);
       setInitialLoading(false);
     }
-  }, [refreshListenStatus]);
+  }, [cacheArtistImagesV2, debugSetNewReleases, hydrateFollowedArtistImages, refreshListenStatus]);
 
   useEffect(() => {
     loadRef.current = load;
-  }, [load]);
+  }, [debugSetNewReleases, load]);
 
   useEffect(() => {
     const handler = () => { load(); };
     on('feed:refresh', handler);
     return () => off('feed:refresh', handler);
-  }, [load]);
+  }, [debugSetNewReleases, load]);
 
   // Initial load with cache hydration
   useEffect(() => {
@@ -1499,35 +1854,11 @@ export default function DiscoverTab() {
           }
         }
       } catch {}
-      try {
-        const rawFy = await AsyncStorage.getItem(FOR_YOU_UPDATES_CACHE_KEY);
-        if (rawFy && mounted) {
-          const parsed = JSON.parse(rawFy);
-          const cutoffTs = Date.now() - UPDATES_DAYS * 24 * 60 * 60 * 1000;
-          const items = Array.isArray(parsed?.items)
-            ? parsed.items.filter((item: any) => isWithinDiscoverWindow(item?.latestDate ?? null, cutoffTs))
-            : [];
-          const ts = typeof parsed?.ts === 'number' ? parsed.ts : 0;
-          const HOUR_MS = 60 * 60 * 1000;
-          if (items.length && (Date.now() - ts) < 6 * HOUR_MS) {
-            setForYouItems(items);
-            const detObj: Record<string, { name: string; imageUrl?: string | null }> = {};
-            const recObj: Record<string, { latestId?: string; latestDate?: string | null }> = {};
-            items.forEach((it: any) => {
-              if (!it?.id) return;
-              detObj[it.id] = { name: it.name || 'Unknown', imageUrl: it.imageUrl ?? null };
-              recObj[it.id] = { latestId: it.latestId, latestDate: it.latestDate ?? null };
-            });
-            setFollowedDetails(detObj);
-            setRecentByArtist(recObj);
-            setForYouLoading(false);
-          }
-        }
-      } catch {}
+      // Your updates is intentionally not hydrated from cache; stale artist rows are more misleading than a short loading state.
       if (mounted) await load();
     })();
     return () => { mounted = false; };
-  }, [load]);
+  }, [debugSetNewReleases, load]);
 
   // Refresh when coming back online
   useEffect(() => {
@@ -1565,16 +1896,28 @@ export default function DiscoverTab() {
 
   // No extra image fetching; bubbles use details fetched during load()
 
+  const resetSearchState = useCallback(() => {
+    setQ('');
+    setSearchRows([]);
+    setArtist(null);
+    setArtistAlbumsRows([]);
+    setArtistTracksRows([]);
+  }, []);
+
   const onRefresh = useCallback(async () => {
     if (offline) {
       Alert.alert('Offline', 'You are offline. Showing cached results.');
       setRefreshing(false);
       return;
     }
+    if (q.trim() || searchRows.length || artist || artistAlbumsRows.length || artistTracksRows.length) {
+      resetSearchState();
+      Keyboard.dismiss();
+    }
     setRefreshing(true);
-    await load();
+    await load({ preserveExisting: true });
     setRefreshing(false);
-  }, [load, offline]);
+  }, [artist, artistAlbumsRows.length, artistTracksRows.length, load, offline, q, resetSearchState, searchRows.length]);
 
   const runSearch = useCallback(async (term: string) => {
     if (!term) { setSearchRows([]); setArtist(null); setArtistAlbumsRows([]); setArtistTracksRows([]); return; }
@@ -1623,6 +1966,7 @@ export default function DiscoverTab() {
 
   const onSearch = async () => {
     await runSearch(q.trim());
+    Keyboard.dismiss();
   };
 
   const onAddNew = async (a: { id: string; title: string; artist: string; releaseDate?: string | null; spotifyUrl?: string | null; imageUrl?: string | null; type?: string | null }, stat?: { done?: boolean | undefined }) => {
@@ -1789,11 +2133,8 @@ export default function DiscoverTab() {
   }, [groupedSearch.artists.length, groupedSearch.tracks.length, groupedSearch.projects.length]);
 
   const clearSearch = () => {
-    setQ('');
-    setSearchRows([]);
-    setArtist(null);
-    setArtistAlbumsRows([]);
-    setArtistTracksRows([]);
+    resetSearchState();
+    Keyboard.dismiss();
   };
 
   const hasGrouped = groupedSearch.projects.length || groupedSearch.tracks.length || groupedSearch.artists.length;
@@ -1840,7 +2181,7 @@ export default function DiscoverTab() {
   };
 
   const offlineBanner = offline ? (
-    <View style={{ padding: 8, backgroundColor: accentSoft, borderRadius: 10, borderWidth: 1, borderColor: colors.accent.primary, marginBottom: 10 }}>
+    <View style={{ padding: 8, backgroundColor: accentSoft, borderRadius: 10, borderWidth: 1, borderColor: colors.accent.primary, marginBottom: 10, marginHorizontal: 16 }}>
       <Text style={{ color: colors.accent.primary, fontWeight: '700', textAlign: 'center' }}>You’re offline — showing saved results</Text>
     </View>
   ) : null;
@@ -1990,7 +2331,7 @@ export default function DiscoverTab() {
     const artUrl = r.imageUrl || artistImageMap[r.id] || null;
     const releaseDateLabel = formatDate(r.releaseDate);
     return (
-      <GlassCard asChild style={{ marginVertical: 4, padding: 0 }}>
+      <GlassCard asChild style={{ marginVertical: 4, marginHorizontal: 16, padding: 0 }}>
         <View style={{ paddingVertical: 10, paddingHorizontal: 6, opacity: 1 }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
             {(() => {
@@ -2051,7 +2392,7 @@ export default function DiscoverTab() {
   const renderItem = ({ item }: { item: Row }) => {
     if (item.kind === 'section-title') {
       return (
-        <Text style={{ fontSize: 18, fontWeight: '600', marginTop: 16, marginBottom: 8, color: colors.text.secondary }}>{item.title}</Text>
+        <Text style={{ fontSize: 18, fontWeight: '600', marginTop: 16, marginBottom: 8, marginHorizontal: 16, color: colors.text.secondary }}>{item.title}</Text>
       );
     }
   if (item.kind === 'new') {
@@ -2061,7 +2402,7 @@ export default function DiscoverTab() {
   const label = tagLabel(stat, isAdded);
   const releaseDateLabel = formatDate(item.releaseDate);
     return (
-      <GlassCard asChild style={{ marginVertical: 4, padding: 0, opacity: isAdded ? 0.82 : 1 }}>
+      <GlassCard asChild style={{ marginVertical: 4, marginHorizontal: 16, padding: 0, opacity: isAdded ? 0.82 : 1 }}>
         <View style={{ paddingVertical: 10, paddingHorizontal: 6 }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
             <Image source={{ uri: item.imageUrl ?? undefined }} style={{ width: 60, height: 60, borderRadius: 12, backgroundColor: colors.bg.muted }} />
@@ -2117,111 +2458,6 @@ export default function DiscoverTab() {
 
   const ReleasesHeader = (
     <View key={`discover-releases-${viewMode}`} style={{ marginTop: 8 }}>
-      {(() => {
-        const pad = 16;
-        const renderUpdatesRow = (items: Array<{ id: string; name: string; imageUrl?: string | null; latestId?: string; latestDate?: string | null }>) => {
-          return (
-            <View style={{ paddingTop: 8, paddingBottom: 10 }}>
-              <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text.secondary, marginBottom: 10, paddingHorizontal: pad, alignSelf: 'stretch', textAlign: 'left' }}>
-                Following
-              </Text>
-              <FlatList
-                data={items.slice(0, 16)}
-                keyExtractor={(it) => `updates-artist-${it.id}`}
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 6, columnGap: 12 }}
-                renderItem={({ item }) => (
-                  <Pressable
-                    onPress={() => openArtist(item.id, { name: item.name, highlight: item.latestId ?? null })}
-                    hitSlop={8}
-                    style={({ pressed }) => ({ width: 74, alignItems: 'center', opacity: pressed ? 0.9 : 1 })}
-                  >
-                    <View style={{ width: 58, height: 58, borderRadius: 29, backgroundColor: colors.bg.muted, overflow: 'hidden', borderWidth: 1, borderColor: colors.text.secondary + '22' }}>
-                      {item.imageUrl ? (
-                        <Image source={{ uri: item.imageUrl }} style={{ width: 58, height: 58 }} />
-                      ) : (
-                        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-                          <Text style={{ color: colors.text.muted, fontWeight: '800' }}>{(item.name || '?').slice(0, 1).toUpperCase()}</Text>
-                        </View>
-                      )}
-                    </View>
-                    <Text style={{ marginTop: 6, fontSize: 11, color: colors.text.secondary, opacity: 0.95 }} numberOfLines={1}>
-                      {item.name || 'Unknown'}
-                    </Text>
-                  </Pressable>
-                )}
-              />
-            </View>
-          );
-        };
-
-        const renderEmptySpotlight = () => {
-          const screenWidth = Dimensions.get('window').width;
-          const cardW = Math.min(screenWidth * 0.92, 360);
-          return (
-            <View style={{ paddingTop: 8, paddingBottom: 18, alignItems: 'stretch' }}>
-              <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text.secondary, marginBottom: 12, paddingHorizontal: pad, alignSelf: 'stretch', textAlign: 'left' }}>
-                Following
-              </Text>
-              <GlassCard style={{ width: cardW, padding: 16, borderRadius: 20, borderWidth: 1, borderColor: colors.text.secondary + '14', gap: 12, alignSelf: 'center' }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-                  <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: colors.bg.muted, alignItems: 'center', justifyContent: 'center' }}>
-                    <Ionicons name="notifications-outline" size={20} color={colors.text.secondary} />
-                  </View>
-                  <View style={{ flex: 1, gap: 4 }}>
-                    <Text style={{ fontSize: 16.5, fontWeight: '600', color: colors.text.secondary }} numberOfLines={1}>No recent artist activity</Text>
-                    <Text style={{ fontSize: 13, color: colors.text.muted, opacity: 0.8 }} numberOfLines={2}>Follow more artists to see fresh updates here.</Text>
-                  </View>
-                  <Pressable
-                    onPress={() => router.push('/discover')}
-                    style={({ pressed }) => ({
-                      paddingHorizontal: 10,
-                      paddingVertical: 6,
-                      borderRadius: 999,
-                      backgroundColor: colors.bg.muted,
-                      opacity: pressed ? 0.9 : 1,
-                    })}
-                  >
-                    <Text style={{ color: colors.text.secondary, fontWeight: '700', fontSize: 12 }}>Browse</Text>
-                  </Pressable>
-                </View>
-              </GlassCard>
-            </View>
-          );
-        };
-
-        if (yourUpdatesLoading) {
-          const placeholders = Array.from({ length: 3 }).map((_, i) => ({ id: `ph-${i}` }));
-          return (
-            <View style={{ paddingTop: 8, paddingBottom: 10 }}>
-              <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text.secondary, marginBottom: 12, paddingHorizontal: pad, alignSelf: 'stretch', textAlign: 'left' }}>
-                Following
-              </Text>
-              <FlatList
-                data={placeholders}
-                keyExtractor={(it) => it.id}
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 6, columnGap: 12 }}
-                renderItem={() => (
-                  <View style={{ width: 74, alignItems: 'center' }}>
-                    <View style={{ width: 58, height: 58, borderRadius: 29, backgroundColor: colors.bg.muted, overflow: 'hidden' }}>
-                      <Shimmer size={58} borderRadius={29} />
-                    </View>
-                    <View style={{ width: 54, height: 10, marginTop: 8, borderRadius: 6, backgroundColor: colors.bg.muted, overflow: 'hidden' }}>
-                      <Animated.View style={{ width: 54, height: 10, backgroundColor: colors.bg.muted }} />
-                    </View>
-                  </View>
-                )}
-              />
-            </View>
-          );
-        }
-
-        if (!followedArtists.length) return renderEmptySpotlight();
-        return renderUpdatesRow(followedArtists);
-      })()}
       <Animated.View
         style={{
           opacity: viewAnim,
@@ -2579,6 +2815,45 @@ export default function DiscoverTab() {
           </View>
         );
 
+        const renderFollowedArtistFallback = () => (
+          <View style={{ marginBottom: 8 }}>
+            <FlatList
+              data={followedArtists.slice(0, 24)}
+              keyExtractor={(item) => `followed-update-${item.id}`}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ paddingHorizontal: horizontalPad }}
+              ItemSeparatorComponent={() => <View style={{ width: 10 }} />}
+              renderItem={({ item }) => (
+                <Pressable
+                  onPress={() => openArtist(item.id, { name: item.name, highlight: item.latestId ?? null })}
+                  hitSlop={8}
+                  style={({ pressed }) => ({
+                    width: 86,
+                    alignItems: 'center',
+                    opacity: pressed ? 0.88 : 1,
+                  })}
+                >
+                  <View style={{ width: 62, height: 62, borderRadius: 31, backgroundColor: colors.bg.muted, overflow: 'hidden', borderWidth: 1, borderColor: colors.border.subtle }}>
+                    {item.imageUrl ? (
+                      <Image source={{ uri: item.imageUrl }} style={{ width: 62, height: 62 }} />
+                    ) : (
+                      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+                        <Text style={{ color: colors.text.secondary, fontWeight: '900', fontSize: 18 }}>
+                          {(item.name || '?').slice(0, 1).toUpperCase()}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                  <Text style={{ marginTop: 7, color: colors.text.secondary, fontSize: 12, fontWeight: '700', textAlign: 'center' }} numberOfLines={1}>
+                    {item.name || 'Unknown'}
+                  </Text>
+                </Pressable>
+              )}
+            />
+          </View>
+        );
+
         const hasAny =
           yourUpdatesState.status === 'success' ||
           topPicksState.status === 'success' ||
@@ -2603,7 +2878,9 @@ export default function DiscoverTab() {
                 : yourUpdatesState.status === 'error'
                   ? renderInlineState('Could not load updates right now.', 'error')
                   : yourUpdatesState.status === 'empty'
-                    ? renderInlineState('No new releases right now', 'muted', 'Follow more artists to get fresh updates.')
+                    ? followedArtists.length
+                      ? renderFollowedArtistFallback()
+                      : renderInlineState('No new releases in the last 14 days', 'muted')
                     : renderUpdatesSection(yourUpdatesDisplayItems, 'your-updates')}
             </View>
             <View key="top-picks" style={{ marginBottom: 16 }}>
@@ -2650,7 +2927,7 @@ export default function DiscoverTab() {
               );
             })}
             {hasAny && (
-              <GlassCard asChild style={{ marginTop: 6 }}>
+              <GlassCard asChild style={{ marginTop: 6, marginHorizontal: horizontalPad }}>
                 <Pressable
                   onPress={() => router.push('/new-releases-all')}
                   style={({ pressed }) => ({
@@ -2674,63 +2951,78 @@ export default function DiscoverTab() {
     </View>
   );
 
-  return (
-    <Screen>
-      {offlineBanner}
-      <View style={{ alignItems: 'center', marginTop: 8, marginBottom: 6 }}>
-        <BrandLogo height={22} />
-      </View>
-      <View style={{ marginTop: 8, marginBottom: 12, flexDirection: 'row', gap: 8, alignItems: 'center' }}>
-        <TextInput
-          value={q}
-          onChangeText={setQ}
-          placeholder="Search music: artists, albums, tracks"
-          onSubmitEditing={onSearch}
-          placeholderTextColor={colors.text.muted}
-          style={{ flex: 1, borderWidth: 1, borderColor: colors.border.subtle, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8, backgroundColor: colors.bg.secondary, color: colors.text.secondary }}
-        />
-        {q.length > 0 && (
-          <Pressable onPress={clearSearch} hitSlop={8} style={{ paddingHorizontal: 10, paddingVertical: 8, backgroundColor: colors.bg.muted, borderRadius: 8 }}>
-            <Text style={{ color: colors.text.secondary, fontWeight: '700' }}>Clear</Text>
-          </Pressable>
-        )}
-        <Pressable
-          onPress={toggleViewMode}
-          hitSlop={8}
-          style={({ pressed }) => ({
-            padding: 10,
-            borderRadius: 10,
-            backgroundColor: colors.bg.muted,
-            opacity: pressed ? 0.9 : 1,
-          })}
-        >
-          <View>
-            <Ionicons
-              name={viewMode === 'mixed' ? 'albums' : 'albums-outline'}
-              size={20}
-              color={colors.text.secondary}
+  const headerTranslateY = headerAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-(DISCOVER_HEADER_HEIGHT + insets.top), 0],
+  });
+  const headerTop = Math.max(insets.top + 6, 12);
+  const listTopPadding = headerTop + DISCOVER_HEADER_HEIGHT;
+
+  const DiscoverHeader = (
+    <Animated.View
+      pointerEvents="box-none"
+      style={{
+        position: 'absolute',
+        top: headerTop,
+        left: 0,
+        right: 0,
+        zIndex: 20,
+        opacity: headerAnim,
+        transform: [{ translateY: headerTranslateY }],
+      }}
+    >
+      <View style={{ marginHorizontal: 16, borderRadius: 18, overflow: 'hidden', borderWidth: 1, borderColor: colors.overlay.softLight, backgroundColor: colors.bg.secondary + 'cc' }}>
+        <BlurView intensity={68} tint="dark" style={{ paddingHorizontal: 10, paddingVertical: 8 }}>
+          <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+            <TextInput
+              value={q}
+              onChangeText={setQ}
+              placeholder="Search music: artists, albums, tracks"
+              onSubmitEditing={onSearch}
+              returnKeyType="search"
+              blurOnSubmit
+              placeholderTextColor={colors.text.muted}
+              style={{ flex: 1, height: 42, borderWidth: 1, borderColor: colors.border.subtle, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 0, backgroundColor: colors.bg.primary, color: colors.text.secondary }}
             />
+            {q.length > 0 && (
+              <Pressable onPress={clearSearch} hitSlop={8} style={{ height: 42, justifyContent: 'center', paddingHorizontal: 10, backgroundColor: colors.bg.muted, borderRadius: 10 }}>
+                <Text style={{ color: colors.text.secondary, fontWeight: '700' }}>Clear</Text>
+              </Pressable>
+            )}
+            <Pressable
+              onPress={toggleViewMode}
+              hitSlop={8}
+              style={({ pressed }) => ({
+                width: 42,
+                height: 42,
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderRadius: 10,
+                backgroundColor: colors.bg.muted,
+                opacity: pressed ? 0.9 : 1,
+              })}
+            >
+              <View>
+                <Ionicons
+                  name={viewMode === 'mixed' ? 'albums' : 'albums-outline'}
+                  size={19}
+                  color={colors.text.secondary}
+                />
+              </View>
+            </Pressable>
+            <Pressable onPress={() => setFilterVisible(true)} hitSlop={8} style={{ width: 42, height: 42, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: colors.bg.muted }}>
+              <Ionicons name="options-outline" size={19} color={colors.text.secondary} />
+            </Pressable>
           </View>
-        </Pressable>
-        <Pressable onPress={() => setFilterVisible(true)} hitSlop={8} style={{ padding: 10, borderRadius: 10, backgroundColor: colors.bg.muted }}>
-          <Ionicons name="options-outline" size={20} color={colors.text.secondary} />
-        </Pressable>
-        {__DEV__ && (
-          <Pressable
-            onPress={() => setDebugVisible(true)}
-            hitSlop={8}
-            style={({ pressed }) => ({
-              paddingHorizontal: 10,
-              paddingVertical: 8,
-              borderRadius: 10,
-              backgroundColor: colors.bg.muted,
-              opacity: pressed ? 0.9 : 1,
-            })}
-          >
-            <Text style={{ color: colors.text.secondary, fontWeight: '700', fontSize: 12 }}>Debug</Text>
-          </Pressable>
-        )}
+        </BlurView>
       </View>
+    </Animated.View>
+  );
+
+  return (
+    <Screen edges={['left', 'right']} style={{ paddingHorizontal: 0, paddingTop: 0 }}>
+      {offlineBanner}
+      {DiscoverHeader}
       {/* Suggestions panel removed; global search results are shown below */}
   {/* Tip removed */}
       {busy && (
@@ -2743,11 +3035,14 @@ export default function DiscoverTab() {
         <SectionList
           sections={groupedSections}
           keyExtractor={(item, index) => `sec-${item.type}-${item.id}-${index}`}
-          contentContainerStyle={{ paddingBottom: 112 }}
+          contentContainerStyle={{ paddingTop: listTopPadding, paddingBottom: 112 }}
           renderSectionHeader={({ section }) => (
-            <Text style={{ fontSize: 18, fontWeight: '600', marginTop: 16, marginBottom: 8, color: colors.text.secondary }}>{section.title}</Text>
+            <Text style={{ fontSize: 18, fontWeight: '600', marginTop: 16, marginBottom: 8, marginHorizontal: 16, color: colors.text.secondary }}>{section.title}</Text>
           )}
           renderItem={({ item }) => renderSearchRow(item)}
+          onScroll={handleDiscoverScroll}
+          scrollEventThrottle={16}
+          keyboardDismissMode="on-drag"
           keyboardShouldPersistTaps="handled"
           refreshing={refreshing}
           onRefresh={onRefresh}
@@ -2761,7 +3056,10 @@ export default function DiscoverTab() {
           extraData={viewMode}
           ListHeaderComponent={ReleasesHeader}
           ListEmptyComponent={renderEmpty}
-          contentContainerStyle={{ paddingBottom: 112 }}
+          contentContainerStyle={{ paddingTop: listTopPadding, paddingBottom: 112 }}
+          onScroll={handleDiscoverScroll}
+          scrollEventThrottle={16}
+          keyboardDismissMode="on-drag"
           refreshing={refreshing}
           onRefresh={onRefresh}
           keyboardShouldPersistTaps="handled"
