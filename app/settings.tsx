@@ -91,7 +91,7 @@ export default function SettingsScreen() {
     <Screen edges={['left', 'right']}>
       <View style={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: 6 }}>
         <Text style={{ fontSize: 22, fontWeight: '700', color: colors.text.secondary }}>Settings</Text>
-        <Text style={{ color: colors.text.muted, marginTop: 6 }}>Choose how Wavemark opens links.</Text>
+        <Text style={{ color: colors.text.muted, marginTop: 6 }}>Choose how RPPL opens links.</Text>
       </View>
 
       <View style={{ paddingHorizontal: 16, paddingVertical: 12 }}>

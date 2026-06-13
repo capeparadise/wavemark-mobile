@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "Wavemark",
-    "slug": "wavemark-mobile",
+    "name": "RPPL",
+    "slug": "rppl-mobile",
     "owner": "capeparadise",
     "scheme": ["wavemark", "rppl"],
     "orientation": "portrait",
@@ -12,6 +12,7 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
+      "bundleIdentifier": "com.rppl.mobile",
       "supportsTablet": true,
       "infoPlist": {
         "LSApplicationQueriesSchemes": [
@@ -24,6 +25,7 @@
       }
     },
     "android": {
+      "package": "com.rppl.mobile",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"

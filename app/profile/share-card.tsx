@@ -111,7 +111,7 @@ export default function ShareCardScreen() {
     try {
       setBusy(true);
       try {
-        await Share.share({ message: `Send me a merge request on Wavemark: ${inviteUrl}` });
+        await Share.share({ message: `Send me a merge request on RPPL: ${inviteUrl}` });
       } catch {
         await (async () => {
           try {
