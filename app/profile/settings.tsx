@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { router } from 'expo-router';
 import { ActivityIndicator, Alert, Pressable, ScrollView, Switch, Text, TextInput, View } from 'react-native';
+import PlayerToggle from '../../components/PlayerToggle';
 import Screen from '../../components/StackScreen';
 import { emit } from '../../lib/events';
 import { backfillArtworkMissing, bulkRefreshAppleLinks } from '../../lib/listen';
@@ -127,6 +128,17 @@ export default function ProfileSettingsPage() {
           {saved && <Text style={{ color: colors.accent.success, alignSelf: 'center' }}>Saved</Text>}
         </View>
       </View>
+
+      {APPLE_ENABLED ? (
+        <View style={{ marginBottom: 24 }}>
+          <Text style={{ fontWeight: '700', marginBottom: 6, color: colors.text.secondary }}>Default player</Text>
+          <Text style={{ color: colors.text.muted, marginBottom: 8 }}>Choose where releases open.</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 8 }}>
+            <Text style={{ fontSize: 16, color: colors.text.secondary }}>Player</Text>
+            <PlayerToggle />
+          </View>
+        </View>
+      ) : null}
 
       {/* Advanced rating mode */}
       <View style={{ marginBottom: 24 }}>
