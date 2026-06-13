@@ -12,7 +12,7 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "bundleIdentifier": "com.rppl.mobile",
+      "bundleIdentifier": "com.capeparadise.rppl",
       "supportsTablet": true,
       "infoPlist": {
         "LSApplicationQueriesSchemes": [
@@ -25,7 +25,7 @@
       }
     },
     "android": {
-      "package": "com.rppl.mobile",
+      "package": "com.capeparadise.rppl",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
