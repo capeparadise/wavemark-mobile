@@ -1,7 +1,7 @@
 // supabase/functions/apple-resolve/index.ts
 // @ts-nocheck
 // Resolve an Apple Music canonical ID + URL for a track or album using the Apple Music API.
-// Input JSON: { type: 'track'|'album', title: string, artist?: string }
+// Input JSON: { type: 'track'|'album', title: string, artist?: string, isrc?: string }
 // Supabase secrets supported:
 //   APPLE_MUSIC_TEAM_ID
 //   APPLE_MUSIC_KEY_ID
@@ -155,6 +155,44 @@ async function searchMusicApi(term: string, types: string[]): Promise<any | null
   return await res.json();
 }
 
+async function lookupMusicApiByIsrc(isrc: string): Promise<any | null> {
+  const devToken = await getDeveloperToken();
+  if (!devToken) return null;
+  const cleanIsrc = String(isrc || '').trim();
+  if (!cleanIsrc) return null;
+  const url = new URL(`https://api.music.apple.com/v1/catalog/${STOREFRONT}/songs`);
+  url.searchParams.set('filter[isrc]', cleanIsrc);
+  url.searchParams.set('limit', '1');
+  const res = await fetch(url.toString(), {
+    headers: { Authorization: `Bearer ${devToken}` },
+  });
+  if (!res.ok) return null;
+  return await res.json();
+}
+
+function buildReturnFromMusicSong(cand: any) {
+  if (!cand) return { id: null, url: null, albumId: null };
+  let albumId: string | null = null;
+  try {
+    albumId = cand.relationships?.albums?.data?.[0]?.id ?? null;
+  } catch {}
+  return {
+    id: cand.id ?? null,
+    url: cand.attributes?.url ?? null,
+    albumId,
+  };
+}
+
+async function itunesLookupByIsrc(isrc: string, country: string): Promise<any | null> {
+  const cleanIsrc = String(isrc || '').trim();
+  if (!cleanIsrc) return null;
+  const url = `https://itunes.apple.com/lookup?isrc=${encodeURIComponent(cleanIsrc)}&country=${country.toUpperCase()}`;
+  const r = await fetch(url);
+  if (!r.ok) return null;
+  const j = await r.json();
+  return Array.isArray(j.results) ? (j.results[0] ?? null) : null;
+}
+
 async function itunesFallback(term: string, entity: 'musicTrack'|'album', country: string): Promise<any[]> {
   const url = `https://itunes.apple.com/search?term=${encodeURIComponent(term)}&country=${country.toUpperCase()}&entity=${entity}&limit=5`;
   const r = await fetch(url);
@@ -219,13 +257,21 @@ function buildReturnFromItunes(type: 'track'|'album', best: any) {
 Deno.serve(async (req) => {
   try {
     if (req.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
-    const { type, title, artist } = await req.json();
+    const { type, title, artist, isrc } = await req.json();
     if (!type || !title) return Response.json({ error: 'Missing type or title' }, { status: 400 });
 
     // Attempt Music API first if token present
     let out = { id: null, url: null, albumId: null } as any;
+    if (type === 'track' && isrc) {
+      const isrcJson = await lookupMusicApiByIsrc(isrc);
+      const isrcHit = Array.isArray(isrcJson?.data) ? isrcJson.data[0] : null;
+      out = buildReturnFromMusicSong(isrcHit);
+    }
+
     const termParts = [title, artist].filter(Boolean).join(' ');
-    const musicJson = await searchMusicApi(termParts, type === 'track' ? ['songs','albums'] : ['albums']);
+    const musicJson = (!out.id || !out.url)
+      ? await searchMusicApi(termParts, type === 'track' ? ['songs','albums'] : ['albums'])
+      : null;
     if (musicJson) {
       const bestMusic = pickBestFromMusicApi(type, title, artist, musicJson);
       out = buildReturnFromMusic(type, bestMusic);
@@ -233,8 +279,9 @@ Deno.serve(async (req) => {
 
     // Fallback to iTunes if Music API failed or incomplete
     if (!out.id || !out.url) {
-      const itRows = await itunesFallback(termParts, type === 'track' ? 'musicTrack' : 'album', STOREFRONT);
-      const bestIt = pickBestFromItunes(type, title, artist, itRows);
+      const isrcIt = type === 'track' && isrc ? await itunesLookupByIsrc(isrc, STOREFRONT) : null;
+      const itRows = isrcIt ? [isrcIt] : await itunesFallback(termParts, type === 'track' ? 'musicTrack' : 'album', STOREFRONT);
+      const bestIt = isrcIt ?? pickBestFromItunes(type, title, artist, itRows);
       const itOut = buildReturnFromItunes(type, bestIt);
       if (!out.id) out.id = itOut.id;
       if (!out.url) out.url = itOut.url;

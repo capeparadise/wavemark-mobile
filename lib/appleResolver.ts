@@ -31,11 +31,24 @@ async function lookupOnce(params: Record<string,string>, country: string): Promi
   const storefront = country.toLowerCase();
   if (trackUrl) {
     const canonical = trackUrl.replace('itunes.apple.com','music.apple.com') + (trackUrl.includes('?') ? '&' : '?') + 'app=music';
-    return { url: canonical, storefront, kind: 'track', trackId: String(item.trackId), albumId: item.collectionId ? String(item.collectionId) : undefined };
+    return {
+      url: canonical,
+      storefront,
+      kind: 'track',
+      trackId: String(item.trackId),
+      albumId: item.collectionId ? String(item.collectionId) : undefined,
+      artistName: item.artistName,
+    };
   }
   if (albumUrl) {
     const canonical = albumUrl.replace('itunes.apple.com','music.apple.com') + (albumUrl.includes('?') ? '&' : '?') + 'app=music';
-    return { url: canonical, storefront, kind: 'album', albumId: String(item.collectionId) };
+    return {
+      url: canonical,
+      storefront,
+      kind: 'album',
+      albumId: String(item.collectionId),
+      artistName: item.artistName,
+    };
   }
   return null;
 }

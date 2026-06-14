@@ -32,6 +32,10 @@ type ReleaseDetails = {
   spotifyId?: string | null;
   appleUrl?: string | null;
   appleId?: string | null;
+  appleTrackId?: string | null;
+  appleAlbumId?: string | null;
+  appleStorefront?: string | null;
+  isrc?: string | null;
   itemType?: 'album' | 'track';
 };
 
@@ -122,6 +126,10 @@ export default function ReleaseScreen() {
       spotifyId: spotifyId || null,
       appleUrl: null,
       appleId: null,
+      appleTrackId: null,
+      appleAlbumId: null,
+      appleStorefront: null,
+      isrc: null,
       itemType: isTrack ? 'track' : 'album',
     };
   }, [
@@ -214,6 +222,10 @@ export default function ReleaseScreen() {
           spotifyId: row.spotify_id ?? null,
           appleUrl: row.apple_url ?? null,
           appleId: row.apple_id ?? null,
+          appleTrackId: row.apple_track_id ?? null,
+          appleAlbumId: row.apple_album_id ?? null,
+          appleStorefront: row.apple_storefront ?? null,
+          isrc: null,
           itemType,
         };
       };
@@ -272,6 +284,10 @@ export default function ReleaseScreen() {
                 spotifyId: r.id,
                 appleUrl: null,
                 appleId: null,
+                appleTrackId: null,
+                appleAlbumId: null,
+                appleStorefront: null,
+                isrc: r.isrc ?? null,
                 itemType: r.type === 'track' ? 'track' : 'album',
               };
             }
@@ -299,6 +315,10 @@ export default function ReleaseScreen() {
                 spotifyId: null,
                 appleUrl: buildAlbumUrl(album.collectionId, album.collectionName),
                 appleId: String(album.collectionId),
+                appleTrackId: null,
+                appleAlbumId: String(album.collectionId),
+                appleStorefront: null,
+                isrc: null,
                 itemType: 'album',
               };
             }
@@ -319,6 +339,10 @@ export default function ReleaseScreen() {
                   spotifyId: null,
                   appleUrl: buildTrackUrl(track.trackId, track.trackName),
                   appleId: String(track.trackId),
+                  appleTrackId: String(track.trackId),
+                  appleAlbumId: null,
+                  appleStorefront: null,
+                  isrc: null,
                   itemType: 'track',
                 };
               }
@@ -344,6 +368,10 @@ export default function ReleaseScreen() {
           spotifyId: null,
           appleUrl: null,
           appleId: null,
+          appleTrackId: null,
+          appleAlbumId: null,
+          appleStorefront: null,
+          isrc: null,
           itemType: 'album',
         };
       }
@@ -479,6 +507,7 @@ export default function ReleaseScreen() {
         appleUrl: release.appleUrl ?? null,
         imageUrl: release.artworkUrl ?? null,
         providerId: release.providerId ?? null,
+        isrc: release.isrc ?? null,
       });
       if (res.ok) {
         setAdded(true);
@@ -498,12 +527,6 @@ export default function ReleaseScreen() {
         return;
       } catch {}
     }
-    if (preferredPlayer === 'apple' && release.appleUrl) {
-      try {
-        await Linking.openURL(release.appleUrl);
-        return;
-      } catch {}
-    }
     const row: ListenRow = {
       id: release.id,
       item_type: release.itemType === 'album' ? 'album' : 'track',
@@ -515,13 +538,22 @@ export default function ReleaseScreen() {
       release_date: release.releaseDate ?? null,
       apple_url: release.appleUrl ?? null,
       apple_id: release.appleId ?? null,
+      apple_track_id: release.appleTrackId ?? null,
+      apple_album_id: release.appleAlbumId ?? null,
+      apple_storefront: release.appleStorefront ?? null,
+      isrc: release.isrc ?? null,
       spotify_url: release.spotifyUrl ?? null,
       spotify_id: release.spotifyId ?? null,
       done_at: null,
     };
     const ok = await openByDefaultPlayer(row);
     if (!ok) {
-      Alert.alert('Could not open', 'Try switching your default player in Settings.');
+      Alert.alert(
+        'Could not open',
+        preferredPlayer === 'apple'
+          ? 'Could not open an Apple Music link for this release.'
+          : 'Try switching your default player in Settings.'
+      );
     }
   }, [release, preferredPlayer]);
 

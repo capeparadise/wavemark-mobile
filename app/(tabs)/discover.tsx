@@ -1969,7 +1969,7 @@ export default function DiscoverTab() {
     Keyboard.dismiss();
   };
 
-  const onAddNew = async (a: { id: string; title: string; artist: string; releaseDate?: string | null; spotifyUrl?: string | null; imageUrl?: string | null; type?: string | null }, stat?: { done?: boolean | undefined }) => {
+  const onAddNew = async (a: { id: string; title: string; artist: string; releaseDate?: string | null; spotifyUrl?: string | null; imageUrl?: string | null; type?: string | null; isrc?: string | null }, stat?: { done?: boolean | undefined }) => {
     const key = spotifyKey(a.id, a.spotifyUrl);
     if (stat?.done && key) {
       // If previously listened, mark it active again before adding so the unique row can be reused
@@ -1990,6 +1990,7 @@ export default function DiscoverTab() {
       artist: a.artist,
       releaseDate: a.releaseDate ?? null,
       spotifyUrl: a.spotifyUrl ?? null,
+      isrc: a.isrc ?? null,
       appleUrl: null,
       imageUrl: a.imageUrl ?? null,
     });
@@ -2015,6 +2016,7 @@ export default function DiscoverTab() {
       artist: r.artist ?? null,
       releaseDate: r.releaseDate ?? null,
       spotifyUrl: r.spotifyUrl ?? null,
+      isrc: r.isrc ?? null,
       appleUrl: null,
       imageUrl: r.imageUrl ?? null,
     });

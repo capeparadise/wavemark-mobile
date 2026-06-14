@@ -32,6 +32,7 @@ export type ListenRow = {
   apple_track_id?: string | null;
   apple_album_id?: string | null;
   apple_storefront?: string | null;
+  isrc?: string | null;
 
   spotify_url: string | null;
   spotify_id: string | null;
@@ -385,7 +386,7 @@ export async function fetchListenList(): Promise<ListenRow[]> {
   if (userErr || !user) return [];
   const { data, error } = await supabase
     .from('listen_list')
-    .select('id,item_type,provider,provider_id,title,artist_name,artwork_url,release_date,apple_url,apple_id,spotify_url,spotify_id,rating,review,rated_at,done_at,upcoming,created_at')
+    .select('id,item_type,provider,provider_id,title,artist_name,artwork_url,release_date,apple_url,apple_id,apple_track_id,apple_album_id,apple_storefront,spotify_url,spotify_id,rating,review,rated_at,done_at,upcoming,created_at')
     .eq('user_id', user.id)
     .is('done_at', null)
     .order('id', { ascending: false });
@@ -472,6 +473,7 @@ export async function addToListFromSearch(input: {
   imageUrl?: string | null,
   artworkUrl?: string | null,
   providerId?: string | null,
+  isrc?: string | null,
 }): Promise<{ ok: boolean; id?: string; upcoming?: boolean; message?: string; row?: any }> {
   const { data: { user }, error: userErr } = await supabase.auth.getUser();
   if (userErr) return { ok: false, message: userErr.message };
@@ -566,10 +568,10 @@ export async function addToListFromSearch(input: {
 
   // Attempt canonical Apple Music resolution via edge function if still missing or legacy iTunes link
   try {
-    const needCanonical = !appleId || !appleUrl || !/music\.apple\.com\//.test(String(appleUrl));
+    const needCanonical = !!input.isrc || !appleId || !appleUrl || !/music\.apple\.com\//.test(String(appleUrl));
     if (needCanonical) {
       const { data: appleResolved } = await supabase.functions.invoke('apple-resolve', {
-        body: { type: input.type, title: input.title, artist: input.artist ?? undefined },
+        body: { type: input.type, title: input.title, artist: input.artist ?? undefined, isrc: input.isrc ?? undefined },
       });
       if (appleResolved) {
         if (appleResolved.id) appleId = String(appleResolved.id);
@@ -960,7 +962,74 @@ async function tryOpen(url: string | null | undefined) {
   }
 }
 
+async function ensureAppleFieldsForOpen(item: ListenRow): Promise<ListenRow> {
+  const itemType: 'track' | 'album' = item.item_type === 'album' ? 'album' : 'track';
+  const storefront = (item.apple_storefront || getAppleStorefront()).toLowerCase();
+  let isrc = item.isrc ?? null;
+  if (!isrc && itemType === 'track' && item.spotify_id) {
+    try {
+      const lookup = await spotifyLookup(item.spotify_id, 'track');
+      isrc = lookup?.[0]?.isrc ?? null;
+    } catch {}
+  }
+
+  const missingAppleFields =
+    !item.apple_url ||
+    (itemType === 'track' && (!item.apple_track_id || !item.apple_album_id)) ||
+    (itemType === 'album' && !item.apple_album_id);
+  if (!item.title) return { ...item, isrc };
+  if (!missingAppleFields && !isrc) return item;
+
+  try {
+    const edgeResolved = await supabase.functions.invoke('apple-resolve', {
+      body: {
+        type: itemType,
+        title: item.title,
+        artist: item.artist_name ?? undefined,
+        isrc: isrc ?? undefined,
+      },
+    }).then(({ data }) => data).catch(() => null);
+
+    const resolved = edgeResolved?.url ? {
+      url: String(edgeResolved.url),
+      trackId: itemType === 'album' ? null : (edgeResolved.id ? String(edgeResolved.id) : null),
+      albumId: edgeResolved.albumId ? String(edgeResolved.albumId) : (itemType === 'album' && edgeResolved.id ? String(edgeResolved.id) : null),
+      storefront,
+      artistName: null,
+    } : await resolveAppleUrl({
+      appleTrackId: item.apple_track_id || undefined,
+      appleAlbumId: item.apple_album_id || undefined,
+      isrc: isrc || undefined,
+      title: item.title,
+      artist: item.artist_name,
+      storefront,
+      itemType,
+    });
+
+    if (!resolved?.url) return { ...item, isrc };
+    const patch: Partial<ListenRow> = {
+      apple_url: resolved.url,
+      apple_track_id: itemType === 'track' ? (resolved.trackId || item.apple_track_id || item.apple_id || null) : item.apple_track_id ?? null,
+      apple_album_id: resolved.albumId || item.apple_album_id || (itemType === 'album' ? item.apple_id : null),
+      apple_storefront: resolved.storefront || storefront,
+    };
+    if (!item.apple_id) {
+      patch.apple_id = itemType === 'track'
+        ? (patch.apple_track_id || resolved.trackId || null)
+        : (patch.apple_album_id || resolved.albumId || null);
+    }
+    try {
+      await supabase.from('listen_list').update(patch).eq('id', item.id);
+    } catch {}
+    return { ...item, ...patch, isrc };
+  } catch (e) {
+    debug('apple:ensureFields:error', e);
+    return item;
+  }
+}
+
 async function tryApple(item: ListenRow) {
+  item = await ensureAppleFieldsForOpen(item);
   const storefront = getAppleStorefront().toLowerCase();
   // Enrich missing artist_name via iTunes lookup (best-effort, one-time)
   if (!item.artist_name && item.apple_id) {
@@ -992,6 +1061,7 @@ async function tryApple(item: ListenRow) {
     appleAlbumId,
     title: item.title,
     artist: item.artist_name,
+    isrc: item.isrc,
     storefront: sf,
   itemType: itemTypeForApple,
   });

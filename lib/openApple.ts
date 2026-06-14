@@ -9,6 +9,50 @@ import { supabase } from './supabase';
 const memCache = new Map<string,string>();
 const debug = debugNS('openApple');
 
+function unique(values: Array<string | null | undefined>): string[] {
+  return Array.from(new Set(values.filter((v): v is string => !!v)));
+}
+
+function appleUrlVariants(rawUrl: string, fallbackStorefront = 'gb'): string[] {
+  const variants: string[] = [];
+  try {
+    const url = new URL(rawUrl.trim());
+    if (url.hostname.endsWith('itunes.apple.com')) {
+      url.hostname = url.hostname.replace('itunes.apple.com', 'music.apple.com');
+    }
+    if (!url.hostname.endsWith('music.apple.com')) return [rawUrl];
+
+    const canonical = new URL(url.toString());
+    canonical.protocol = 'https:';
+    const parts = canonical.pathname.split('/').filter(Boolean);
+    if (!parts[0] || parts[0].length !== 2) {
+      parts.unshift(fallbackStorefront.toLowerCase());
+      canonical.pathname = '/' + parts.join('/');
+    }
+
+    variants.push(canonical.toString());
+
+    const clean = new URL(canonical.toString());
+    clean.searchParams.delete('uo');
+    variants.push(clean.toString());
+
+    const noApp = new URL(clean.toString());
+    noApp.searchParams.delete('app');
+    variants.push(noApp.toString());
+
+    const alt = new URL(noApp.toString());
+    const altParts = alt.pathname.split('/').filter(Boolean);
+    if (altParts[0]?.length === 2) {
+      altParts[0] = altParts[0].toLowerCase() === 'us' ? 'gb' : 'us';
+      alt.pathname = '/' + altParts.join('/');
+      variants.push(alt.toString());
+    }
+  } catch {
+    variants.push(rawUrl);
+  }
+  return unique(variants);
+}
+
 async function safeOpen(url: string): Promise<boolean> {
   try {
     await Linking.openURL(url);
@@ -43,15 +87,35 @@ export async function openInApple(opts: {
     }
   };
 
-  const storedUrl = opts.appleUrl?.trim();
-  if (storedUrl) {
-    debug('storedUrl:try', storedUrl);
-    if (await safeOpen(storedUrl)) {
-      await remember(storedUrl);
-      return true;
+  if (opts.isrc) {
+    const isrcResolved = await resolveAppleUrl({
+      isrc: opts.isrc,
+      storefront: (opts.storefront || 'gb').toLowerCase(),
+      itemType: opts.itemType,
+    });
+    if (isrcResolved?.url) {
+      for (const candidate of appleUrlVariants(isrcResolved.url, opts.storefront || isrcResolved.storefront || 'gb')) {
+        if (await safeOpen(candidate)) {
+          await remember(candidate);
+          return true;
+        }
+      }
     }
   }
 
+  const storedUrl = opts.appleUrl?.trim();
+  if (storedUrl) {
+    const storedVariants = appleUrlVariants(storedUrl, opts.storefront || 'gb');
+    debug('storedUrl:try', storedVariants);
+    for (const candidate of storedVariants) {
+      if (await safeOpen(candidate)) {
+        await remember(candidate);
+        return true;
+      }
+    }
+  }
+
+  const hasTrustedAppleIdentity = !!(storedUrl || opts.appleTrackId || opts.appleAlbumId || opts.isrc);
   const resolved = await resolveAppleUrl({
     appleTrackId: opts.appleTrackId ?? undefined,
     appleAlbumId: opts.appleAlbumId ?? undefined,
@@ -63,18 +127,41 @@ export async function openInApple(opts: {
   });
   if (!resolved?.url) {
     debug('resolve:miss', { title: opts.title, artist: opts.artist });
-    return false; // avoid opening generic homepage which confuses user
+    if (opts.title) {
+      try {
+        const { data } = await supabase.functions.invoke('apple-resolve', {
+          body: {
+            type: opts.itemType === 'album' ? 'album' : 'track',
+            title: opts.title,
+            artist: opts.artist ?? undefined,
+            isrc: opts.isrc ?? undefined,
+          },
+        });
+        const resolvedUrl = typeof data?.url === 'string' ? data.url : null;
+        if (resolvedUrl) {
+          for (const candidate of appleUrlVariants(resolvedUrl, opts.storefront || 'gb')) {
+            if (await safeOpen(candidate)) {
+              await remember(candidate);
+              return true;
+            }
+          }
+        }
+      } catch (e) {
+        debug('edgeResolve:missFail', { error: (e as any)?.message ?? String(e) });
+      }
+    }
+    return false;
   }
 
   // Guard: ensure artist matches (normalized) before using result.
   const norm = (s: string | null | undefined) => (s||'').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,' ').trim();
   const compress = (s: string | null | undefined) => (s||'').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g,'').replace(/[^0-9a-z]+/g,'');
   const wantArtist = norm(opts.artist);
-  const gotArtist = norm(resolved.artistName);
+  let gotArtist = norm(resolved.artistName);
   const wantArtistComp = compress(opts.artist);
-  const gotArtistComp = compress(resolved.artistName);
+  let gotArtistComp = compress(resolved.artistName);
   debug('resolve:artistCheck', { wantArtist, gotArtist, url: resolved.url });
-  if (wantArtist) {
+  if (wantArtist && !hasTrustedAppleIdentity) {
     if (!gotArtist) {
       debug('resolve:artistUnknown', { wantArtist });
       // Strict fallback for track items with numeric / special artist formatting
@@ -86,9 +173,9 @@ export async function openInApple(opts: {
           resolved.trackId = strict.trackId;
           resolved.albumId = strict.albumId;
           resolved.artistName = strict.artistName;
-          // Recompute gotArtist
-          const newGot = norm(strict.artistName);
-          if (newGot) {
+          gotArtist = norm(strict.artistName);
+          gotArtistComp = compress(strict.artistName);
+          if (gotArtist) {
             // continue to variant construction
           } else {
             return false;
@@ -125,7 +212,7 @@ export async function openInApple(opts: {
       base = bu.toString();
     }
   } catch {}
-  variants.push(base);
+  variants.push(...appleUrlVariants(base, opts.storefront || resolved.storefront || 'gb'));
 
   // Variant 2: same URL without app=music (some Apple Music installs behave better without it)
   try {
@@ -157,9 +244,10 @@ export async function openInApple(opts: {
     }
   } catch {}
 
-  debug('open:variants', variants);
+  const openVariants = unique(variants);
+  debug('open:variants', openVariants);
 
-  for (const v of variants) {
+  for (const v of openVariants) {
     if (await safeOpen(v)) {
       await remember(v);
       return true;
@@ -173,12 +261,17 @@ export async function openInApple(opts: {
           type: opts.itemType === 'album' ? 'album' : 'track',
           title: opts.title,
           artist: opts.artist ?? undefined,
+          isrc: opts.isrc ?? undefined,
         },
       });
       const resolvedUrl = typeof data?.url === 'string' ? data.url : null;
-      if (resolvedUrl && await safeOpen(resolvedUrl)) {
-        await remember(resolvedUrl);
-        return true;
+      if (resolvedUrl) {
+        for (const candidate of appleUrlVariants(resolvedUrl, opts.storefront || 'gb')) {
+          if (await safeOpen(candidate)) {
+            await remember(candidate);
+            return true;
+          }
+        }
       }
     } catch (e) {
       debug('edgeResolve:fail', { error: (e as any)?.message ?? String(e) });
