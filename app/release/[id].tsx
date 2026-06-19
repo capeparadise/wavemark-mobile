@@ -618,6 +618,8 @@ export default function ReleaseScreen() {
   }, [release]);
 
   const openLabel = preferredPlayer === 'apple' ? 'Open in Apple Music' : 'Open in Spotify';
+  const primaryCtaLabel = added ? openLabel : adding ? 'Adding...' : 'Add to Listen list';
+  const onPrimaryCtaPress = added ? onOpenExternal : onAdd;
   const heroArtworkSize = 220;
   const moreByLabel = release?.artistName ? `More by ${release.artistName}` : 'More by this artist';
 
@@ -724,38 +726,40 @@ export default function ReleaseScreen() {
 
               <View style={{ paddingHorizontal: 20, marginTop: 24 }}>
                 <Pressable
-                  onPress={onAdd}
-                  disabled={adding || added}
+                  onPress={onPrimaryCtaPress}
+                  disabled={adding}
                   style={({ pressed }) => ({
                     paddingVertical: 15,
                     borderRadius: 16,
-                    backgroundColor: added ? colors.overlay.softLight : colors.accent.primary,
+                    backgroundColor: colors.accent.primary,
                     borderWidth: 1,
-                    borderColor: added ? colors.overlay.softLight : colors.accent.primary,
+                    borderColor: colors.accent.primary,
                     opacity: pressed ? 0.92 : 1,
                   })}
                 >
-                  <Text style={{ textAlign: 'center', fontWeight: '800', color: added ? colors.text.inverted : colors.text.inverted }}>
-                    {added ? 'Added to Listen list' : adding ? 'Adding...' : 'Add to Listen list'}
+                  <Text style={{ textAlign: 'center', fontWeight: '800', color: colors.text.inverted }}>
+                    {primaryCtaLabel}
                   </Text>
                 </Pressable>
 
-                <Pressable
-                  onPress={onOpenExternal}
-                  style={({ pressed }) => ({
-                    alignSelf: 'center',
-                    marginTop: 12,
-                    paddingHorizontal: 16,
-                    paddingVertical: 10,
-                    borderRadius: 999,
-                    backgroundColor: 'transparent',
-                    borderWidth: 1,
-                    borderColor: colors.overlay.softLight,
-                    opacity: pressed ? 0.88 : 1,
-                  })}
-                >
-                  <Text style={{ textAlign: 'center', fontWeight: '700', color: colors.text.subtle, fontSize: 13 }}>{openLabel}</Text>
-                </Pressable>
+                {!added ? (
+                  <Pressable
+                    onPress={onOpenExternal}
+                    style={({ pressed }) => ({
+                      alignSelf: 'center',
+                      marginTop: 12,
+                      paddingHorizontal: 16,
+                      paddingVertical: 10,
+                      borderRadius: 999,
+                      backgroundColor: 'transparent',
+                      borderWidth: 1,
+                      borderColor: colors.overlay.softLight,
+                      opacity: pressed ? 0.88 : 1,
+                    })}
+                  >
+                    <Text style={{ textAlign: 'center', fontWeight: '700', color: colors.text.subtle, fontSize: 13 }}>{openLabel}</Text>
+                  </Pressable>
+                ) : null}
               </View>
 
               <View style={{ marginTop: 34, paddingHorizontal: 20 }}>
