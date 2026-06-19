@@ -8,7 +8,7 @@ import GlassCard from '../../components/GlassCard';
 import { formatDate } from '../../lib/date';
 import { addToListFromSearch, getDefaultPlayer, openByDefaultPlayer, type ListenPlayer, type ListenRow } from '../../lib/listen';
 import { type SimpleAlbum } from '../../lib/recommend';
-import { parseSpotifyUrlOrId, spotifyLookup } from '../../lib/spotify';
+import { parseSpotifyUrlOrId, spotifyLookup, spotifySearch } from '../../lib/spotify';
 import { buildAlbumUrl, buildTrackUrl, fetchAllAlbums, fetchCollectionById, fetchTrackById } from '../../lib/apple';
 import { artistAlbums } from '../../lib/spotifyArtist';
 import { supabase } from '../../lib/supabase';
@@ -63,6 +63,13 @@ const releaseTimestamp = (value?: string | null) => {
   else if (/^\d{4}-\d{2}$/.test(normalized)) normalized = `${normalized}-15`;
   const timestamp = Date.parse(normalized);
   return Number.isNaN(timestamp) ? 0 : timestamp;
+};
+
+const releaseTypeLabel = (item: Pick<SimpleAlbum, 'title' | 'type'>) => {
+  const title = item.title || '';
+  if (item.type === 'ep' || /(^|\s)EP(\s|$)/i.test(title)) return 'EP';
+  if (item.type === 'single' || item.type === 'track' || / - Single$/i.test(title)) return 'SINGLE';
+  return 'ALBUM';
 };
 
 export default function ReleaseScreen() {
@@ -157,7 +164,8 @@ export default function ReleaseScreen() {
 
   const releaseKey = String(release?.spotifyId || release?.providerId || spotifyIdParam || releaseId || '').trim();
   const artistKey = String(release?.artistId || artistIdParam || '').trim();
-  const moreByKey = artistKey ? `${release?.provider || 'unknown'}:${artistKey}:${releaseKey}` : '';
+  const artistNameKey = String(release?.artistName || artistNameParam || '').trim().toLowerCase();
+  const moreByKey = artistKey || artistNameKey ? `${release?.provider || 'unknown'}:${artistKey || artistNameKey}:${releaseKey}` : '';
 
   const sameIds = useCallback((a: SimpleAlbum[], b: SimpleAlbum[]) => {
     if (a.length !== b.length) return false;
@@ -389,7 +397,8 @@ export default function ReleaseScreen() {
   }, [releaseId]);
 
   const loadMoreByArtist = useCallback(async () => {
-    if (!release || !artistKey) {
+    const artistName = String(release?.artistName || '').trim();
+    if (!release || (!artistKey && !artistName)) {
       setMoreByArtist([]);
       return;
     }
@@ -417,7 +426,7 @@ export default function ReleaseScreen() {
       let nextItems: SimpleAlbum[] = [];
 
       if (release.provider === 'spotify' && /^[A-Za-z0-9]{22}$/.test(artistKey)) {
-        const albums = await artistAlbums(artistKey, 'from_token').catch(() => artistAlbums(artistKey, 'GB'));
+        const albums = await artistAlbums(artistKey, 'from_token').catch(() => artistAlbums(artistKey, 'GB')).catch(() => []);
         nextItems = albums.map((item) => ({
           id: item.id,
           title: item.title,
@@ -428,6 +437,52 @@ export default function ReleaseScreen() {
           imageUrl: item.imageUrl ?? null,
           type: item.type,
         }));
+      }
+
+      if (!nextItems.length && release.provider === 'spotify' && artistName) {
+        const norm = (value: string | null | undefined) => String(value || '')
+          .toLowerCase()
+          .normalize('NFKD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .replace(/[^a-z0-9]+/g, ' ')
+          .trim();
+        const wantedArtist = norm(artistName);
+        const results = await spotifySearch(artistName, 'album,track').catch(() => []);
+        const grouped = new Map<string, { album?: typeof results[number]; tracks: typeof results }>();
+        results
+          .filter((item) => item.type === 'album' || item.type === 'track')
+          .filter((item) => {
+            if (artistKey && item.artistId) return item.artistId === artistKey;
+            return norm(item.artist) === wantedArtist;
+          })
+          .forEach((item) => {
+            const key = String(item.albumId || item.id || `${norm(item.title)}::${item.releaseDate || ''}::${item.imageUrl || ''}`).trim();
+            if (!key) return;
+            const group = grouped.get(key) ?? { tracks: [] };
+            if (item.type === 'album') group.album = item;
+            else group.tracks.push(item);
+            grouped.set(key, group);
+          });
+
+        const groupedItems = await Promise.all(Array.from(grouped.entries()).map(async ([albumId, group]) => {
+          const album = group.album ?? (albumId && /^[A-Za-z0-9]{22}$/.test(albumId)
+            ? await spotifyLookup(albumId, 'album').then((items) => items[0] ?? null).catch(() => null)
+            : null);
+          const fallback = group.tracks[0];
+          const source = album ?? fallback;
+          if (!source) return null;
+          return {
+            id: album?.id ?? albumId,
+            title: album?.title ?? source.title,
+            artist: album?.artist ?? source.artist ?? artistName,
+            artistId: album?.artistId ?? source.artistId ?? (artistKey || null),
+            releaseDate: album?.releaseDate ?? source.releaseDate ?? null,
+            spotifyUrl: album?.spotifyUrl ?? source.spotifyUrl ?? null,
+            imageUrl: album?.imageUrl ?? source.imageUrl ?? null,
+            type: album?.albumType === 'single' ? 'single' : 'album',
+          } satisfies SimpleAlbum;
+        }));
+        nextItems = groupedItems.filter((item): item is SimpleAlbum => !!item);
       } else if (release.provider === 'apple') {
         const appleArtistId = extractAppleId(artistKey) ?? (/^\d+$/.test(artistKey) ? Number(artistKey) : null);
         if (appleArtistId) {
@@ -457,7 +512,12 @@ export default function ReleaseScreen() {
       const deduped: SimpleAlbum[] = [];
       const seen = new Set<string>();
       nextItems.forEach((item) => {
-        const key = [item.id, item.spotifyUrl, `${(item.title || '').trim().toLowerCase()}::${String(item.releaseDate || '').trim()}`]
+        const normalizedTitle = (item.title || '').trim().toLowerCase();
+        const releaseLevelKey = normalizedTitle ? [
+          normalizedTitle,
+          (item.artist || '').trim().toLowerCase(),
+        ].join('::') : '';
+        const key = [releaseLevelKey, item.id, item.spotifyUrl]
           .map((value) => String(value || '').trim())
           .find(Boolean);
         if (!key || seen.has(key)) return;
@@ -782,7 +842,7 @@ export default function ReleaseScreen() {
                   <GlassCard style={{ padding: 18, borderRadius: 20 }}>
                     <Text style={{ color: colors.text.secondary, fontWeight: '800', fontSize: 15 }}>No more releases yet</Text>
                     <Text style={{ color: colors.text.muted, marginTop: 6, lineHeight: 20 }}>
-                      We do not have other recent releases for this artist right now.
+                      We do not have other releases for this artist right now.
                     </Text>
                   </GlassCard>
                 ) : (
@@ -822,9 +882,16 @@ export default function ReleaseScreen() {
                             <Text style={{ color: colors.text.secondary, fontWeight: '700' }} numberOfLines={1}>
                               {item.title}
                             </Text>
-                            <Text style={{ color: colors.text.muted, fontSize: 12, marginTop: 4 }} numberOfLines={1}>
-                              {item.releaseDate ? formatDate(item.releaseDate) : (item.type ? String(item.type).toUpperCase() : 'Release')}
-                            </Text>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 }}>
+                              <Text style={{ color: colors.text.muted, fontSize: 10, fontWeight: '900', letterSpacing: 0.8 }} numberOfLines={1}>
+                                {releaseTypeLabel(item)}
+                              </Text>
+                              {item.releaseDate ? (
+                                <Text style={{ color: colors.text.muted, fontSize: 12, flexShrink: 1 }} numberOfLines={1}>
+                                  {formatDate(item.releaseDate)}
+                                </Text>
+                              ) : null}
+                            </View>
                           </View>
                           <Ionicons name="chevron-forward" size={16} color={colors.text.muted} />
                         </Pressable>
