@@ -16,6 +16,7 @@ export type SpotifyResult = {
   albumId?: string | null;   // for tracks (parent album), for albums (same as id)
   artistId?: string | null;  // primary artist id when available
   isrc?: string | null;
+  upc?: string | null;
   popularity?: number;
 };
 
@@ -78,6 +79,7 @@ export async function spotifyLookup(id: string, lookupType: 'album' | 'track'): 
   albumId: data.id ?? null,
   artistId: data.artists?.[0]?.id ?? null,
   isrc: null,
+  upc: data.external_ids?.upc ?? null,
     }];
   } else {
     return [{
@@ -93,6 +95,7 @@ export async function spotifyLookup(id: string, lookupType: 'album' | 'track'): 
   albumId: data.album?.id ?? null,
   artistId: data.artists?.[0]?.id ?? null,
   isrc: data.external_ids?.isrc ?? null,
+  upc: data.album?.external_ids?.upc ?? null,
     }];
   }
 }
@@ -159,6 +162,7 @@ export async function spotifySearch(q: string, types: string = 'album,track,arti
       albumId: a.id ?? null,
       artistId: a.artists?.[0]?.id ?? null,
       isrc: null,
+      upc: a.external_ids?.upc ?? null,
       popularity: a.popularity ?? 0,
     });
   }

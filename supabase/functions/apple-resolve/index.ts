@@ -1,7 +1,7 @@
 // supabase/functions/apple-resolve/index.ts
 // @ts-nocheck
 // Resolve an Apple Music canonical ID + URL for a track or album using the Apple Music API.
-// Input JSON: { type: 'track'|'album', title: string, artist?: string, isrc?: string }
+// Input JSON: { type: 'track'|'album', title: string, artist?: string, isrc?: string, upc?: string }
 // Supabase secrets supported:
 //   APPLE_MUSIC_TEAM_ID
 //   APPLE_MUSIC_KEY_ID
@@ -222,6 +222,16 @@ async function itunesLookupByIsrc(isrc: string, country: string): Promise<any | 
   return Array.isArray(j.results) ? (j.results[0] ?? null) : null;
 }
 
+async function itunesLookupByUpc(upc: string, country: string): Promise<any | null> {
+  const cleanUpc = String(upc || '').trim();
+  if (!cleanUpc) return null;
+  const url = `https://itunes.apple.com/lookup?upc=${encodeURIComponent(cleanUpc)}&country=${country.toUpperCase()}`;
+  const r = await fetch(url);
+  if (!r.ok) return null;
+  const j = await r.json();
+  return Array.isArray(j.results) ? (j.results[0] ?? null) : null;
+}
+
 async function itunesFallback(term: string, entity: 'musicTrack'|'album', country: string): Promise<any[]> {
   const url = `https://itunes.apple.com/search?term=${encodeURIComponent(term)}&country=${country.toUpperCase()}&entity=${entity}&limit=5`;
   const r = await fetch(url);
@@ -299,7 +309,7 @@ function buildReturnFromItunes(type: 'track'|'album', picked: any, source = 'itu
     url: url ? String(url) : null,
     albumId,
     source,
-    confidence: source === 'isrc' ? 1 : (meta?.confidence ?? 0),
+    confidence: source === 'isrc' || source === 'upc' ? 1 : (meta?.confidence ?? 0),
     resultTitle: meta?.resultTitle ?? (type === 'track' ? best.trackName : best.collectionName) ?? null,
     resultArtist: meta?.resultArtist ?? best.artistName ?? null,
     kind: type,
@@ -310,7 +320,7 @@ function buildReturnFromItunes(type: 'track'|'album', picked: any, source = 'itu
 Deno.serve(async (req) => {
   try {
     if (req.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
-    const { type, title, artist, isrc } = await req.json();
+    const { type, title, artist, isrc, upc } = await req.json();
     if (!type || !title) return Response.json({ error: 'Missing type or title' }, { status: 400 });
 
     // Attempt Music API first if token present
@@ -333,13 +343,14 @@ Deno.serve(async (req) => {
     // Fallback to iTunes if Music API failed or incomplete
     if (!out.id || !out.url) {
       const isrcIt = type === 'track' && isrc ? await itunesLookupByIsrc(isrc, STOREFRONT) : null;
-      const itRows = isrcIt ? [isrcIt] : await itunesFallback(termParts, type === 'track' ? 'musicTrack' : 'album', STOREFRONT);
-      const bestIt = isrcIt ? isrcIt : pickBestFromItunes(type, title, artist, itRows);
+      const upcIt = !isrcIt && type === 'album' && upc ? await itunesLookupByUpc(upc, STOREFRONT) : null;
+      const itRows = isrcIt || upcIt ? [isrcIt || upcIt] : await itunesFallback(termParts, type === 'track' ? 'musicTrack' : 'album', STOREFRONT);
+      const bestIt = isrcIt || upcIt ? (isrcIt || upcIt) : pickBestFromItunes(type, title, artist, itRows);
       const itOut = buildReturnFromItunes(
         type,
         bestIt,
-        isrcIt ? 'isrc' : 'itunes_search',
-        isrcIt ? 'isrc' : 'title_artist_confident',
+        isrcIt ? 'isrc' : (upcIt ? 'upc' : 'itunes_search'),
+        isrcIt ? 'isrc' : (upcIt ? 'upc' : 'title_artist_confident'),
       );
       if (!out.id) out.id = itOut.id;
       if (!out.url) out.url = itOut.url;

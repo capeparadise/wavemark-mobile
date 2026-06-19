@@ -62,6 +62,7 @@ function hasCompleteAppleIds(opts: { itemType?: 'track' | 'album'; appleTrackId?
 function trustedEdgeResolution(data: any) {
   if (!data?.url) return false;
   if (data.source === 'isrc') return true;
+  if (data.source === 'upc') return true;
   return typeof data.confidence === 'number' && data.confidence >= 0.92;
 }
 
@@ -81,6 +82,7 @@ export async function openInApple(opts: {
   appleTrackId?: string | null;
   appleAlbumId?: string | null;
   isrc?: string | null;
+  upc?: string | null;
   title?: string | null;
   artist?: string | null;
   storefront?: string | null;
@@ -149,11 +151,12 @@ export async function openInApple(opts: {
     });
   }
 
-  const hasTrustedAppleIdentity = !!(opts.appleTrackId || opts.appleAlbumId || opts.isrc);
+  const hasTrustedAppleIdentity = !!(opts.appleTrackId || opts.appleAlbumId || opts.isrc || opts.upc);
   const resolved = await resolveAppleUrl({
     appleTrackId: opts.appleTrackId ?? undefined,
     appleAlbumId: opts.appleAlbumId ?? undefined,
     isrc: opts.isrc ?? undefined,
+    upc: opts.upc ?? undefined,
     title: opts.title ?? undefined,
     artist: opts.artist ?? undefined,
     storefront: (opts.storefront || 'gb').toLowerCase(),
@@ -173,6 +176,7 @@ export async function openInApple(opts: {
             title: opts.title,
             artist: opts.artist ?? undefined,
             isrc: opts.isrc ?? undefined,
+            upc: opts.upc ?? undefined,
           },
         });
         const resolvedUrl = trustedEdgeResolution(data) && typeof data?.url === 'string' ? data.url : null;
@@ -301,6 +305,7 @@ export async function openInApple(opts: {
           title: opts.title,
           artist: opts.artist ?? undefined,
           isrc: opts.isrc ?? undefined,
+          upc: opts.upc ?? undefined,
         },
       });
       const resolvedUrl = trustedEdgeResolution(data) && typeof data?.url === 'string' ? data.url : null;

@@ -11,7 +11,7 @@ export type ResolvedAppleUrl = {
   albumId?: string;
   artistName?: string;
   confidence?: number;
-  source?: 'id' | 'isrc' | 'search';
+  source?: 'id' | 'isrc' | 'upc' | 'search';
 };
 
 async function fetchJSON(url: string): Promise<any | null> {
@@ -41,7 +41,7 @@ async function lookupOnce(params: Record<string,string>, country: string): Promi
       albumId: item.collectionId ? String(item.collectionId) : undefined,
       artistName: item.artistName,
       confidence: 1,
-      source: params.isrc ? 'isrc' : 'id',
+      source: params.isrc ? 'isrc' : (params.upc ? 'upc' : 'id'),
     };
   }
   if (albumUrl) {
@@ -53,7 +53,7 @@ async function lookupOnce(params: Record<string,string>, country: string): Promi
       albumId: String(item.collectionId),
       artistName: item.artistName,
       confidence: 1,
-      source: params.isrc ? 'isrc' : 'id',
+      source: params.isrc ? 'isrc' : (params.upc ? 'upc' : 'id'),
     };
   }
   return null;
@@ -173,6 +173,7 @@ export async function resolveAppleUrl(input: {
   appleTrackId?: string | null;
   appleAlbumId?: string | null;
   isrc?: string | null;
+  upc?: string | null;
   title?: string | null;
   artist?: string | null;
   storefront?: string; // preferred storefront (gb/us etc.)
@@ -191,6 +192,10 @@ export async function resolveAppleUrl(input: {
     }
     if (input.isrc) {
       const hit = await lookupOnce({ isrc: input.isrc }, country);
+      if (hit) return hit;
+    }
+    if (input.itemType === 'album' && input.upc) {
+      const hit = await lookupOnce({ upc: input.upc }, country);
       if (hit) return hit;
     }
   }
