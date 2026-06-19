@@ -53,6 +53,18 @@ function appleUrlVariants(rawUrl: string, fallbackStorefront = 'gb'): string[] {
   return unique(variants);
 }
 
+function hasCompleteAppleIds(opts: { itemType?: 'track' | 'album'; appleTrackId?: string | null; appleAlbumId?: string | null }) {
+  return opts.itemType === 'album'
+    ? !!opts.appleAlbumId
+    : !!opts.appleTrackId && !!opts.appleAlbumId;
+}
+
+function trustedEdgeResolution(data: any) {
+  if (!data?.url) return false;
+  if (data.source === 'isrc') return true;
+  return typeof data.confidence === 'number' && data.confidence >= 0.92;
+}
+
 async function safeOpen(url: string): Promise<boolean> {
   try {
     await Linking.openURL(url);
@@ -75,17 +87,37 @@ export async function openInApple(opts: {
   itemType?: 'track' | 'album';
 }): Promise<boolean> {
   const key = opts.rowId;
-  if (key && memCache.has(key)) {
-    const cached = memCache.get(key)!;
-    debug('cache:hit', cached);
-    return await safeOpen(cached);
-  }
   const remember = async (url: string) => {
     if (key) {
       memCache.set(key, url);
       try { await supabase.from('listen_list').update({ apple_url: url }).eq('id', key); } catch {}
     }
   };
+
+  const openRemembered = async (url: string, storefront?: string | null) => {
+    for (const candidate of appleUrlVariants(url, storefront || 'gb')) {
+      if (await safeOpen(candidate)) {
+        await remember(candidate);
+        return true;
+      }
+    }
+    return false;
+  };
+
+  if (key && memCache.has(key)) {
+    const cached = memCache.get(key)!;
+    if (hasCompleteAppleIds(opts)) {
+      debug('cache:trustedHit', cached);
+      if (await openRemembered(cached, opts.storefront || 'gb')) return true;
+    } else {
+      memCache.delete(key);
+      debug('cache:dropUnvalidated', {
+        hasTrackId: !!opts.appleTrackId,
+        hasAlbumId: !!opts.appleAlbumId,
+        itemType: opts.itemType,
+      });
+    }
+  }
 
   if (opts.isrc) {
     const isrcResolved = await resolveAppleUrl({
@@ -94,17 +126,13 @@ export async function openInApple(opts: {
       itemType: opts.itemType,
     });
     if (isrcResolved?.url) {
-      for (const candidate of appleUrlVariants(isrcResolved.url, opts.storefront || isrcResolved.storefront || 'gb')) {
-        if (await safeOpen(candidate)) {
-          await remember(candidate);
-          return true;
-        }
-      }
+      if (await openRemembered(isrcResolved.url, opts.storefront || isrcResolved.storefront || 'gb')) return true;
     }
   }
 
   const storedUrl = opts.appleUrl?.trim();
-  if (storedUrl) {
+  const hasTrustedStoredIdentity = !!storedUrl && hasCompleteAppleIds(opts);
+  if (storedUrl && hasTrustedStoredIdentity) {
     const storedVariants = appleUrlVariants(storedUrl, opts.storefront || 'gb');
     debug('storedUrl:try', storedVariants);
     for (const candidate of storedVariants) {
@@ -113,9 +141,15 @@ export async function openInApple(opts: {
         return true;
       }
     }
+  } else if (storedUrl) {
+    debug('storedUrl:skipUnvalidated', {
+      hasTrackId: !!opts.appleTrackId,
+      hasAlbumId: !!opts.appleAlbumId,
+      itemType: opts.itemType,
+    });
   }
 
-  const hasTrustedAppleIdentity = !!(storedUrl || opts.appleTrackId || opts.appleAlbumId || opts.isrc);
+  const hasTrustedAppleIdentity = !!(opts.appleTrackId || opts.appleAlbumId || opts.isrc);
   const resolved = await resolveAppleUrl({
     appleTrackId: opts.appleTrackId ?? undefined,
     appleAlbumId: opts.appleAlbumId ?? undefined,
@@ -125,6 +159,10 @@ export async function openInApple(opts: {
     storefront: (opts.storefront || 'gb').toLowerCase(),
   itemType: opts.itemType,
   });
+  if (resolved?.url && !hasTrustedAppleIdentity && (resolved.confidence ?? 0) < 0.9) {
+    debug('resolve:lowConfidence', { confidence: resolved.confidence, source: resolved.source });
+    return false;
+  }
   if (!resolved?.url) {
     debug('resolve:miss', { title: opts.title, artist: opts.artist });
     if (opts.title) {
@@ -137,14 +175,15 @@ export async function openInApple(opts: {
             isrc: opts.isrc ?? undefined,
           },
         });
-        const resolvedUrl = typeof data?.url === 'string' ? data.url : null;
+        const resolvedUrl = trustedEdgeResolution(data) && typeof data?.url === 'string' ? data.url : null;
         if (resolvedUrl) {
-          for (const candidate of appleUrlVariants(resolvedUrl, opts.storefront || 'gb')) {
-            if (await safeOpen(candidate)) {
-              await remember(candidate);
-              return true;
-            }
-          }
+          if (await openRemembered(resolvedUrl, opts.storefront || 'gb')) return true;
+        } else if (data?.url) {
+          debug('edgeResolve:lowConfidence', {
+            source: data.source ?? null,
+            confidence: data.confidence ?? null,
+            matchReason: data.matchReason ?? null,
+          });
         }
       } catch (e) {
         debug('edgeResolve:missFail', { error: (e as any)?.message ?? String(e) });
@@ -264,14 +303,15 @@ export async function openInApple(opts: {
           isrc: opts.isrc ?? undefined,
         },
       });
-      const resolvedUrl = typeof data?.url === 'string' ? data.url : null;
+      const resolvedUrl = trustedEdgeResolution(data) && typeof data?.url === 'string' ? data.url : null;
       if (resolvedUrl) {
-        for (const candidate of appleUrlVariants(resolvedUrl, opts.storefront || 'gb')) {
-          if (await safeOpen(candidate)) {
-            await remember(candidate);
-            return true;
-          }
-        }
+        if (await openRemembered(resolvedUrl, opts.storefront || 'gb')) return true;
+      } else if (data?.url) {
+        debug('edgeResolve:lowConfidence', {
+          source: data.source ?? null,
+          confidence: data.confidence ?? null,
+          matchReason: data.matchReason ?? null,
+        });
       }
     } catch (e) {
       debug('edgeResolve:fail', { error: (e as any)?.message ?? String(e) });

@@ -573,7 +573,7 @@ export async function addToListFromSearch(input: {
       const { data: appleResolved } = await supabase.functions.invoke('apple-resolve', {
         body: { type: input.type, title: input.title, artist: input.artist ?? undefined, isrc: input.isrc ?? undefined },
       });
-      if (appleResolved) {
+      if (trustedAppleResolvePayload(appleResolved)) {
         if (appleResolved.id) appleId = String(appleResolved.id);
         if (appleResolved.url) appleUrl = String(appleResolved.url);
         if (appleResolved.albumId) appleAlbumId = String(appleResolved.albumId);
@@ -962,6 +962,12 @@ async function tryOpen(url: string | null | undefined) {
   }
 }
 
+function trustedAppleResolvePayload(data: any) {
+  if (!data?.url) return false;
+  if (data.source === 'isrc') return true;
+  return typeof data.confidence === 'number' && data.confidence >= 0.92;
+}
+
 async function ensureAppleFieldsForOpen(item: ListenRow): Promise<ListenRow> {
   const itemType: 'track' | 'album' = item.item_type === 'album' ? 'album' : 'track';
   const storefront = (item.apple_storefront || getAppleStorefront()).toLowerCase();
@@ -990,7 +996,7 @@ async function ensureAppleFieldsForOpen(item: ListenRow): Promise<ListenRow> {
       },
     }).then(({ data }) => data).catch(() => null);
 
-    const resolved = edgeResolved?.url ? {
+    const resolved = trustedAppleResolvePayload(edgeResolved) ? {
       url: String(edgeResolved.url),
       trackId: itemType === 'album' ? null : (edgeResolved.id ? String(edgeResolved.id) : null),
       albumId: edgeResolved.albumId ? String(edgeResolved.albumId) : (itemType === 'album' && edgeResolved.id ? String(edgeResolved.id) : null),
@@ -1350,7 +1356,7 @@ export async function bulkRefreshAppleLinks(limit = 100): Promise<{ processed: n
           artist: r.artist_name ?? undefined,
         },
       }).then(({ data }) => data).catch(() => null);
-      const resolved = edgeResolved?.url ? {
+      const resolved = trustedAppleResolvePayload(edgeResolved) ? {
         url: String(edgeResolved.url),
         trackId: r.item_type === 'album' ? null : (edgeResolved.id ? String(edgeResolved.id) : null),
         albumId: edgeResolved.albumId ? String(edgeResolved.albumId) : (r.item_type === 'album' && edgeResolved.id ? String(edgeResolved.id) : null),
