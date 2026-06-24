@@ -115,9 +115,9 @@ export async function uploadMyAvatar(input: { uri: string; contentType?: string 
   const contentType = input.contentType || (ext === 'png' ? 'image/png' : 'image/jpeg');
   const path = `${user.id}/${Date.now()}.${ext}`;
 
-  let blob: Blob;
+  let body: ArrayBuffer;
   try {
-    blob = await (await fetch(uri)).blob();
+    body = await (await fetch(uri)).arrayBuffer();
   } catch {
     return { ok: false, message: 'Could not read image' };
   }
@@ -125,7 +125,7 @@ export async function uploadMyAvatar(input: { uri: string; contentType?: string 
   const { error: upErr } = await supabase
     .storage
     .from('avatars')
-    .upload(path, blob as any, { upsert: true, contentType });
+    .upload(path, body, { upsert: true, contentType });
   if (upErr) return { ok: false, message: upErr.message };
 
   const { data: pub } = supabase.storage.from('avatars').getPublicUrl(path);

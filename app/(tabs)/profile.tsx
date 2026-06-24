@@ -124,6 +124,7 @@ export default function ProfileTab() {
       const asset = res.assets[0];
       const up = await uploadMyAvatar({ uri: asset.uri, contentType: (asset as any).mimeType ?? null });
       if (up.ok && up.url) setAvatarUrl(up.url);
+      else Alert.alert('Could not update photo', up.message || 'Please try again.');
     } finally {
       setAvatarBusy(false);
     }
