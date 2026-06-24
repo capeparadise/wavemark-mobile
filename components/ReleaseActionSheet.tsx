@@ -99,7 +99,38 @@ export default function ReleaseActionSheet({ row, visible, onClose, onChanged }:
       (typeof anyRow.artist === 'string' ? anyRow.artist : null) ||
       null;
 
-    return { done, provider, provider_id, inList, artistId, artistName };
+    const highlightId =
+      (typeof anyRow.albumId === 'string' ? anyRow.albumId : null) ||
+      (typeof anyRow.album_id === 'string' ? anyRow.album_id : null) ||
+      (provider === 'spotify' && typeof provider_id === 'string' && /^[A-Za-z0-9]{22}$/.test(provider_id) ? provider_id : null);
+
+    const highlightTitle = typeof anyRow.title === 'string' ? anyRow.title : null;
+    const highlightDate =
+      (typeof anyRow.releaseDate === 'string' ? anyRow.releaseDate : null) ||
+      (typeof anyRow.release_date === 'string' ? anyRow.release_date : null);
+    const highlightImageUrl =
+      (typeof anyRow.imageUrl === 'string' ? anyRow.imageUrl : null) ||
+      (typeof anyRow.image_url === 'string' ? anyRow.image_url : null) ||
+      (typeof anyRow.artwork_url === 'string' ? anyRow.artwork_url : null);
+    const highlightSpotifyUrl =
+      (typeof anyRow.spotifyUrl === 'string' ? anyRow.spotifyUrl : null) ||
+      (typeof anyRow.spotify_url === 'string' ? anyRow.spotify_url : null);
+    const highlightType = typeof anyRow.type === 'string' ? anyRow.type : null;
+
+    return {
+      done,
+      provider,
+      provider_id,
+      inList,
+      artistId,
+      artistName,
+      highlightId,
+      highlightTitle,
+      highlightDate,
+      highlightImageUrl,
+      highlightSpotifyUrl,
+      highlightType,
+    };
   }, [row]);
 
   if (!row || !ctx) return null;
@@ -115,8 +146,17 @@ export default function ReleaseActionSheet({ row, visible, onClose, onChanged }:
 
   const resolveAndOpenArtist = async () => {
     const directId = (ctx.artistId || '').trim();
+    const highlightOpts = {
+      highlight: ctx.highlightId,
+      highlightTitle: ctx.highlightTitle,
+      highlightArtist: ctx.artistName,
+      highlightDate: ctx.highlightDate,
+      highlightImageUrl: ctx.highlightImageUrl,
+      highlightSpotifyUrl: ctx.highlightSpotifyUrl,
+      highlightType: ctx.highlightType,
+    };
     if (/^[A-Za-z0-9]{22}$/.test(directId)) {
-      openArtist(directId, { name: ctx.artistName });
+      openArtist(directId, { name: ctx.artistName, ...highlightOpts });
       return;
     }
 
@@ -141,7 +181,7 @@ export default function ReleaseActionSheet({ row, visible, onClose, onChanged }:
       const artistId = first?.artistId ?? null;
       const name = first?.artist ?? ctx.artistName ?? null;
       if (artistId && /^[A-Za-z0-9]{22}$/.test(artistId)) {
-        openArtist(artistId, { name });
+        openArtist(artistId, { name, ...highlightOpts, highlight: first?.albumId ?? id });
         return true;
       }
       return false;

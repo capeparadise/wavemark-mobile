@@ -2057,7 +2057,17 @@ export default function DiscoverTab() {
     return 0;
   };
 
-  // Derived, relevance-sorted search results with optional filter
+  const artistIntentScore = (r: SpotifyResult, query: string) => {
+    const label = r.title || r.artist || '';
+    const nameScore = matchScore(label, query);
+    const popularity = Math.max(0, Math.min(100, r.popularity || 0));
+    const followerScore = Math.min(18, Math.log10(Math.max(1, (r.followers || 0) + 1)) * 2);
+    const exactShortPenalty = normalize(label) === normalize(query) && popularity < 45 ? 18 : 0;
+    const exactSignalBonus = normalize(label) === normalize(query) && (popularity >= 10 || (r.followers || 0) >= 1_000) ? 18 : 0;
+    return nameScore + (popularity * 0.32) + followerScore + exactSignalBonus - exactShortPenalty;
+  };
+
+  // Derived, relevance-sorted search results with optional artist intent.
   const groupedSearch = useMemo(() => {
     const byRelevance = (items: SpotifyResult[]) => {
       const scored = items.map(r => {
@@ -2068,96 +2078,59 @@ export default function DiscoverTab() {
       return scored.map(s => s.r);
     };
 
-    const projects = byRelevance(searchRows.filter(r => r.type === 'album' || (r as any).albumType === 'single' || (r as any).type === 'single')).slice(0, 5);
-    const tracks = byRelevance(searchRows.filter(r => r.type === 'track')).slice(0, 5);
-    const artistsOnly = byRelevance(searchRows.filter(r => r.type === 'artist')).slice(0, 5);
-    return {
-      projects,
-      tracks,
-      artists: artistsOnly,
-    };
+    const music = byRelevance(searchRows.filter(r => r.type === 'track' || r.type === 'album' || (r as any).albumType === 'single' || (r as any).type === 'single')).slice(0, 10);
+    const artistScores = searchRows
+      .filter(r => r.type === 'artist')
+      .map(r => ({
+        r,
+        nameScore: matchScore(r.title || r.artist || '', q),
+        intentScore: artistIntentScore(r, q),
+      }))
+      .sort((a, b) => (b.intentScore - a.intentScore) || ((b.r.popularity || 0) - (a.r.popularity || 0)));
+    const topMusicScore = music.reduce((max, r) => Math.max(max, matchScore(r.title || r.artist || '', q)), 0);
+    const topArtistScore = artistScores[0]?.nameScore ?? 0;
+    const topArtistIntentScore = artistScores[0]?.intentScore ?? 0;
+    const hasStrongArtist = !!artistScores[0] && topArtistScore >= 85 && (topArtistScore >= topMusicScore - 10 || topArtistIntentScore >= 115);
+    const strongArtists = hasStrongArtist
+      ? artistScores
+        .filter((s, index) => index === 0 || (s.intentScore >= topArtistIntentScore - 60 && (
+          (s.nameScore >= 85 && ((s.r.popularity || 0) >= 45 || (s.r.followers || 0) >= 100_000))
+          || (s.nameScore >= 70 && (s.r.popularity || 0) >= 65)
+        )))
+        .slice(0, 5)
+        .map(s => s.r)
+      : [];
+    const artists = strongArtists.length
+      ? []
+      : artistScores.filter(s => s.intentScore >= 85 && (s.nameScore >= 60 || (s.nameScore >= 55 && (s.r.popularity || 0) >= 50))).map(s => s.r).slice(0, 5);
+    return { music, strongArtists, artists };
   }, [searchRows, q]);
-
-  const rankSections = (query: string, sections: { artists: SpotifyResult[]; tracks: SpotifyResult[]; projects: SpotifyResult[] }) => {
-    const qn = normalize(query);
-    const qWords = qn ? qn.split(' ') : [];
-    const baseOrder: Array<keyof typeof sections> = ['tracks', 'projects', 'artists'];
-    if (!qn) return baseOrder;
-
-    const scoreSection = (items: SpotifyResult[], type: 'artists' | 'tracks' | 'projects') => {
-      const topN = items.slice(0, 10);
-      const scores = topN.map((r, idx) => {
-        const label = r.title || r.artist || '';
-        const score = matchScore(label, query);
-        const rankBonus = idx < 3 && score >= 85 ? 8 : 0;
-        return { score, rankBonus };
-      });
-      const topScore = scores.reduce((m, s) => Math.max(m, s.score), 0);
-      const topHitRankBonus = scores.some(s => s.rankBonus > 0) ? 8 : 0;
-      const countBonus = Math.min(items.length, 20) * 0.3;
-      let shapeBonus = 0;
-      if (qWords.length === 1 && type === 'artists') shapeBonus = 10;
-      if (qWords.length >= 3 && type === 'tracks') shapeBonus = 10;
-      if (qWords.length >= 3 && type === 'projects') shapeBonus = 6;
-      return { topScore, topHitRankBonus, countBonus, shapeBonus, final: topScore + topHitRankBonus + countBonus + shapeBonus };
-    };
-
-    const scores = {
-      artists: scoreSection(sections.artists, 'artists'),
-      tracks: scoreSection(sections.tracks, 'tracks'),
-      projects: scoreSection(sections.projects, 'projects'),
-    };
-
-    const order = (Object.keys(scores) as Array<keyof typeof scores>).sort((a, b) => scores[b].final - scores[a].final);
-    const [first, second] = order;
-    const diff = scores[first].final - scores[second].final;
-    const finalOrder = diff >= 12 ? order : baseOrder;
-
-    if (__DEV__) {
-      // eslint-disable-next-line no-console
-      console.log('[discover rank]', {
-        query,
-        scores,
-        order: finalOrder,
-      });
-    }
-
-    return finalOrder;
-  };
 
   useEffect(() => {
     // eslint-disable-next-line no-console
     console.log('[discover dropdown sections]', {
+      strongArtists: groupedSearch.strongArtists.length,
       artists: groupedSearch.artists.length,
-      tracks: groupedSearch.tracks.length,
-      projects: groupedSearch.projects.length,
+      music: groupedSearch.music.length,
     });
-  }, [groupedSearch.artists.length, groupedSearch.tracks.length, groupedSearch.projects.length]);
+  }, [groupedSearch.artists.length, groupedSearch.music.length, groupedSearch.strongArtists.length]);
 
   const clearSearch = () => {
     resetSearchState();
     Keyboard.dismiss();
   };
 
-  const hasGrouped = groupedSearch.projects.length || groupedSearch.tracks.length || groupedSearch.artists.length;
+  const hasGrouped = groupedSearch.music.length || groupedSearch.strongArtists.length || groupedSearch.artists.length;
 
-  const sectionOrder = rankSections(q, {
-    artists: groupedSearch.artists,
-    tracks: groupedSearch.tracks,
-    projects: groupedSearch.projects,
-  });
-
-  type SearchSection = { title: string; key: 'artists' | 'tracks' | 'projects'; data: SpotifyResult[] };
+  type SearchSection = { title: string; key: 'artist' | 'artists' | 'music'; data: SpotifyResult[] };
   const groupedSections = useMemo<SearchSection[]>(() => {
     if (!hasGrouped) return [];
     const out: SearchSection[] = [];
-    sectionOrder.forEach((section) => {
-      if (section === 'tracks' && groupedSearch.tracks.length) out.push({ title: 'Tracks', key: 'tracks', data: groupedSearch.tracks });
-      if (section === 'projects' && groupedSearch.projects.length) out.push({ title: 'Projects', key: 'projects', data: groupedSearch.projects });
-      if (section === 'artists' && groupedSearch.artists.length) out.push({ title: 'Artists', key: 'artists', data: groupedSearch.artists });
-    });
+    if (groupedSearch.strongArtists.length) out.push({ title: groupedSearch.strongArtists.length === 1 ? 'Artist' : 'Artists', key: 'artist', data: groupedSearch.strongArtists });
+    if (groupedSearch.music.length) out.push({ title: 'Music', key: 'music', data: groupedSearch.music });
+    if (groupedSearch.artists.length) out.push({ title: 'Artists', key: 'artists', data: groupedSearch.artists });
     return out;
-  }, [groupedSearch, sectionOrder, hasGrouped]);
+  }, [groupedSearch, hasGrouped]);
 
   // Build rows for FlatList (fallback view when there is no grouped search)
   const rows: Row[] = [];

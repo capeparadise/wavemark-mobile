@@ -18,6 +18,7 @@ export type SpotifyResult = {
   isrc?: string | null;
   upc?: string | null;
   popularity?: number;
+  followers?: number | null;
 };
 
 // Use centralized base (with safe fallback)
@@ -173,6 +174,8 @@ export async function spotifySearch(q: string, types: string = 'album,track,arti
       imageUrl: ar.images?.[0]?.url ?? null,
       spotifyUrl: ar.external_urls?.spotify ?? null,
       artistId: ar.id ?? null,
+      popularity: ar.popularity ?? 0,
+      followers: typeof ar.followers?.total === 'number' ? ar.followers.total : null,
     });
   }
   return out;

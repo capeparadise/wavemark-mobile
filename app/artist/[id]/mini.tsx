@@ -18,7 +18,17 @@ import { useTheme } from '../../../theme/useTheme';
 
 export default function ArtistMiniScreen() {
   const { colors } = useTheme();
-  const { id, name, highlight } = useLocalSearchParams<{ id: string; name?: string; highlight?: string }>();
+  const { id, name, highlight, highlightTitle, highlightArtist, highlightDate, highlightImageUrl, highlightSpotifyUrl, highlightType } = useLocalSearchParams<{
+    id: string;
+    name?: string;
+    highlight?: string;
+    highlightTitle?: string;
+    highlightArtist?: string;
+    highlightDate?: string;
+    highlightImageUrl?: string;
+    highlightSpotifyUrl?: string;
+    highlightType?: string;
+  }>();
   let artistId = (id as string) || '';
   const displayName = (name || '').toString();
   const highlightId = (highlight || '').toString();
@@ -228,37 +238,48 @@ export default function ArtistMiniScreen() {
         try {
           const hid = highlightIdLocal;
           if (hid && !albs.some(a => a.id === hid)) {
+            const addAlbumHit = (a: any, fallbackType: 'album' | 'single') => {
+              if (!a || !a.id || (a.artistId && a.artistId !== artistId)) return false;
+              albs.push({
+                id: a.albumId ?? a.id,
+                title: a.type === 'track' ? (a.title ?? '') : a.title,
+                artist: a.artist || (det?.name ?? displayName) || '',
+                releaseDate: a.releaseDate ?? null,
+                spotifyUrl: a.spotifyUrl ?? null,
+                imageUrl: a.imageUrl ?? null,
+                type: fallbackType,
+                albumGroup: fallbackType,
+              } as any);
+              return true;
+            };
+            const addRouteHighlight = () => {
+              const title = String(highlightTitle || '').trim();
+              if (!title) return false;
+              const type = String(highlightType || '').toLowerCase() === 'album' ? 'album' : 'single';
+              albs.push({
+                id: hid,
+                title,
+                artist: String(highlightArtist || det?.name || displayName || ''),
+                releaseDate: highlightDate ? String(highlightDate) : null,
+                spotifyUrl: highlightSpotifyUrl ? String(highlightSpotifyUrl) : null,
+                imageUrl: highlightImageUrl ? String(highlightImageUrl) : null,
+                type,
+                albumGroup: type,
+              } as any);
+              return true;
+            };
+            let addedHighlight = false;
             try {
               const lookedAlbum = await spotifyLookup(hid, 'album');
-              const a = lookedAlbum?.[0];
-              if (a && a.id && (!a.artistId || a.artistId === artistId)) {
-                albs.push({
-                  id: a.id,
-                  title: a.title,
-                  artist: a.artist || (det?.name ?? displayName) || '',
-                  releaseDate: a.releaseDate ?? null,
-                  spotifyUrl: a.spotifyUrl ?? null,
-                  imageUrl: a.imageUrl ?? null,
-                  type: 'album',
-                  albumGroup: 'album',
-                } as any);
-              } else {
-                const lookedTrack = await spotifyLookup(hid, 'track');
-                const t = lookedTrack?.[0];
-                if (t && t.id && (!t.artistId || t.artistId === artistId)) {
-                  albs.push({
-                    id: t.id,
-                    title: t.title,
-                    artist: t.artist || (det?.name ?? displayName) || '',
-                    releaseDate: t.releaseDate ?? null,
-                    spotifyUrl: t.spotifyUrl ?? null,
-                    imageUrl: t.imageUrl ?? null,
-                    type: 'single',
-                    albumGroup: 'single',
-                  } as any);
-                }
-              }
+              addedHighlight = addAlbumHit(lookedAlbum?.[0], 'album');
             } catch {}
+            if (!addedHighlight) {
+              try {
+                const lookedTrack = await spotifyLookup(hid, 'track');
+                addedHighlight = addAlbumHit(lookedTrack?.[0], 'single');
+              } catch {}
+            }
+            if (!addedHighlight) addRouteHighlight();
           }
         } catch {}
 
