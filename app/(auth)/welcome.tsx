@@ -1,8 +1,9 @@
 import Constants from 'expo-constants';
+import * as AppleAuthentication from 'expo-apple-authentication';
 import * as AuthSession from 'expo-auth-session';
 import * as WebBrowser from 'expo-web-browser';
 import { router } from 'expo-router';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Alert, Pressable, Text, View } from 'react-native';
 import BrandLogo from '../../components/BrandLogo';
 import Screen from '../../components/Screen';
@@ -54,6 +55,22 @@ function extractParamsFromUrl(url: string) {
   };
 }
 
+function formatAppleFullName(fullName: AppleAuthentication.AppleAuthenticationFullName | null) {
+  if (!fullName) return null;
+  const value = [
+    fullName.namePrefix,
+    fullName.givenName,
+    fullName.middleName,
+    fullName.familyName,
+    fullName.nameSuffix,
+  ]
+    .map((part) => (part || '').trim())
+    .filter(Boolean)
+    .join(' ')
+    .trim();
+  return value || null;
+}
+
 const Button = ({
   title, onPress, variant = 'primary', disabled = false,
   colors,
@@ -82,6 +99,21 @@ const Button = ({
 export default function WelcomeScreen() {
   const { colors } = useTheme();
   const [busy, setBusy] = useState(false);
+  const [appleAvailable, setAppleAvailable] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    AppleAuthentication.isAvailableAsync()
+      .then((available) => {
+        if (mounted) setAppleAvailable(available);
+      })
+      .catch(() => {
+        if (mounted) setAppleAvailable(false);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   const continueWithGoogle = async () => {
     try {
@@ -146,6 +178,38 @@ export default function WelcomeScreen() {
     }
   };
 
+  const continueWithApple = async () => {
+    try {
+      setBusy(true);
+      const credential = await AppleAuthentication.signInAsync({
+        requestedScopes: [
+          AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+          AppleAuthentication.AppleAuthenticationScope.EMAIL,
+        ],
+      });
+      const identityToken = credential.identityToken;
+      if (!identityToken) {
+        throw new Error('Apple did not return an identity token. Please try again.');
+      }
+
+      const { error } = await supabase.auth.signInWithIdToken({
+        provider: 'apple',
+        token: identityToken,
+      });
+      if (error) throw error;
+
+      const fullName = formatAppleFullName(credential.fullName);
+      if (fullName) {
+        await supabase.auth.updateUser({ data: { full_name: fullName } }).catch(() => {});
+      }
+    } catch (e: any) {
+      if (e?.code === 'ERR_REQUEST_CANCELED') return;
+      Alert.alert('Apple sign-in failed', e?.message ?? 'Unknown error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <Screen edges={['left', 'right']}>
       <View style={{ paddingTop: 14 }}>
@@ -170,6 +234,17 @@ export default function WelcomeScreen() {
             disabled={busy}
             colors={colors}
           />
+          {appleAvailable ? (
+            <View pointerEvents={busy ? 'none' : 'auto'} style={{ opacity: busy ? 0.5 : 1, marginTop: 10 }}>
+              <AppleAuthentication.AppleAuthenticationButton
+                buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
+                buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
+                cornerRadius={10}
+                style={{ width: '100%', height: 44 }}
+                onPress={continueWithApple}
+              />
+            </View>
+          ) : null}
         </View>
       </View>
     </Screen>
