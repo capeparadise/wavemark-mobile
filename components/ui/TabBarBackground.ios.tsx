@@ -1,8 +1,11 @@
 import { useBottomTabBarHeight } from '@react-navigation/bottom-tabs';
 import { BlurView } from 'expo-blur';
+import { LinearGradient } from 'expo-linear-gradient';
 import { StyleSheet, View } from 'react-native';
 import { themeByName } from '../../theme/themes';
 import { useTheme } from '../../theme/useTheme';
+
+export const TAB_BAR_HEIGHT = 54;
 
 export default function BlurTabBarBackground() {
   const { themeName } = useTheme();
@@ -14,13 +17,22 @@ export default function BlurTabBarBackground() {
         <View style={styles.capsule}>
           <BlurView
             tint={isDark ? 'dark' : 'light'}
-            intensity={isDark ? 82 : 78}
+            intensity={isDark ? 74 : 70}
+            style={StyleSheet.absoluteFill}
+          />
+          <LinearGradient
+            colors={[
+              isDark ? 'rgba(255,255,255,0.065)' : 'rgba(255,255,255,0.42)',
+              isDark ? 'rgba(255,255,255,0.026)' : 'rgba(255,255,255,0.18)',
+              isDark ? 'rgba(255,255,255,0.045)' : 'rgba(255,255,255,0.28)',
+            ]}
+            locations={[0, 0.56, 1]}
             style={StyleSheet.absoluteFill}
           />
           <View
             style={[
               StyleSheet.absoluteFill,
-              { backgroundColor: isDark ? 'rgba(18,20,28,0.42)' : 'rgba(255,255,255,0.28)' },
+              { backgroundColor: isDark ? 'rgba(12,14,22,0.34)' : 'rgba(255,255,255,0.2)' },
             ]}
           />
           <View style={[StyleSheet.absoluteFill, styles.innerHighlight]} />
@@ -41,13 +53,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   shadowCapsule: {
-    width: '84%',
-    height: '100%',
+    width: '82%',
+    maxWidth: 360,
+    height: TAB_BAR_HEIGHT,
     borderRadius: 999,
     shadowColor: '#000',
-    shadowOpacity: 0.12,
-    shadowRadius: 20,
-    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.22,
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 10 },
   },
   capsule: {
     flex: 1,
@@ -57,7 +70,7 @@ const styles = StyleSheet.create({
   innerHighlight: {
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.26)',
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderColor: 'rgba(255,255,255,0.15)',
+    backgroundColor: 'rgba(255,255,255,0.025)',
   },
 });
