@@ -12,7 +12,6 @@ type ScreenProps = ViewProps & {
 export default function Screen({ children, style, edges, ...rest }: ScreenProps) {
   const { colors, themeName } = useTheme();
   const isDark = themeByName[themeName]?.isDark ?? true;
-  const shapeOpacity = isDark ? 0.11 : 0.08;
   useSafeAreaInsets(); // ensures provider is present
   return (
     <SafeAreaView
@@ -21,14 +20,30 @@ export default function Screen({ children, style, edges, ...rest }: ScreenProps)
     >
       <View pointerEvents="none" style={StyleSheet.absoluteFill}>
         <LinearGradient
-          colors={[colors.blend.top, colors.blend.mid, colors.blend.bottom]}
-          locations={[0, 0.58, 1]}
+          colors={[colors.bg.elevated, colors.blend.mid, colors.bg.primary]}
+          locations={[0, 0.44, 1]}
           style={StyleSheet.absoluteFill}
         />
-        <View style={{ position: 'absolute', top: -190, left: -150, width: 390, height: 390, borderRadius: 195, backgroundColor: colors.accent.primary, opacity: shapeOpacity }} />
-        <View style={{ position: 'absolute', top: 130, right: -230, width: 430, height: 430, borderRadius: 215, backgroundColor: colors.blend.glow, opacity: isDark ? 0.13 : 0.09 }} />
-        <View style={{ position: 'absolute', bottom: -230, left: -130, width: 430, height: 430, borderRadius: 215, backgroundColor: colors.accent.subtle, opacity: isDark ? 0.09 : 0.07 }} />
-        {/* Top fade to integrate headers */}
+        <LinearGradient
+          colors={['rgba(104,71,220,0)', 'rgba(104,71,220,0.12)', 'rgba(104,71,220,0)']}
+          start={{ x: 0, y: 0.5 }}
+          end={{ x: 1, y: 0.5 }}
+          style={styles.ambientBeamTop}
+        />
+        <LinearGradient
+          colors={['rgba(137,117,194,0)', 'rgba(137,117,194,0.08)', 'rgba(137,117,194,0)']}
+          start={{ x: 0, y: 0.5 }}
+          end={{ x: 1, y: 0.5 }}
+          style={styles.ambientBeamBottom}
+        />
+        <LinearGradient
+          colors={['rgba(255,255,255,0.045)', 'rgba(255,255,255,0)', 'rgba(255,255,255,0.028)']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={StyleSheet.absoluteFill}
+        />
+        <View style={styles.filmLineTop} />
+        <View style={styles.filmLineBottom} />
         <LinearGradient
           colors={[isDark ? 'rgba(0,0,0,0.34)' : 'rgba(255,255,255,0.2)', 'transparent']}
           start={{ x: 0, y: 0 }}
@@ -42,3 +57,40 @@ export default function Screen({ children, style, edges, ...rest }: ScreenProps)
     </SafeAreaView>
   );
 }
+
+const styles = StyleSheet.create({
+  ambientBeamTop: {
+    position: 'absolute',
+    top: -64,
+    left: -120,
+    right: -90,
+    height: 260,
+    transform: [{ rotate: '-11deg' }],
+  },
+  ambientBeamBottom: {
+    position: 'absolute',
+    left: -110,
+    right: -130,
+    bottom: -34,
+    height: 240,
+    transform: [{ rotate: '8deg' }],
+  },
+  filmLineTop: {
+    position: 'absolute',
+    top: 134,
+    left: -40,
+    right: -40,
+    height: 1,
+    backgroundColor: 'rgba(255,255,255,0.035)',
+    transform: [{ rotate: '-11deg' }],
+  },
+  filmLineBottom: {
+    position: 'absolute',
+    left: -60,
+    right: -60,
+    bottom: 112,
+    height: 1,
+    backgroundColor: 'rgba(255,255,255,0.028)',
+    transform: [{ rotate: '8deg' }],
+  },
+});

@@ -28,22 +28,20 @@ export default function FeedHeader({
   );
 
   return (
-    <View style={{ marginHorizontal: -8, marginBottom: 10, paddingTop: 4 }}>
-      <View style={{ borderRadius: 20, overflow: 'hidden', backgroundColor: 'transparent' }}>
-        <View style={{ position: 'absolute', top: -40, right: -10, width: 120, height: 120, backgroundColor: colors.accent.primary, opacity: 0.2, borderRadius: 999 }} />
-        <View style={{ position: 'absolute', bottom: -30, left: -14, width: 110, height: 110, backgroundColor: colors.accent.success, opacity: 0.2, borderRadius: 999 }} />
-        <BlurView intensity={20} tint="dark" style={{ padding: 16, borderRadius: 20, overflow: 'hidden' }}>
+    <View style={{ marginBottom: 10, paddingTop: 2 }}>
+      <View style={{ overflow: 'hidden' }}>
+        <BlurView intensity={10} tint="dark" style={{ paddingVertical: 10, overflow: 'hidden' }}>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
             <View style={{ flex: 1 }}>
-              <Text style={{ color: colors.text.subtle, fontSize: 12, fontWeight: '700' }}>{heroDate}</Text>
-              <Text style={{ color: colors.text.inverted, fontSize: 26, fontWeight: '800', marginTop: 4 }}>Your Wave</Text>
-              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginTop: 6 }}>
-                <Text style={{ color: colors.text.subtle, flex: 1 }}>{subtitle}</Text>
+              <Text style={{ color: colors.text.muted, fontSize: 11, fontWeight: '800' }}>{heroDate}</Text>
+              <Text style={{ color: colors.text.primary, fontSize: 24, fontWeight: '900', marginTop: 2 }}>Your Wave</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginTop: 3 }}>
+                <Text style={{ color: colors.text.subtle, flex: 1, fontSize: 13, lineHeight: 18 }}>{subtitle}</Text>
                 {subtitleAccessory}
               </View>
 
-              <View style={{ flexDirection: 'row', marginTop: 12, alignItems: 'center', gap: 10 }}>
-                <View style={{ flex: 1, flexDirection: 'row', padding: 4, borderRadius: 14, backgroundColor: colors.bg.muted, borderWidth: 1, borderColor: colors.border.subtle, gap: 6 }}>
+              <View style={{ flexDirection: 'row', marginTop: 10, alignItems: 'center', gap: 10 }}>
+                <View style={{ flex: 1, flexDirection: 'row', padding: 3, borderRadius: 13, backgroundColor: colors.bg.muted, borderWidth: 1, borderColor: colors.border.subtle, gap: 4 }}>
                     {([
                       { key: 'artist', label: 'Artists' },
                       { key: 'social', label: 'Social' },
@@ -63,14 +61,14 @@ export default function FeedHeader({
                         })}
                       >
                         <View style={{
-                          paddingHorizontal: 14,
-                          paddingVertical: 10,
-                          borderRadius: 12,
+                          paddingHorizontal: 12,
+                          paddingVertical: 8,
+                          borderRadius: 10,
                           alignItems: 'center',
                           justifyContent: 'center',
                           backgroundColor: selected ? colors.accent.primary : 'transparent',
                         }}>
-                          <Text style={{ color: selected ? colors.text.inverted : colors.text.secondary, fontWeight: '800' }}>{label}</Text>
+                          <Text style={{ color: selected ? colors.text.inverted : colors.text.secondary, fontWeight: '800', fontSize: 13 }}>{label}</Text>
                         </View>
                       </Pressable>
                     );
@@ -79,7 +77,7 @@ export default function FeedHeader({
               </View>
 
               {!!children && (
-                <View style={{ marginTop: 12 }}>
+                <View style={{ marginTop: 10 }}>
                   {children}
                 </View>
               )}
