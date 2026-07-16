@@ -4,7 +4,7 @@ import * as AuthSession from 'expo-auth-session';
 import * as WebBrowser from 'expo-web-browser';
 import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { Alert, Pressable, Text, View } from 'react-native';
+import { Alert, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import BrandLogo from '../../components/BrandLogo';
 import Screen from '../../components/Screen';
 import { supabase } from '../../lib/supabase';
@@ -74,23 +74,34 @@ function formatAppleFullName(fullName: AppleAuthentication.AppleAuthenticationFu
 const Button = ({
   title, onPress, variant = 'primary', disabled = false,
   colors,
-}: { title: string; onPress: () => void; variant?: 'primary' | 'ghost'; disabled?: boolean; colors: ThemeColors }) => (
+}: { title: string; onPress: () => void; variant?: 'primary' | 'secondary'; disabled?: boolean; colors: ThemeColors }) => (
   <Pressable
     onPress={onPress}
     disabled={disabled}
+    accessibilityRole="button"
     style={({ pressed }) => ({
-      paddingVertical: 12,
-      paddingHorizontal: 16,
-      borderRadius: 10,
-      backgroundColor: variant === 'primary' ? colors.accent.primary : 'transparent',
-      borderWidth: variant === 'ghost' ? 1 : 0,
-      borderColor: colors.border.subtle,
-      opacity: disabled ? 0.5 : pressed ? 0.7 : 1,
+      minHeight: 52,
+      paddingVertical: 14,
+      paddingHorizontal: 18,
+      borderRadius: 14,
+      backgroundColor: variant === 'primary' ? colors.text.primary : 'rgba(255,255,255,0.07)',
+      borderWidth: 1,
+      borderColor: variant === 'primary' ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.13)',
+      opacity: disabled ? 0.5 : pressed ? 0.78 : 1,
       alignItems: 'center',
-      marginTop: 10,
+      justifyContent: 'center',
+      shadowColor: colors.shadow.light,
+      shadowOpacity: variant === 'primary' ? 0.2 : 0.08,
+      shadowRadius: 16,
+      shadowOffset: { width: 0, height: 10 },
     })}
   >
-    <Text style={{ color: variant === 'primary' ? colors.text.inverted : colors.text.secondary, fontWeight: '600' }}>
+    <Text style={{
+      color: variant === 'primary' ? colors.bg.primary : colors.text.secondary,
+      fontSize: 17,
+      lineHeight: 20,
+      fontWeight: '600',
+    }}>
       {title}
     </Text>
   </Pressable>
@@ -98,6 +109,7 @@ const Button = ({
 
 export default function WelcomeScreen() {
   const { colors } = useTheme();
+  const { height } = useWindowDimensions();
   const [busy, setBusy] = useState(false);
   const [appleAvailable, setAppleAvailable] = useState(false);
 
@@ -210,18 +222,28 @@ export default function WelcomeScreen() {
     }
   };
 
-  return (
-    <Screen edges={['left', 'right']}>
-      <View style={{ paddingTop: 14 }}>
-        <View style={{ alignItems: 'center', marginBottom: 24 }}>
-          <BrandLogo height={34} />
-        </View>
-        <Text style={{ fontSize: 28, fontWeight: '800', color: colors.text.secondary }}>Welcome</Text>
-        <Text style={{ marginTop: 8, color: colors.text.muted }}>
-          Sign in to sync your listens across devices.
-        </Text>
+  const compact = height < 720;
 
-        <View style={{ marginTop: 18 }}>
+  return (
+    <Screen edges={['left', 'right']} style={styles.screen}>
+      <View style={[styles.content, { paddingTop: compact ? 42 : 72, paddingBottom: compact ? 28 : 48 }]}>
+        <View style={styles.brandArea}>
+          <BrandLogo
+            variant="dark"
+            height={50}
+            style={[styles.logo, { tintColor: colors.text.primary }]}
+          />
+          <View style={[styles.wordmarkRule, { backgroundColor: colors.accent.primary }]} />
+        </View>
+
+        <View style={styles.copy}>
+          <Text style={[styles.title, { color: colors.text.primary }]}>Welcome</Text>
+          <Text style={[styles.subtitle, { color: colors.text.subtle }]}>
+            Sign in to sync your listens across devices.
+          </Text>
+        </View>
+
+        <View style={styles.actions}>
           <Button
             title="Continue with Email"
             onPress={() => router.push('/(auth)/login')}
@@ -233,14 +255,15 @@ export default function WelcomeScreen() {
             onPress={continueWithGoogle}
             disabled={busy}
             colors={colors}
+            variant="secondary"
           />
           {appleAvailable ? (
-            <View pointerEvents={busy ? 'none' : 'auto'} style={{ opacity: busy ? 0.5 : 1, marginTop: 10 }}>
+            <View pointerEvents={busy ? 'none' : 'auto'} style={[styles.appleButtonWrap, { opacity: busy ? 0.5 : 1 }]}>
               <AppleAuthentication.AppleAuthenticationButton
                 buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
                 buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
-                cornerRadius={10}
-                style={{ width: '100%', height: 44 }}
+                cornerRadius={14}
+                style={styles.appleButton}
                 onPress={continueWithApple}
               />
             </View>
@@ -250,3 +273,59 @@ export default function WelcomeScreen() {
     </Screen>
   );
 }
+
+const styles = StyleSheet.create({
+  screen: {
+    paddingHorizontal: 24,
+    paddingTop: 0,
+  },
+  content: {
+    flex: 1,
+    width: '100%',
+    maxWidth: 420,
+    alignSelf: 'center',
+    justifyContent: 'center',
+  },
+  brandArea: {
+    alignItems: 'center',
+  },
+  logo: {
+    opacity: 0.96,
+  },
+  wordmarkRule: {
+    width: 34,
+    height: 2,
+    borderRadius: 1,
+    marginTop: 14,
+    opacity: 0.72,
+  },
+  copy: {
+    marginTop: 38,
+    alignItems: 'center',
+  },
+  title: {
+    fontSize: 38,
+    lineHeight: 44,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+  subtitle: {
+    marginTop: 10,
+    fontSize: 16,
+    lineHeight: 23,
+    textAlign: 'center',
+    maxWidth: 290,
+  },
+  actions: {
+    marginTop: 36,
+    gap: 12,
+    width: '100%',
+  },
+  appleButtonWrap: {
+    width: '100%',
+  },
+  appleButton: {
+    width: '100%',
+    height: 52,
+  },
+});
