@@ -148,6 +148,52 @@ export type FriendRequestRow = {
   created_at: string;
 };
 
+export type ConnectionInvitePreview = {
+  status: 'valid' | 'connected' | 'invalid';
+  inviter: PublicProfile | null;
+};
+
+export async function createConnectionInvite(): Promise<{ ok: boolean; token?: string; message?: string }> {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false, message: 'Not signed in' };
+  await ensureMyProfile();
+
+  const { data, error } = await supabase.rpc('create_connection_invite');
+  if (error) return { ok: false, message: error.message };
+  const token = typeof data === 'string' ? data.trim() : '';
+  if (!token) return { ok: false, message: 'Invite unavailable' };
+  return { ok: true, token };
+}
+
+export async function getConnectionInvitePreview(token: string): Promise<ConnectionInvitePreview> {
+  const clean = (token || '').trim();
+  if (!clean) return { status: 'invalid', inviter: null };
+
+  const { data, error } = await supabase.rpc('get_connection_invite_preview', { p_token: clean });
+  if (error || !Array.isArray(data) || data.length === 0) return { status: 'invalid', inviter: null };
+  const row = data[0] as any;
+  const status = row.status === 'connected' ? 'connected' : row.status === 'valid' ? 'valid' : 'invalid';
+  const inviter = normalizeProfile({
+    id: row.inviter_id,
+    display_name: row.display_name,
+    avatar_url: row.avatar_url,
+    public_id: row.public_id,
+  });
+  return { status, inviter };
+}
+
+export async function acceptConnectionInvite(token: string): Promise<{ ok: boolean; status: 'merged' | 'connected' | 'invalid'; message?: string }> {
+  const clean = (token || '').trim();
+  if (!clean) return { ok: false, status: 'invalid', message: 'Invite no longer available' };
+
+  const { data, error } = await supabase.rpc('accept_connection_invite', { p_token: clean });
+  if (error) return { ok: false, status: 'invalid', message: error.message };
+  const status = typeof data === 'string' ? data : '';
+  if (status === 'merged') return { ok: true, status: 'merged' };
+  if (status === 'already_connected') return { ok: true, status: 'connected' };
+  return { ok: false, status: 'invalid', message: 'Invite no longer available' };
+}
+
 export async function getRelationshipWith(userId: string): Promise<{
   kind: 'self' | 'none' | 'pending' | 'friends';
   pendingRequestId?: string | null;

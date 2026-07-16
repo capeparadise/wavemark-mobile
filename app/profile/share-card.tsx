@@ -5,7 +5,7 @@ import Avatar from '../../components/Avatar';
 import Snackbar from '../../components/Snackbar';
 import Screen from '../../components/StackScreen';
 import { fetchProfileSnapshot, loadCachedProfileSnapshot, type ProfileSnapshot } from '../../lib/stats';
-import { ensureMyProfile, type PublicProfile } from '../../lib/profileSocial';
+import { createConnectionInvite, ensureMyProfile, type PublicProfile } from '../../lib/profileSocial';
 import { useTheme } from '../../theme/useTheme';
 
 export const options = { title: 'Share Card' };
@@ -56,13 +56,13 @@ export default function ShareCardScreen() {
     loadStats().catch(() => {});
   }, [loadProfile, loadStats]);
 
-  const inviteUrl = useMemo(() => {
-    if (!profile?.public_id) return null;
+  const inviteUrlForToken = useCallback((token: string) => {
+    if (!token) return null;
     // Dev-only: use an Expo link so this can be tested between devices without TestFlight.
     // Production builds will use the `rppl://` scheme.
-    if (__DEV__) return ExpoLinking.createURL(`add-friend/${profile.public_id}`);
-    return `rppl://add-friend/${profile.public_id}`;
-  }, [profile?.public_id]);
+    if (__DEV__) return ExpoLinking.createURL(`add-friend/${token}`);
+    return `rppl://add-friend/${token}`;
+  }, []);
 
   const level = useMemo(() => {
     const LEVELS = [
@@ -104,14 +104,21 @@ export default function ShareCardScreen() {
 
   const onShare = async () => {
     if (busy) return;
-    if (!inviteUrl) {
+    if (!profile?.user_id) {
       setInviteError(true);
       return;
     }
     try {
       setBusy(true);
+      const created = await createConnectionInvite();
+      const inviteUrl = created.ok && created.token ? inviteUrlForToken(created.token) : null;
+      if (!inviteUrl) {
+        setInviteError(true);
+        setSnack({ visible: true, message: created.message || 'Ripple invite unavailable. Try again.' });
+        return;
+      }
       try {
-        await Share.share({ message: `Send me a merge request on RPPL: ${inviteUrl}` });
+        await Share.share({ message: `Merge Ripples with me on RPPL: ${inviteUrl}` });
       } catch {
         await (async () => {
           try {
@@ -131,7 +138,7 @@ export default function ShareCardScreen() {
             }
           } catch {}
         })();
-        setSnack({ visible: true, message: 'Merge request link copied' });
+        setSnack({ visible: true, message: 'Ripple invite link copied' });
       }
     } finally {
       setBusy(false);
@@ -194,12 +201,12 @@ export default function ShareCardScreen() {
               alignItems: 'center',
             })}
           >
-            <Text style={{ color: colors.text.inverted, fontWeight: '800' }}>{busy ? 'Sharing…' : 'Share merge request link'}</Text>
+            <Text style={{ color: colors.text.inverted, fontWeight: '800' }}>{busy ? 'Sharing…' : 'Share Ripple'}</Text>
           </Pressable>
 
           {inviteError && !profileLoading && (
             <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 2 }}>
-              <Text style={{ color: colors.text.muted, fontSize: 12 }}>Merge request link unavailable. Try again.</Text>
+              <Text style={{ color: colors.text.muted, fontSize: 12 }}>Ripple invite unavailable. Try again.</Text>
               <Pressable
                 onPress={() => loadProfile().catch(() => {})}
                 style={({ pressed }) => ({
@@ -219,7 +226,7 @@ export default function ShareCardScreen() {
 
           <View style={{ paddingHorizontal: 2 }}>
             <Text style={{ color: colors.text.muted, fontSize: 12, lineHeight: 16 }}>
-              Ripples never see internal IDs in the app. Your merge request link opens a Merge Ripples screen.
+              Ripple invites are single-use. Opening the link previews your profile; the connection happens only after they tap Merge Ripples.
             </Text>
           </View>
         </View>
