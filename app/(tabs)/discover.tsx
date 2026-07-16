@@ -1,7 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { BlurView } from 'expo-blur';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
-import { router } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Animated, AppState, Dimensions, FlatList, Image, Keyboard, Pressable, ScrollView, SectionList, Text, TextInput, View, Modal } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -2849,12 +2848,6 @@ export default function DiscoverTab() {
           </View>
         );
 
-        const hasAny =
-          yourUpdatesState.status === 'success' ||
-          topPicksState.status === 'success' ||
-          youMightLike.length > 0 ||
-          genreRows.length > 0;
-
         return (
           <>
             <View key="your-updates-releases" style={{ marginBottom: 16 }}>
@@ -2921,24 +2914,6 @@ export default function DiscoverTab() {
                 </View>
               );
             })}
-            {hasAny && (
-              <GlassCard asChild style={{ marginTop: 6, marginHorizontal: horizontalPad }}>
-                <Pressable
-                  onPress={() => router.push('/new-releases-all')}
-                  style={({ pressed }) => ({
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    paddingVertical: 12,
-                    paddingHorizontal: 12,
-                    opacity: pressed ? 0.9 : 1,
-                  })}
-                >
-                  <Text style={{ fontWeight: '800', color: colors.text.secondary }}>View all releases</Text>
-                  <Ionicons name="chevron-forward" size={18} color={colors.text.secondary} />
-                </Pressable>
-              </GlassCard>
-            )}
           </>
         );
       })()}
