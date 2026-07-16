@@ -1432,10 +1432,15 @@ serve(async (req) => {
     // NEW: artist albums (recent first)
     if (pathname.endsWith("/artist-albums")) {
       if (!artistId) return new Response("artistId required", { status: 400, headers: addBuildHeader() });
-      // Include appears_on to surface features
+      const includeGroups = (url.searchParams.get("include_groups") ?? "album,single,appears_on")
+        .split(",")
+        .map((group) => group.trim())
+        .filter((group) => ["album", "single", "appears_on"].includes(group))
+        .join(",") || "album,single,appears_on";
+      // Default includes appears_on for artist pages; Discover can request release-only groups.
       const r = await fetchWithTimeout(
         `https://api.spotify.com/v1/artists/${artistId}/albums?` +
-          new URLSearchParams({ include_groups: "album,single,appears_on", market, limit: "50" }),
+          new URLSearchParams({ include_groups: includeGroups, market, limit: "50" }),
         { headers: hdrs },
         8000,
         "artist-albums"

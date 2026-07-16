@@ -22,6 +22,29 @@ async function getAppToken(clientId: string, clientSecret: string) {
 
 type FollowedArtist = { artist_id: string; artist_name: string | null };
 
+function normalizedName(value: unknown) {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function isVariousArtists(value: unknown) {
+  return normalizedName(value) === "various artists";
+}
+
+function releaseArtistMatch(album: any, artistId: string) {
+  const artists = Array.isArray(album?.artists) ? album.artists : [];
+  return artists.find((artist: any) => artist?.id === artistId) ?? null;
+}
+
+function isAllowedFollowedRelease(album: any, artistId: string) {
+  const albumType = normalizedName(album?.album_type);
+  const albumGroup = normalizedName(album?.album_group);
+  if (!album?.id || !album?.name || !album?.release_date || !album?.external_urls?.spotify) return false;
+  if (albumType === "compilation" || albumGroup === "compilation" || albumGroup === "appears_on") return false;
+  if (album?.external_urls?.spotify && !String(album.external_urls.spotify).includes("open.spotify.com/album/")) return false;
+  if ((Array.isArray(album?.artists) ? album.artists : []).some((artist: any) => isVariousArtists(artist?.name))) return false;
+  return !!releaseArtistMatch(album, artistId);
+}
+
 serve(async (req) => {
   try {
     const url = new URL(req.url);
@@ -84,10 +107,12 @@ serve(async (req) => {
       const items = data.items ?? [];
 
       for (const a of items) {
+        if (!isAllowedFollowedRelease(a, artistId)) continue;
         const title = a?.name ?? null;
         const relDate = a?.release_date ?? null;
         const url = a?.external_urls?.spotify ?? null;
-        const rowArtist = a?.artists?.[0]?.id === artistId ? (a?.artists?.[0]?.name ?? artistName) : (artistName ?? a?.artists?.[0]?.name ?? null);
+        const matchedArtist = releaseArtistMatch(a, artistId);
+        const rowArtist = matchedArtist?.name ?? artistName ?? null;
         const imageUrl = a?.images?.[0]?.url ?? null;
         const releaseType = a?.album_type ?? null; // 'album' | 'single' | 'compilation'
         if (!title || !relDate || !url) continue;
