@@ -714,18 +714,21 @@ export default function FeedTab() {
                                   onAddSocial(it);
                                 }}
                                 disabled={isInList}
-                                style={({ pressed, focused }) => ({
-                                  flexDirection: 'row',
-                                  alignItems: 'center',
-                                  gap: 4,
-                                  paddingHorizontal: 8,
-                                  paddingVertical: 4,
-                                  borderRadius: 999,
-                                  borderWidth: 1,
-                                  borderColor: focused ? colors.accent.primary : colors.border.subtle,
-                                  backgroundColor: isInList ? colors.bg.muted : colors.bg.secondary,
-                                  opacity: pressed ? 0.8 : (isInList ? 0.6 : 1),
-                                })}
+                                style={(state) => {
+                                  const focused = 'focused' in state && !!state.focused;
+                                  return {
+                                    flexDirection: 'row',
+                                    alignItems: 'center',
+                                    gap: 4,
+                                    paddingHorizontal: 8,
+                                    paddingVertical: 4,
+                                    borderRadius: 999,
+                                    borderWidth: 1,
+                                    borderColor: focused ? colors.accent.primary : colors.border.subtle,
+                                    backgroundColor: isInList ? colors.bg.muted : colors.bg.secondary,
+                                    opacity: state.pressed ? 0.8 : (isInList ? 0.6 : 1),
+                                  };
+                                }}
                               >
                                 <Ionicons name={isInList ? 'checkmark' : 'add'} size={12} color={colors.text.secondary as any} />
                                 <Text style={{ color: colors.text.secondary, fontSize: 10, fontWeight: '800' }}>
@@ -800,18 +803,21 @@ export default function FeedTab() {
                               onAddSocial(it);
                             }}
                             disabled={isInList}
-                            style={({ pressed, focused }) => ({
-                              flexDirection: 'row',
-                              alignItems: 'center',
-                              gap: 6,
-                              paddingHorizontal: 10,
-                              paddingVertical: 6,
-                              borderRadius: 999,
-                              borderWidth: 1,
-                              borderColor: focused ? colors.accent.primary : colors.border.subtle,
-                              backgroundColor: isInList ? colors.bg.muted : colors.bg.secondary,
-                              opacity: pressed ? 0.85 : (isInList ? 0.6 : 1),
-                            })}
+                            style={(state) => {
+                              const focused = 'focused' in state && !!state.focused;
+                              return {
+                                flexDirection: 'row',
+                                alignItems: 'center',
+                                gap: 6,
+                                paddingHorizontal: 10,
+                                paddingVertical: 6,
+                                borderRadius: 999,
+                                borderWidth: 1,
+                                borderColor: focused ? colors.accent.primary : colors.border.subtle,
+                                backgroundColor: isInList ? colors.bg.muted : colors.bg.secondary,
+                                opacity: state.pressed ? 0.85 : (isInList ? 0.6 : 1),
+                              };
+                            }}
                           >
                             <Ionicons name={isInList ? 'checkmark' : 'add'} size={12} color={colors.text.secondary as any} />
                             <Text style={{ color: colors.text.secondary, fontWeight: '800', fontSize: 11 }}>
@@ -1238,15 +1244,18 @@ export default function FeedTab() {
                             accessibilityHint="Expands or collapses all social activity groups"
                             onPress={() => { if (allExpanded) collapseAll(); else expandAll(); }}
                             hitSlop={6}
-                            style={({ pressed, focused }) => ({
-                              paddingHorizontal: 12,
-                              paddingVertical: 8,
-                              borderRadius: 999,
-                              borderWidth: 1,
-                              borderColor: focused ? colors.accent.primary : colors.border.subtle,
-                              backgroundColor: colors.bg.muted,
-                              opacity: pressed ? 0.85 : 1,
-                            })}
+                            style={(state) => {
+                              const focused = 'focused' in state && !!state.focused;
+                              return {
+                                paddingHorizontal: 12,
+                                paddingVertical: 8,
+                                borderRadius: 999,
+                                borderWidth: 1,
+                                borderColor: focused ? colors.accent.primary : colors.border.subtle,
+                                backgroundColor: colors.bg.muted,
+                                opacity: state.pressed ? 0.85 : 1,
+                              };
+                            }}
                           >
                             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                               <Ionicons name={allExpanded ? 'chevron-up' : 'chevron-down'} size={14} color={colors.text.secondary as any} />

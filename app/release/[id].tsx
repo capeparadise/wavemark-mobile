@@ -8,7 +8,7 @@ import GlassCard from '../../components/GlassCard';
 import { formatDate } from '../../lib/date';
 import { addToListFromSearch, getDefaultPlayer, openByDefaultPlayer, type ListenPlayer, type ListenRow } from '../../lib/listen';
 import { type SimpleAlbum } from '../../lib/recommend';
-import { parseSpotifyUrlOrId, spotifyLookup, spotifySearch } from '../../lib/spotify';
+import { parseSpotifyUrlOrId, spotifyLookup, spotifySearch, type SpotifyResult } from '../../lib/spotify';
 import { buildAlbumUrl, buildTrackUrl, fetchAllAlbums, fetchCollectionById, fetchTrackById } from '../../lib/apple';
 import { artistAlbums } from '../../lib/spotifyArtist';
 import { supabase } from '../../lib/supabase';
@@ -448,7 +448,7 @@ export default function ReleaseScreen() {
           .trim();
         const wantedArtist = norm(artistName);
         const results = await spotifySearch(artistName, 'album,track').catch(() => []);
-        const grouped = new Map<string, { album?: typeof results[number]; tracks: typeof results }>();
+        const grouped = new Map<string, { album?: SpotifyResult; tracks: SpotifyResult[] }>();
         results
           .filter((item) => item.type === 'album' || item.type === 'track')
           .filter((item) => {
@@ -464,7 +464,7 @@ export default function ReleaseScreen() {
             grouped.set(key, group);
           });
 
-        const groupedItems = await Promise.all(Array.from(grouped.entries()).map(async ([albumId, group]) => {
+        const groupedItems: (SimpleAlbum | null)[] = await Promise.all(Array.from(grouped.entries()).map(async ([albumId, group]) => {
           const album = group.album ?? (albumId && /^[A-Za-z0-9]{22}$/.test(albumId)
             ? await spotifyLookup(albumId, 'album').then((items) => items[0] ?? null).catch(() => null)
             : null);
@@ -482,7 +482,7 @@ export default function ReleaseScreen() {
             type: album?.albumType === 'single' ? 'single' : 'album',
           } satisfies SimpleAlbum;
         }));
-        nextItems = groupedItems.filter((item): item is SimpleAlbum => !!item);
+        nextItems = groupedItems.filter((item): item is SimpleAlbum => item != null);
       } else if (release.provider === 'apple') {
         const appleArtistId = extractAppleId(artistKey) ?? (/^\d+$/.test(artistKey) ? Number(artistKey) : null);
         if (appleArtistId) {
