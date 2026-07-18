@@ -1,7 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { BlurView } from 'expo-blur';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
-import { router } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Animated, AppState, Dimensions, FlatList, Image, Keyboard, Pressable, ScrollView, SectionList, Text, TextInput, View, Modal } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -93,6 +92,53 @@ function discoverWindowCutoff(days: number) {
 function normalizeArtistIdentity(value?: string | null): string | null {
   const normalized = (value || '').trim().toLowerCase();
   return normalized || null;
+}
+
+function isVariousArtistsName(value?: string | null): boolean {
+  return normalizeArtistIdentity(value) === 'various artists';
+}
+
+function isSpotifyAlbumUrl(value?: string | null): boolean {
+  if (!value) return true;
+  return /open\.spotify\.com\/album\//i.test(value);
+}
+
+function isAllowedUpdateFeedRow(row: FeedItem, followedIds: Set<string>): boolean {
+  if (!followedIds.has(row.artist_id)) return false;
+  if (!isSpotifyAlbumUrl(row.spotify_url ?? null)) return false;
+  if (isVariousArtistsName(row.artist_name)) return false;
+  const releaseType = String((row as any).release_type ?? (row as any).item_type ?? '').toLowerCase();
+  return releaseType !== 'compilation' && releaseType !== 'appears_on';
+}
+
+function getReleaseArtistIds(release: any): string[] {
+  if (Array.isArray(release?.artistIds)) return release.artistIds.filter(Boolean).map(String);
+  if (Array.isArray(release?.artists)) return release.artists.map((artist: any) => artist?.id).filter(Boolean).map(String);
+  const id = release?.artistId ?? release?.artist_id ?? null;
+  return id ? [String(id)] : [];
+}
+
+function getReleaseArtistNames(release: any): string[] {
+  if (Array.isArray(release?.artistNames)) return release.artistNames.filter(Boolean).map(String);
+  if (Array.isArray(release?.artists)) return release.artists.map((artist: any) => artist?.name).filter(Boolean).map(String);
+  const name = release?.artist ?? release?.artist_name ?? null;
+  return name ? [String(name)] : [];
+}
+
+function isPrimaryFollowedRelease(release: any, followedArtistId: string): boolean {
+  if (String(release?.type ?? '').toLowerCase() === 'track') return false;
+  if (!isSpotifyAlbumUrl(release?.spotifyUrl ?? release?.spotify_url ?? null)) return false;
+
+  const albumGroup = String(release?.albumGroup ?? release?.album_group ?? '').toLowerCase();
+  if (albumGroup === 'appears_on' || albumGroup === 'compilation') return false;
+
+  const albumType = String(release?.albumType ?? release?.album_type ?? '').toLowerCase();
+  if (albumType === 'compilation' || albumType === 'appears_on') return false;
+
+  const artistNames = getReleaseArtistNames(release);
+  if (artistNames.some(isVariousArtistsName)) return false;
+
+  return getReleaseArtistIds(release).includes(followedArtistId);
 }
 
 const GENRE_OPTIONS: { key: CanonicalGenre | 'all'; label: string }[] = [
@@ -1336,7 +1382,7 @@ export default function DiscoverTab() {
           try {
             const feed = await fetchFeedForArtists({ artistIds: validFollowedIds, limit: 250 });
             const recentFeed = (feed || []).filter((it) => (
-              followedIds.has(it.artist_id) &&
+              isAllowedUpdateFeedRow(it, followedIds) &&
               isWithinDiscoverWindow(it.release_date ?? null, cutoffTs)
             ));
             if (recentFeed.length) {
@@ -1347,7 +1393,7 @@ export default function DiscoverTab() {
               const toType = (t?: string | null): 'album' | 'single' | 'ep' | undefined => {
                 const x = (t || '').toLowerCase();
                 if (x === 'single') return 'single';
-                if (x === 'album' || x === 'compilation') return 'album';
+                if (x === 'album') return 'album';
                 return undefined;
               };
 
@@ -1435,7 +1481,7 @@ export default function DiscoverTab() {
               }
               const feed = await fetchFeedForArtists({ artistIds: validFollowedIds, limit: 250 });
               const recentFeed = (feed || []).filter((it) => (
-                followedIds.has(it.artist_id) &&
+                isAllowedUpdateFeedRow(it, followedIds) &&
                 isWithinDiscoverWindow(it.release_date ?? null, cutoffTs)
               ));
               if (recentFeed.length) {
@@ -1445,7 +1491,7 @@ export default function DiscoverTab() {
                 const toType = (t?: string | null): 'album' | 'single' | 'ep' | undefined => {
                   const x = (t || '').toLowerCase();
                   if (x === 'single') return 'single';
-                  if (x === 'album' || x === 'compilation') return 'album';
+                  if (x === 'album') return 'album';
                   return undefined;
                 };
                 for (const it of recentFeed) {
@@ -1606,14 +1652,12 @@ export default function DiscoverTab() {
             // albums and recent pick
             try {
               let albs: Awaited<ReturnType<typeof artistAlbums>> = [];
-              let tracks: Awaited<ReturnType<typeof artistTopTracks>> = [];
               const seenAlbumIds = new Set<string>();
-              const seenTrackIds = new Set<string>();
               const mkts = Array.from(new Set(['from_token', market || 'GB', 'US', 'GB'].filter(Boolean)));
               for (const mk of mkts) {
                 try {
-                  const url = `https://api.spotify.com/v1/artists/${id}/albums?` + new URLSearchParams({ include_groups: 'album,single,appears_on', market: mk, limit: '50' });
-                  const attempt = async () => artistAlbums(id, mk);
+                  const url = `https://api.spotify.com/v1/artists/${id}/albums?` + new URLSearchParams({ include_groups: 'album,single', market: mk, limit: '50' });
+                  const attempt = async () => artistAlbums(id, mk, 'album,single');
                   let marketAlbums: Awaited<ReturnType<typeof artistAlbums>> = [];
                   try {
                     marketAlbums = await attempt();
@@ -1655,23 +1699,10 @@ export default function DiscoverTab() {
                 }
               }
               const normDateVal = (d?: string | null, p?: string | null) => discoverDateTimestamp(d, p);
-              let recent = (albs || []).filter((album) => isWithinDiscoverWindow(album.releaseDate ?? null, cutoffTs, (album as any).releaseDatePrecision ?? null));
-              if (!recent.length) {
-                for (const mk of mkts) {
-                  try {
-                    const marketTracks = await artistTopTracks(id, mk);
-                    for (const track of marketTracks || []) {
-                      const trackKey = track.id || track.spotifyUrl || `${track.title}-${track.releaseDate}`;
-                      if (!trackKey || seenTrackIds.has(trackKey)) continue;
-                      seenTrackIds.add(trackKey);
-                      tracks.push(track);
-                    }
-                  } catch (err) {
-                    console.log('[updates] artist top tracks ERROR', { artist: fa.name, id, market: mk, message: String(err) });
-                  }
-                }
-              }
-              const recentTracks = (tracks || []).filter((track) => isWithinDiscoverWindow(track.releaseDate ?? null, cutoffTs));
+              let recent = (albs || []).filter((album) => (
+                isPrimaryFollowedRelease(album, id) &&
+                isWithinDiscoverWindow(album.releaseDate ?? null, cutoffTs, (album as any).releaseDatePrecision ?? null)
+              ));
               if (__DEV__) {
                 debugPerArtist.push({
                   artist: fa.name,
@@ -1679,44 +1710,32 @@ export default function DiscoverTab() {
                   total: (albs as any)?._total ?? null,
                   pulled: albs?.length ?? 0,
                   recent: recent.length,
-                  recentTracks: recentTracks.length,
+                  recentTracks: 0,
                   firstDates: (albs || []).slice(0, 3).map(a => ({ date: a.releaseDate, prec: (a as any).releaseDatePrecision, group: a.albumGroup })),
                 });
-              }
-              if (!recent.length && recentTracks.length) {
-                recent = recentTracks.map((track) => ({
-                  id: track.id,
-                  title: track.title,
-                  artist: track.artist,
-                  releaseDate: track.releaseDate ?? null,
-                  releaseDatePrecision: 'day',
-                  spotifyUrl: track.spotifyUrl ?? null,
-                  imageUrl: details[id]?.imageUrl ?? null,
-                  type: 'single',
-                  albumGroup: 'single',
-                }));
               }
               if (!recent.length && fa.name) {
                 try {
                   const year = String(new Date().getFullYear());
-                  const searchRows = await spotifySearch(`artist:"${fa.name}" year:${year}`, 'album,track');
-                  const normalizedFollowedName = normalizeArtistIdentity(fa.name);
+                  const searchRows = await spotifySearch(`artist:"${fa.name}" year:${year}`, 'album');
                   const searchRecents = (searchRows || []).filter((row) => {
-                    const idMatch = row.artistId && row.artistId === id;
-                    const nameMatch = normalizeArtistIdentity(row.artist) === normalizedFollowedName;
-                    return (idMatch || nameMatch) && isWithinDiscoverWindow(row.releaseDate ?? null, cutoffTs);
+                    if (row.type !== 'album' || row.artistId !== id) return false;
+                    if (!isPrimaryFollowedRelease(row, id)) return false;
+                    return isWithinDiscoverWindow(row.releaseDate ?? null, cutoffTs);
                   });
                   if (searchRecents.length) {
                     recent = searchRecents.map((row) => ({
                       id: row.albumId || row.id,
-                      title: row.type === 'track' ? row.title : row.title,
+                      title: row.title,
                       artist: row.artist || details[id]?.name || fa.name || 'Unknown',
                       releaseDate: row.releaseDate ?? null,
                       releaseDatePrecision: 'day',
                       spotifyUrl: row.spotifyUrl ?? null,
                       imageUrl: row.imageUrl ?? null,
-                      type: row.type === 'track' ? 'single' : (row.albumType === 'single' ? 'single' : 'album'),
-                      albumGroup: row.type === 'track' ? 'single' : row.albumType,
+                      artistIds: row.artistId ? [row.artistId] : [],
+                      artistNames: row.artist ? [row.artist] : [],
+                      type: row.albumType === 'single' ? 'single' : 'album',
+                      albumType: row.albumType,
                     }));
                   }
                 } catch (err) {
@@ -1729,7 +1748,7 @@ export default function DiscoverTab() {
                 recent.forEach((album: any) => {
                   const sid = spotifyKey(album.id ?? null, album.spotifyUrl ?? null) || String(album.id || '');
                   if (!sid) return;
-                  const releaseKey = album.spotifyUrl || sid;
+                  const releaseKey = sid;
                   if (seenRelease.has(releaseKey)) return;
                   seenRelease.add(releaseKey);
                   const albumType = String(album.type || album.albumType || '').toLowerCase();
@@ -1969,7 +1988,7 @@ export default function DiscoverTab() {
     Keyboard.dismiss();
   };
 
-  const onAddNew = async (a: { id: string; title: string; artist: string; releaseDate?: string | null; spotifyUrl?: string | null; imageUrl?: string | null; type?: string | null }, stat?: { done?: boolean | undefined }) => {
+  const onAddNew = async (a: { id: string; title: string; artist: string; releaseDate?: string | null; spotifyUrl?: string | null; imageUrl?: string | null; type?: string | null; isrc?: string | null }, stat?: { done?: boolean | undefined }) => {
     const key = spotifyKey(a.id, a.spotifyUrl);
     if (stat?.done && key) {
       // If previously listened, mark it active again before adding so the unique row can be reused
@@ -1990,6 +2009,7 @@ export default function DiscoverTab() {
       artist: a.artist,
       releaseDate: a.releaseDate ?? null,
       spotifyUrl: a.spotifyUrl ?? null,
+      isrc: a.isrc ?? null,
       appleUrl: null,
       imageUrl: a.imageUrl ?? null,
     });
@@ -2015,6 +2035,7 @@ export default function DiscoverTab() {
       artist: r.artist ?? null,
       releaseDate: r.releaseDate ?? null,
       spotifyUrl: r.spotifyUrl ?? null,
+      isrc: r.isrc ?? null,
       appleUrl: null,
       imageUrl: r.imageUrl ?? null,
     });
@@ -2055,7 +2076,17 @@ export default function DiscoverTab() {
     return 0;
   };
 
-  // Derived, relevance-sorted search results with optional filter
+  const artistIntentScore = (r: SpotifyResult, query: string) => {
+    const label = r.title || r.artist || '';
+    const nameScore = matchScore(label, query);
+    const popularity = Math.max(0, Math.min(100, r.popularity || 0));
+    const followerScore = Math.min(18, Math.log10(Math.max(1, (r.followers || 0) + 1)) * 2);
+    const exactShortPenalty = normalize(label) === normalize(query) && popularity < 45 ? 18 : 0;
+    const exactSignalBonus = normalize(label) === normalize(query) && (popularity >= 10 || (r.followers || 0) >= 1_000) ? 18 : 0;
+    return nameScore + (popularity * 0.32) + followerScore + exactSignalBonus - exactShortPenalty;
+  };
+
+  // Derived, relevance-sorted search results with optional artist intent.
   const groupedSearch = useMemo(() => {
     const byRelevance = (items: SpotifyResult[]) => {
       const scored = items.map(r => {
@@ -2066,96 +2097,59 @@ export default function DiscoverTab() {
       return scored.map(s => s.r);
     };
 
-    const projects = byRelevance(searchRows.filter(r => r.type === 'album' || (r as any).albumType === 'single' || (r as any).type === 'single')).slice(0, 5);
-    const tracks = byRelevance(searchRows.filter(r => r.type === 'track')).slice(0, 5);
-    const artistsOnly = byRelevance(searchRows.filter(r => r.type === 'artist')).slice(0, 5);
-    return {
-      projects,
-      tracks,
-      artists: artistsOnly,
-    };
+    const music = byRelevance(searchRows.filter(r => r.type === 'track' || r.type === 'album' || (r as any).albumType === 'single' || (r as any).type === 'single')).slice(0, 10);
+    const artistScores = searchRows
+      .filter(r => r.type === 'artist')
+      .map(r => ({
+        r,
+        nameScore: matchScore(r.title || r.artist || '', q),
+        intentScore: artistIntentScore(r, q),
+      }))
+      .sort((a, b) => (b.intentScore - a.intentScore) || ((b.r.popularity || 0) - (a.r.popularity || 0)));
+    const topMusicScore = music.reduce((max, r) => Math.max(max, matchScore(r.title || r.artist || '', q)), 0);
+    const topArtistScore = artistScores[0]?.nameScore ?? 0;
+    const topArtistIntentScore = artistScores[0]?.intentScore ?? 0;
+    const hasStrongArtist = !!artistScores[0] && topArtistScore >= 85 && (topArtistScore >= topMusicScore - 10 || topArtistIntentScore >= 115);
+    const strongArtists = hasStrongArtist
+      ? artistScores
+        .filter((s, index) => index === 0 || (s.intentScore >= topArtistIntentScore - 60 && (
+          (s.nameScore >= 85 && ((s.r.popularity || 0) >= 45 || (s.r.followers || 0) >= 100_000))
+          || (s.nameScore >= 70 && (s.r.popularity || 0) >= 65)
+        )))
+        .slice(0, 5)
+        .map(s => s.r)
+      : [];
+    const artists = strongArtists.length
+      ? []
+      : artistScores.filter(s => s.intentScore >= 85 && (s.nameScore >= 60 || (s.nameScore >= 55 && (s.r.popularity || 0) >= 50))).map(s => s.r).slice(0, 5);
+    return { music, strongArtists, artists };
   }, [searchRows, q]);
-
-  const rankSections = (query: string, sections: { artists: SpotifyResult[]; tracks: SpotifyResult[]; projects: SpotifyResult[] }) => {
-    const qn = normalize(query);
-    const qWords = qn ? qn.split(' ') : [];
-    const baseOrder: Array<keyof typeof sections> = ['tracks', 'projects', 'artists'];
-    if (!qn) return baseOrder;
-
-    const scoreSection = (items: SpotifyResult[], type: 'artists' | 'tracks' | 'projects') => {
-      const topN = items.slice(0, 10);
-      const scores = topN.map((r, idx) => {
-        const label = r.title || r.artist || '';
-        const score = matchScore(label, query);
-        const rankBonus = idx < 3 && score >= 85 ? 8 : 0;
-        return { score, rankBonus };
-      });
-      const topScore = scores.reduce((m, s) => Math.max(m, s.score), 0);
-      const topHitRankBonus = scores.some(s => s.rankBonus > 0) ? 8 : 0;
-      const countBonus = Math.min(items.length, 20) * 0.3;
-      let shapeBonus = 0;
-      if (qWords.length === 1 && type === 'artists') shapeBonus = 10;
-      if (qWords.length >= 3 && type === 'tracks') shapeBonus = 10;
-      if (qWords.length >= 3 && type === 'projects') shapeBonus = 6;
-      return { topScore, topHitRankBonus, countBonus, shapeBonus, final: topScore + topHitRankBonus + countBonus + shapeBonus };
-    };
-
-    const scores = {
-      artists: scoreSection(sections.artists, 'artists'),
-      tracks: scoreSection(sections.tracks, 'tracks'),
-      projects: scoreSection(sections.projects, 'projects'),
-    };
-
-    const order = (Object.keys(scores) as Array<keyof typeof scores>).sort((a, b) => scores[b].final - scores[a].final);
-    const [first, second] = order;
-    const diff = scores[first].final - scores[second].final;
-    const finalOrder = diff >= 12 ? order : baseOrder;
-
-    if (__DEV__) {
-      // eslint-disable-next-line no-console
-      console.log('[discover rank]', {
-        query,
-        scores,
-        order: finalOrder,
-      });
-    }
-
-    return finalOrder;
-  };
 
   useEffect(() => {
     // eslint-disable-next-line no-console
     console.log('[discover dropdown sections]', {
+      strongArtists: groupedSearch.strongArtists.length,
       artists: groupedSearch.artists.length,
-      tracks: groupedSearch.tracks.length,
-      projects: groupedSearch.projects.length,
+      music: groupedSearch.music.length,
     });
-  }, [groupedSearch.artists.length, groupedSearch.tracks.length, groupedSearch.projects.length]);
+  }, [groupedSearch.artists.length, groupedSearch.music.length, groupedSearch.strongArtists.length]);
 
   const clearSearch = () => {
     resetSearchState();
     Keyboard.dismiss();
   };
 
-  const hasGrouped = groupedSearch.projects.length || groupedSearch.tracks.length || groupedSearch.artists.length;
+  const hasGrouped = groupedSearch.music.length || groupedSearch.strongArtists.length || groupedSearch.artists.length;
 
-  const sectionOrder = rankSections(q, {
-    artists: groupedSearch.artists,
-    tracks: groupedSearch.tracks,
-    projects: groupedSearch.projects,
-  });
-
-  type SearchSection = { title: string; key: 'artists' | 'tracks' | 'projects'; data: SpotifyResult[] };
+  type SearchSection = { title: string; key: 'artist' | 'artists' | 'music'; data: SpotifyResult[] };
   const groupedSections = useMemo<SearchSection[]>(() => {
     if (!hasGrouped) return [];
     const out: SearchSection[] = [];
-    sectionOrder.forEach((section) => {
-      if (section === 'tracks' && groupedSearch.tracks.length) out.push({ title: 'Tracks', key: 'tracks', data: groupedSearch.tracks });
-      if (section === 'projects' && groupedSearch.projects.length) out.push({ title: 'Projects', key: 'projects', data: groupedSearch.projects });
-      if (section === 'artists' && groupedSearch.artists.length) out.push({ title: 'Artists', key: 'artists', data: groupedSearch.artists });
-    });
+    if (groupedSearch.strongArtists.length) out.push({ title: groupedSearch.strongArtists.length === 1 ? 'Artist' : 'Artists', key: 'artist', data: groupedSearch.strongArtists });
+    if (groupedSearch.music.length) out.push({ title: 'Music', key: 'music', data: groupedSearch.music });
+    if (groupedSearch.artists.length) out.push({ title: 'Artists', key: 'artists', data: groupedSearch.artists });
     return out;
-  }, [groupedSearch, sectionOrder, hasGrouped]);
+  }, [groupedSearch, hasGrouped]);
 
   // Build rows for FlatList (fallback view when there is no grouped search)
   const rows: Row[] = [];
@@ -2854,12 +2848,6 @@ export default function DiscoverTab() {
           </View>
         );
 
-        const hasAny =
-          yourUpdatesState.status === 'success' ||
-          topPicksState.status === 'success' ||
-          youMightLike.length > 0 ||
-          genreRows.length > 0;
-
         return (
           <>
             <View key="your-updates-releases" style={{ marginBottom: 16 }}>
@@ -2926,24 +2914,6 @@ export default function DiscoverTab() {
                 </View>
               );
             })}
-            {hasAny && (
-              <GlassCard asChild style={{ marginTop: 6, marginHorizontal: horizontalPad }}>
-                <Pressable
-                  onPress={() => router.push('/new-releases-all')}
-                  style={({ pressed }) => ({
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    paddingVertical: 12,
-                    paddingHorizontal: 12,
-                    opacity: pressed ? 0.9 : 1,
-                  })}
-                >
-                  <Text style={{ fontWeight: '800', color: colors.text.secondary }}>View all releases</Text>
-                  <Ionicons name="chevron-forward" size={18} color={colors.text.secondary} />
-                </Pressable>
-              </GlassCard>
-            )}
           </>
         );
       })()}

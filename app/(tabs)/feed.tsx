@@ -3,7 +3,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Animated, FlatList, Image, LayoutAnimation, Platform, Pressable, SectionList, Text, UIManager, View } from 'react-native';
+import { Alert, Animated, FlatList, Image, LayoutAnimation, Platform, Pressable, ScrollView, SectionList, Text, UIManager, View } from 'react-native';
 import Avatar from '../../components/Avatar';
 import { H } from '../../components/haptics';
 import Screen from '../../components/Screen';
@@ -12,6 +12,7 @@ import GlassCard from '../../components/GlassCard';
 import Chip from '../../components/Chip';
 import StatusMenu from '../../components/StatusMenu';
 import FeedHeader, { type FeedMode } from '../../components/feed/FeedHeader';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { formatDate } from '../../lib/date';
 import { off, on } from '../../lib/events';
 import { FN_BASE, fetchFn } from '../../lib/fnBase';
@@ -67,8 +68,10 @@ const FEED_MODE_KEY = (uid: string) => `wavemark:feed-mode:${uid}`;
 
 export default function FeedTab() {
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
   const { user } = useSession();
   const SOCIAL_HEADER_HEIGHT = 44;
+  const STICKY_CONTROLS_THRESHOLD = 154;
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<Item[]>([]);
   const [refreshing, setRefreshing] = useState(false);
@@ -86,6 +89,7 @@ export default function FeedTab() {
   const [doneKeys, setDoneKeys] = useState<string[]>([]);
   const [inListKeys, setInListKeys] = useState<string[]>([]);
   const [menuRow, setMenuRow] = useState<any | null>(null);
+  const [stickyControlsVisible, setStickyControlsVisible] = useState(false);
   const [snack, setSnack] = useState<{ visible: boolean; message: string; listenId?: string | null; feedId?: string | null }>({ visible: false, message: '', listenId: null, feedId: null });
   const artistListRef = useRef<any>(null);
   const socialListRef = useRef<any>(null);
@@ -608,6 +612,11 @@ export default function FeedTab() {
     setExpandedSocialGroupIds(new Set());
   }, []);
 
+  const updateStickyControls = useCallback((offset: number) => {
+    const next = offset > STICKY_CONTROLS_THRESHOLD;
+    setStickyControlsVisible((current) => (current === next ? current : next));
+  }, []);
+
   const SocialGroupCard = ({ group, expanded }: { group: SocialGroup; expanded: boolean }) => {
     const opacity = useRef(new Animated.Value(expanded ? 1 : 0)).current;
     useEffect(() => {
@@ -705,18 +714,21 @@ export default function FeedTab() {
                                   onAddSocial(it);
                                 }}
                                 disabled={isInList}
-                                style={({ pressed, focused }) => ({
-                                  flexDirection: 'row',
-                                  alignItems: 'center',
-                                  gap: 4,
-                                  paddingHorizontal: 8,
-                                  paddingVertical: 4,
-                                  borderRadius: 999,
-                                  borderWidth: 1,
-                                  borderColor: focused ? colors.accent.primary : colors.border.subtle,
-                                  backgroundColor: isInList ? colors.bg.muted : colors.bg.secondary,
-                                  opacity: pressed ? 0.8 : (isInList ? 0.6 : 1),
-                                })}
+                                style={(state) => {
+                                  const focused = 'focused' in state && !!state.focused;
+                                  return {
+                                    flexDirection: 'row',
+                                    alignItems: 'center',
+                                    gap: 4,
+                                    paddingHorizontal: 8,
+                                    paddingVertical: 4,
+                                    borderRadius: 999,
+                                    borderWidth: 1,
+                                    borderColor: focused ? colors.accent.primary : colors.border.subtle,
+                                    backgroundColor: isInList ? colors.bg.muted : colors.bg.secondary,
+                                    opacity: state.pressed ? 0.8 : (isInList ? 0.6 : 1),
+                                  };
+                                }}
                               >
                                 <Ionicons name={isInList ? 'checkmark' : 'add'} size={12} color={colors.text.secondary as any} />
                                 <Text style={{ color: colors.text.secondary, fontSize: 10, fontWeight: '800' }}>
@@ -791,18 +803,21 @@ export default function FeedTab() {
                               onAddSocial(it);
                             }}
                             disabled={isInList}
-                            style={({ pressed, focused }) => ({
-                              flexDirection: 'row',
-                              alignItems: 'center',
-                              gap: 6,
-                              paddingHorizontal: 10,
-                              paddingVertical: 6,
-                              borderRadius: 999,
-                              borderWidth: 1,
-                              borderColor: focused ? colors.accent.primary : colors.border.subtle,
-                              backgroundColor: isInList ? colors.bg.muted : colors.bg.secondary,
-                              opacity: pressed ? 0.85 : (isInList ? 0.6 : 1),
-                            })}
+                            style={(state) => {
+                              const focused = 'focused' in state && !!state.focused;
+                              return {
+                                flexDirection: 'row',
+                                alignItems: 'center',
+                                gap: 6,
+                                paddingHorizontal: 10,
+                                paddingVertical: 6,
+                                borderRadius: 999,
+                                borderWidth: 1,
+                                borderColor: focused ? colors.accent.primary : colors.border.subtle,
+                                backgroundColor: isInList ? colors.bg.muted : colors.bg.secondary,
+                                opacity: state.pressed ? 0.85 : (isInList ? 0.6 : 1),
+                              };
+                            }}
                           >
                             <Ionicons name={isInList ? 'checkmark' : 'add'} size={12} color={colors.text.secondary as any} />
                             <Text style={{ color: colors.text.secondary, fontWeight: '800', fontSize: 11 }}>
@@ -830,8 +845,108 @@ export default function FeedTab() {
     { key: 'new', label: 'New this week' },
   ];
 
-  return (
-    <Screen>
+  const renderModeSwitch = (compact = false) => (
+    <View style={{
+      flexDirection: 'row',
+      padding: compact ? 2 : 3,
+      borderRadius: compact ? 12 : 13,
+      backgroundColor: colors.bg.muted,
+      borderWidth: 1,
+      borderColor: colors.border.subtle,
+      gap: compact ? 3 : 4,
+    }}>
+      {([
+        { key: 'artist', label: 'Artists' },
+        { key: 'social', label: 'Social' },
+      ] as const).map(({ key, label }) => {
+        const selected = mode === key;
+        return (
+          <Pressable
+            key={key}
+            onPress={() => {
+              if (mode === key) return;
+              H.tap();
+              onChangeMode(key);
+            }}
+            style={({ pressed }) => ({
+              opacity: pressed ? 0.85 : 1,
+            })}
+          >
+            <View style={{
+              minWidth: compact ? 76 : 0,
+              paddingHorizontal: compact ? 12 : 14,
+              paddingVertical: compact ? 7 : 8,
+              borderRadius: compact ? 10 : 11,
+              alignItems: 'center',
+              justifyContent: 'center',
+              backgroundColor: selected ? colors.accent.primary : 'transparent',
+            }}>
+              <Text style={{ color: selected ? colors.text.inverted : colors.text.secondary, fontWeight: '800', fontSize: compact ? 12 : 13 }}>{label}</Text>
+            </View>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+
+  const renderCompactControls = () => (
+    <View style={{
+      backgroundColor: `${colors.bg.primary}ee`,
+      borderWidth: 1,
+      borderColor: colors.border.subtle,
+      borderRadius: 18,
+      padding: 8,
+      shadowColor: colors.shadow.light,
+      shadowOpacity: 0.22,
+      shadowRadius: 18,
+      shadowOffset: { width: 0, height: 10 },
+    }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+        {renderModeSwitch(true)}
+        {mode === 'social' && hasExpandableGroups ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={allExpanded ? 'Collapse all' : 'Expand all'}
+            onPress={() => { if (allExpanded) collapseAll(); else expandAll(); }}
+            style={({ pressed }) => ({
+              marginLeft: 'auto',
+              paddingHorizontal: 12,
+              paddingVertical: 8,
+              borderRadius: 999,
+              backgroundColor: colors.bg.muted,
+              borderWidth: 1,
+              borderColor: colors.border.subtle,
+              opacity: pressed ? 0.85 : 1,
+            })}
+          >
+            <Text style={{ color: colors.text.secondary, fontWeight: '800', fontSize: 12 }}>
+              {allExpanded ? 'Collapse' : 'Expand'}
+            </Text>
+          </Pressable>
+        ) : null}
+      </View>
+      {mode === 'artist' ? (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={{ gap: 8, paddingTop: 8 }}
+        >
+          {filterOptions.map(({ key, label }) => (
+            <Chip
+              key={key}
+              label={label}
+              selected={filter === key}
+              onPress={() => setFilter(key as any)}
+              style={{ paddingHorizontal: 12, minHeight: 32 }}
+            />
+          ))}
+        </ScrollView>
+      ) : null}
+    </View>
+  );
+
+  const renderWaveHeader = () => (
+    <View style={{ paddingTop: insets.top + 8 }}>
       <FeedHeader
         subtitle={mode === 'artist' ? 'New releases from artists you follow' : 'Ripple activity from your network'}
         mode={mode}
@@ -839,11 +954,11 @@ export default function FeedTab() {
         rightAccessory={(
           <View style={{ flexDirection: 'row' }}>
             {avatarStack.map((r, idx) => (
-              <Image key={r.id} source={{ uri: r.image_url! }} style={{ width: 34, height: 34, borderRadius: 999, borderWidth: 2, borderColor: colors.border.strong, marginLeft: idx === 0 ? 0 : -10, backgroundColor: colors.bg.elevated }} />
+              <Image key={r.id} source={{ uri: r.image_url! }} style={{ width: 30, height: 30, borderRadius: 999, borderWidth: 1, borderColor: colors.border.strong, marginLeft: idx === 0 ? 0 : -9, backgroundColor: colors.bg.elevated }} />
             ))}
             {avatarStack.length === 0 && (
-              <View style={{ width: 34, height: 34, borderRadius: 999, backgroundColor: colors.bg.elevated, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.border.strong }}>
-                <Text style={{ color: colors.text.muted, fontWeight: '800' }}>?</Text>
+              <View style={{ width: 30, height: 30, borderRadius: 999, backgroundColor: colors.bg.elevated, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.border.strong }}>
+                <Text style={{ color: colors.text.muted, fontWeight: '800', fontSize: 12 }}>?</Text>
               </View>
             )}
           </View>
@@ -851,48 +966,62 @@ export default function FeedTab() {
       >
         {mode === 'artist' && newCount > 0 ? (
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-            <View style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999, backgroundColor: accentSoft, borderWidth: 1, borderColor: colors.accent.primary }}>
-              <Text style={{ color: colors.accent.primary, fontWeight: '800', letterSpacing: 0.3 }}>{newCount} new this week</Text>
+            <View style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: accentSoft, borderWidth: 1, borderColor: colors.accent.primary }}>
+              <Text style={{ color: colors.accent.primary, fontWeight: '800', fontSize: 12 }}>{newCount} new this week</Text>
             </View>
           </View>
         ) : null}
       </FeedHeader>
 
       {mode === 'artist' && (
-      <View style={{ marginBottom: 8 }}>
-        <View style={{
-          flexDirection: 'row',
-          flexWrap: 'wrap',
-          gap: 10,
-          paddingHorizontal: 4,
-          paddingVertical: 6,
-          maxHeight: filtersExpanded ? undefined : 52,
-          overflow: 'hidden',
-        }}>
-          {filterOptions.map(({ key, label }) => {
-            const selected = filter === key;
-            return (
-              <Chip
-                key={key}
-                label={label}
-                selected={selected}
-                onPress={() => setFilter(key as any)}
-                style={{ paddingHorizontal: 16, minHeight: 40 }}
-              />
-          );
-          })}
+        <View style={{ marginBottom: 6 }}>
+          <View style={{
+            flexDirection: 'row',
+            flexWrap: 'wrap',
+            gap: 8,
+            paddingVertical: 4,
+            maxHeight: filtersExpanded ? undefined : 44,
+            overflow: 'hidden',
+          }}>
+            {filterOptions.map(({ key, label }) => {
+              const selected = filter === key;
+              return (
+                <Chip
+                  key={key}
+                  label={label}
+                  selected={selected}
+                  onPress={() => setFilter(key as any)}
+                  style={{ paddingHorizontal: 13, minHeight: 34 }}
+                />
+              );
+            })}
+          </View>
+          <Pressable
+            onPress={() => setFiltersExpanded(v => !v)}
+            style={({ pressed }) => ({
+              alignSelf: 'flex-start',
+              paddingHorizontal: 4,
+              paddingVertical: 4,
+              opacity: pressed ? 0.7 : 1,
+            })}
+          >
+            <Text style={{ color: colors.text.muted, fontWeight: '800', fontSize: 12 }}>{filtersExpanded ? 'Collapse filters' : 'Show all filters'}</Text>
+          </Pressable>
         </View>
-        <Pressable
-          onPress={() => setFiltersExpanded(v => !v)}
-          style={{ alignSelf: 'flex-start', marginLeft: 4, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 10, backgroundColor: colors.bg.muted }}
-        >
-          <Text style={{ color: colors.text.secondary, fontWeight: '800' }}>{filtersExpanded ? 'Collapse filters' : 'Show all filters'}</Text>
-        </Pressable>
-      </View>
       )}
+    </View>
+  );
 
+  return (
+    <Screen edges={['left', 'right']} style={{ paddingTop: 0 }}>
       {mode === 'artist' && loading ? (
-        <View style={{ marginTop: 8, gap: 12 }}>
+        <ScrollView
+          contentContainerStyle={{ paddingBottom: 112 }}
+          onScroll={(e) => updateStickyControls(e.nativeEvent.contentOffset.y)}
+          scrollEventThrottle={16}
+        >
+          {renderWaveHeader()}
+          <View style={{ marginTop: 8, gap: 12 }}>
           {[0, 1, 2].map(i => (
             <View key={i} style={{ height: 110, borderRadius: 16, backgroundColor: colors.bg.secondary, overflow: 'hidden', padding: 12, borderWidth: 1, borderColor: colors.border.subtle }}>
               <Animated.View style={{ position: 'absolute', inset: 0, backgroundColor: colors.bg.muted, opacity: 0.5 }} />
@@ -910,19 +1039,24 @@ export default function FeedTab() {
               </View>
             </View>
           ))}
-        </View>
+          </View>
+        </ScrollView>
       ) : (
         mode === 'artist' ? (
         <SectionList
           ref={artistListRef}
           sections={sections}
           keyExtractor={(i) => String(i.id ?? i.spotify_url ?? i.apple_url ?? `${i.title}__${i.artist_id}`)}
-          contentContainerStyle={{ paddingBottom: 112, paddingTop: 8 }}
+          ListHeaderComponent={renderWaveHeader}
+          contentContainerStyle={{ paddingBottom: 112 }}
           onLayout={attemptRestoreScroll}
           onContentSizeChange={attemptRestoreScroll}
+          stickySectionHeadersEnabled={false}
           onScroll={(e) => {
             if (restoreTargetRef.current.mode === 'artist') return;
-            artistScrollOffsetRef.current = e.nativeEvent.contentOffset.y;
+            const offset = e.nativeEvent.contentOffset.y;
+            artistScrollOffsetRef.current = offset;
+            updateStickyControls(offset);
           }}
           scrollEventThrottle={16}
           ListEmptyComponent={(
@@ -952,12 +1086,8 @@ export default function FeedTab() {
           refreshing={refreshing}
           onRefresh={onRefresh}
           renderSectionHeader={({ section: { title } }) => (
-            <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 12, marginBottom: 6 }}>
-              <View style={{ width: 18, alignItems: 'center' }}>
-                <View style={{ width: 2, height: 18, backgroundColor: colors.bg.muted }} />
-                <View style={{ width: 10, height: 10, borderRadius: 8, backgroundColor: colors.accent.primary, borderWidth: 2, borderColor: colors.border.subtle, marginTop: -6 }} />
-              </View>
-              <Text style={{ marginLeft: 8, color: colors.text.secondary, fontSize: 12, fontWeight: '800' }}>
+            <View style={{ marginTop: 14, marginBottom: 4 }}>
+              <Text style={{ color: colors.text.muted, fontSize: 12, fontWeight: '900', letterSpacing: 0.2 }}>
                 {(() => {
                   if (title === 'Unknown date') return 'Earlier';
                   const ts = Date.parse(title);
@@ -1075,7 +1205,13 @@ export default function FeedTab() {
       />
         ) : (
           socialLoading ? (
-            <View style={{ marginTop: 16, gap: 10 }}>
+            <ScrollView
+              contentContainerStyle={{ paddingBottom: 112 }}
+              onScroll={(e) => updateStickyControls(e.nativeEvent.contentOffset.y)}
+              scrollEventThrottle={16}
+            >
+              {renderWaveHeader()}
+              <View style={{ marginTop: 14, gap: 10 }}>
               {[0, 1, 2, 3].map((i) => (
                 <View key={i} style={{ height: 72, borderRadius: 14, backgroundColor: colors.bg.secondary, overflow: 'hidden', padding: 12, borderWidth: 1, borderColor: colors.border.subtle }}>
                   <Animated.View style={{ position: 'absolute', inset: 0, backgroundColor: colors.bg.muted, opacity: 0.5 }} />
@@ -1088,58 +1224,59 @@ export default function FeedTab() {
                   </View>
                 </View>
               ))}
-            </View>
+              </View>
+            </ScrollView>
           ) : (
             <View style={{ flex: 1, minHeight: 0 }}>
               <FlatList
                 ref={socialListRef}
                 data={socialFeedRows}
                 keyExtractor={(i) => i.id}
-                ListHeaderComponent={mode === 'social' && hasExpandableGroups ? (
-                  <View style={{
-                    height: SOCIAL_HEADER_HEIGHT,
-                    paddingHorizontal: 8,
-                    justifyContent: 'center',
-                    backgroundColor: colors.bg.secondary,
-                    borderBottomWidth: 1,
-                    borderColor: colors.border.subtle,
-                    ...(Platform.OS === 'web'
-                      ? { position: 'sticky', top: 0, zIndex: 10 }
-                      : {}),
-                  }}>
-                    <View style={{ flexDirection: 'row', justifyContent: 'flex-end' }}>
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel={allExpanded ? 'Collapse all' : 'Expand all'}
-                        accessibilityHint="Expands or collapses all social activity groups"
-                        onPress={() => { if (allExpanded) collapseAll(); else expandAll(); }}
-                        hitSlop={6}
-                        style={({ pressed, focused }) => ({
-                          paddingHorizontal: 12,
-                          paddingVertical: 8,
-                          borderRadius: 999,
-                          borderWidth: 1,
-                          borderColor: focused ? colors.accent.primary : colors.border.subtle,
-                          backgroundColor: colors.bg.muted,
-                          opacity: pressed ? 0.85 : 1,
-                        })}
-                      >
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                          <Ionicons name={allExpanded ? 'chevron-up' : 'chevron-down'} size={14} color={colors.text.secondary as any} />
-                          <Text style={{ color: colors.text.secondary, fontWeight: '800', fontSize: 12 }}>
-                            {allExpanded ? 'Collapse all' : 'Expand all'}
-                          </Text>
+                ListHeaderComponent={() => (
+                  <>
+                    {renderWaveHeader()}
+                    {mode === 'social' && hasExpandableGroups ? (
+                      <View style={{ height: SOCIAL_HEADER_HEIGHT, justifyContent: 'center', marginBottom: 4 }}>
+                        <View style={{ flexDirection: 'row', justifyContent: 'flex-end' }}>
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel={allExpanded ? 'Collapse all' : 'Expand all'}
+                            accessibilityHint="Expands or collapses all social activity groups"
+                            onPress={() => { if (allExpanded) collapseAll(); else expandAll(); }}
+                            hitSlop={6}
+                            style={(state) => {
+                              const focused = 'focused' in state && !!state.focused;
+                              return {
+                                paddingHorizontal: 12,
+                                paddingVertical: 8,
+                                borderRadius: 999,
+                                borderWidth: 1,
+                                borderColor: focused ? colors.accent.primary : colors.border.subtle,
+                                backgroundColor: colors.bg.muted,
+                                opacity: state.pressed ? 0.85 : 1,
+                              };
+                            }}
+                          >
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                              <Ionicons name={allExpanded ? 'chevron-up' : 'chevron-down'} size={14} color={colors.text.secondary as any} />
+                              <Text style={{ color: colors.text.secondary, fontWeight: '800', fontSize: 12 }}>
+                                {allExpanded ? 'Collapse all' : 'Expand all'}
+                              </Text>
+                            </View>
+                          </Pressable>
                         </View>
-                      </Pressable>
-                    </View>
-                  </View>
-                ) : null}
-                contentContainerStyle={{ paddingBottom: 112, paddingTop: hasExpandableGroups ? 0 : 8 }}
+                      </View>
+                    ) : null}
+                  </>
+                )}
+                contentContainerStyle={{ paddingBottom: 112 }}
                 onLayout={attemptRestoreScroll}
                 onContentSizeChange={attemptRestoreScroll}
                 onScroll={(e) => {
                   if (restoreTargetRef.current.mode === 'social') return;
-                  socialScrollOffsetRef.current = e.nativeEvent.contentOffset.y;
+                  const offset = e.nativeEvent.contentOffset.y;
+                  socialScrollOffsetRef.current = offset;
+                  updateStickyControls(offset);
                 }}
                 scrollEventThrottle={16}
                 refreshing={socialRefreshing}
@@ -1203,6 +1340,20 @@ export default function FeedTab() {
         onClose={() => setMenuRow(null)}
         onChanged={() => { load(); }}
       />
+      {stickyControlsVisible ? (
+        <View
+          pointerEvents="box-none"
+          style={{
+            position: 'absolute',
+            top: insets.top + 8,
+            left: 16,
+            right: 16,
+            zIndex: 20,
+          }}
+        >
+          {renderCompactControls()}
+        </View>
+      ) : null}
     </Screen>
   );
 }

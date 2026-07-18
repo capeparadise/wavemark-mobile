@@ -1,6 +1,9 @@
 import { StyleSheet, View } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { themeByName } from '../../theme/themes';
 import { useTheme } from '../../theme/useTheme';
+
+export const TAB_BAR_HEIGHT = 54;
 
 export default function TabBarBackground() {
   const { themeName } = useTheme();
@@ -10,16 +13,25 @@ export default function TabBarBackground() {
     <View pointerEvents="none" style={styles.container}>
       <View style={styles.shadowCapsule}>
         <View style={styles.capsule}>
+          <LinearGradient
+            colors={[
+              isDark ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.42)',
+              isDark ? 'rgba(255,255,255,0.025)' : 'rgba(255,255,255,0.18)',
+              isDark ? 'rgba(255,255,255,0.045)' : 'rgba(255,255,255,0.28)',
+            ]}
+            locations={[0, 0.54, 1]}
+            style={StyleSheet.absoluteFill}
+          />
           <View
             style={[
               StyleSheet.absoluteFill,
-              { backgroundColor: isDark ? 'rgba(17,20,28,0.72)' : 'rgba(255,255,255,0.46)' },
+              { backgroundColor: isDark ? 'rgba(16,18,27,0.66)' : 'rgba(255,255,255,0.34)' },
             ]}
           />
           <View
             style={[
               StyleSheet.absoluteFill,
-              { backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(248,250,252,0.22)' },
+              { backgroundColor: isDark ? 'rgba(6,7,12,0.18)' : 'rgba(248,250,252,0.14)' },
             ]}
           />
           <View style={[StyleSheet.absoluteFill, styles.innerHighlight]} />
@@ -40,13 +52,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   shadowCapsule: {
-    width: '84%',
-    height: '100%',
+    width: '82%',
+    maxWidth: 360,
+    height: TAB_BAR_HEIGHT,
     borderRadius: 999,
     shadowColor: '#000',
-    shadowOpacity: 0.12,
-    shadowRadius: 20,
-    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.22,
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 10 },
     elevation: 10,
   },
   capsule: {
@@ -57,6 +70,6 @@ const styles = StyleSheet.create({
   innerHighlight: {
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.22)',
+    borderColor: 'rgba(255,255,255,0.14)',
   },
 });

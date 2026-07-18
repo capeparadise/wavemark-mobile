@@ -8,7 +8,7 @@ import GlassCard from '../../components/GlassCard';
 import { formatDate } from '../../lib/date';
 import { addToListFromSearch, getDefaultPlayer, openByDefaultPlayer, type ListenPlayer, type ListenRow } from '../../lib/listen';
 import { type SimpleAlbum } from '../../lib/recommend';
-import { parseSpotifyUrlOrId, spotifyLookup } from '../../lib/spotify';
+import { parseSpotifyUrlOrId, spotifyLookup, spotifySearch, type SpotifyResult } from '../../lib/spotify';
 import { buildAlbumUrl, buildTrackUrl, fetchAllAlbums, fetchCollectionById, fetchTrackById } from '../../lib/apple';
 import { artistAlbums } from '../../lib/spotifyArtist';
 import { supabase } from '../../lib/supabase';
@@ -32,6 +32,10 @@ type ReleaseDetails = {
   spotifyId?: string | null;
   appleUrl?: string | null;
   appleId?: string | null;
+  appleTrackId?: string | null;
+  appleAlbumId?: string | null;
+  appleStorefront?: string | null;
+  isrc?: string | null;
   itemType?: 'album' | 'track';
 };
 
@@ -59,6 +63,13 @@ const releaseTimestamp = (value?: string | null) => {
   else if (/^\d{4}-\d{2}$/.test(normalized)) normalized = `${normalized}-15`;
   const timestamp = Date.parse(normalized);
   return Number.isNaN(timestamp) ? 0 : timestamp;
+};
+
+const releaseTypeLabel = (item: Pick<SimpleAlbum, 'title' | 'type'>) => {
+  const title = item.title || '';
+  if (item.type === 'ep' || /(^|\s)EP(\s|$)/i.test(title)) return 'EP';
+  if (item.type === 'single' || item.type === 'track' || / - Single$/i.test(title)) return 'SINGLE';
+  return 'ALBUM';
 };
 
 export default function ReleaseScreen() {
@@ -122,6 +133,10 @@ export default function ReleaseScreen() {
       spotifyId: spotifyId || null,
       appleUrl: null,
       appleId: null,
+      appleTrackId: null,
+      appleAlbumId: null,
+      appleStorefront: null,
+      isrc: null,
       itemType: isTrack ? 'track' : 'album',
     };
   }, [
@@ -149,7 +164,8 @@ export default function ReleaseScreen() {
 
   const releaseKey = String(release?.spotifyId || release?.providerId || spotifyIdParam || releaseId || '').trim();
   const artistKey = String(release?.artistId || artistIdParam || '').trim();
-  const moreByKey = artistKey ? `${release?.provider || 'unknown'}:${artistKey}:${releaseKey}` : '';
+  const artistNameKey = String(release?.artistName || artistNameParam || '').trim().toLowerCase();
+  const moreByKey = artistKey || artistNameKey ? `${release?.provider || 'unknown'}:${artistKey || artistNameKey}:${releaseKey}` : '';
 
   const sameIds = useCallback((a: SimpleAlbum[], b: SimpleAlbum[]) => {
     if (a.length !== b.length) return false;
@@ -214,6 +230,10 @@ export default function ReleaseScreen() {
           spotifyId: row.spotify_id ?? null,
           appleUrl: row.apple_url ?? null,
           appleId: row.apple_id ?? null,
+          appleTrackId: row.apple_track_id ?? null,
+          appleAlbumId: row.apple_album_id ?? null,
+          appleStorefront: row.apple_storefront ?? null,
+          isrc: null,
           itemType,
         };
       };
@@ -272,6 +292,10 @@ export default function ReleaseScreen() {
                 spotifyId: r.id,
                 appleUrl: null,
                 appleId: null,
+                appleTrackId: null,
+                appleAlbumId: null,
+                appleStorefront: null,
+                isrc: r.isrc ?? null,
                 itemType: r.type === 'track' ? 'track' : 'album',
               };
             }
@@ -299,6 +323,10 @@ export default function ReleaseScreen() {
                 spotifyId: null,
                 appleUrl: buildAlbumUrl(album.collectionId, album.collectionName),
                 appleId: String(album.collectionId),
+                appleTrackId: null,
+                appleAlbumId: String(album.collectionId),
+                appleStorefront: null,
+                isrc: null,
                 itemType: 'album',
               };
             }
@@ -319,6 +347,10 @@ export default function ReleaseScreen() {
                   spotifyId: null,
                   appleUrl: buildTrackUrl(track.trackId, track.trackName),
                   appleId: String(track.trackId),
+                  appleTrackId: String(track.trackId),
+                  appleAlbumId: null,
+                  appleStorefront: null,
+                  isrc: null,
                   itemType: 'track',
                 };
               }
@@ -344,6 +376,10 @@ export default function ReleaseScreen() {
           spotifyId: null,
           appleUrl: null,
           appleId: null,
+          appleTrackId: null,
+          appleAlbumId: null,
+          appleStorefront: null,
+          isrc: null,
           itemType: 'album',
         };
       }
@@ -361,7 +397,8 @@ export default function ReleaseScreen() {
   }, [releaseId]);
 
   const loadMoreByArtist = useCallback(async () => {
-    if (!release || !artistKey) {
+    const artistName = String(release?.artistName || '').trim();
+    if (!release || (!artistKey && !artistName)) {
       setMoreByArtist([]);
       return;
     }
@@ -389,7 +426,7 @@ export default function ReleaseScreen() {
       let nextItems: SimpleAlbum[] = [];
 
       if (release.provider === 'spotify' && /^[A-Za-z0-9]{22}$/.test(artistKey)) {
-        const albums = await artistAlbums(artistKey, 'from_token').catch(() => artistAlbums(artistKey, 'GB'));
+        const albums = await artistAlbums(artistKey, 'from_token').catch(() => artistAlbums(artistKey, 'GB')).catch(() => []);
         nextItems = albums.map((item) => ({
           id: item.id,
           title: item.title,
@@ -400,6 +437,52 @@ export default function ReleaseScreen() {
           imageUrl: item.imageUrl ?? null,
           type: item.type,
         }));
+      }
+
+      if (!nextItems.length && release.provider === 'spotify' && artistName) {
+        const norm = (value: string | null | undefined) => String(value || '')
+          .toLowerCase()
+          .normalize('NFKD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .replace(/[^a-z0-9]+/g, ' ')
+          .trim();
+        const wantedArtist = norm(artistName);
+        const results = await spotifySearch(artistName, 'album,track').catch(() => []);
+        const grouped = new Map<string, { album?: SpotifyResult; tracks: SpotifyResult[] }>();
+        results
+          .filter((item) => item.type === 'album' || item.type === 'track')
+          .filter((item) => {
+            if (artistKey && item.artistId) return item.artistId === artistKey;
+            return norm(item.artist) === wantedArtist;
+          })
+          .forEach((item) => {
+            const key = String(item.albumId || item.id || `${norm(item.title)}::${item.releaseDate || ''}::${item.imageUrl || ''}`).trim();
+            if (!key) return;
+            const group = grouped.get(key) ?? { tracks: [] };
+            if (item.type === 'album') group.album = item;
+            else group.tracks.push(item);
+            grouped.set(key, group);
+          });
+
+        const groupedItems: (SimpleAlbum | null)[] = await Promise.all(Array.from(grouped.entries()).map(async ([albumId, group]) => {
+          const album = group.album ?? (albumId && /^[A-Za-z0-9]{22}$/.test(albumId)
+            ? await spotifyLookup(albumId, 'album').then((items) => items[0] ?? null).catch(() => null)
+            : null);
+          const fallback = group.tracks[0];
+          const source = album ?? fallback;
+          if (!source) return null;
+          return {
+            id: album?.id ?? albumId,
+            title: album?.title ?? source.title,
+            artist: album?.artist ?? source.artist ?? artistName,
+            artistId: album?.artistId ?? source.artistId ?? (artistKey || null),
+            releaseDate: album?.releaseDate ?? source.releaseDate ?? null,
+            spotifyUrl: album?.spotifyUrl ?? source.spotifyUrl ?? null,
+            imageUrl: album?.imageUrl ?? source.imageUrl ?? null,
+            type: album?.albumType === 'single' ? 'single' : 'album',
+          } satisfies SimpleAlbum;
+        }));
+        nextItems = groupedItems.filter((item): item is SimpleAlbum => item != null);
       } else if (release.provider === 'apple') {
         const appleArtistId = extractAppleId(artistKey) ?? (/^\d+$/.test(artistKey) ? Number(artistKey) : null);
         if (appleArtistId) {
@@ -429,7 +512,12 @@ export default function ReleaseScreen() {
       const deduped: SimpleAlbum[] = [];
       const seen = new Set<string>();
       nextItems.forEach((item) => {
-        const key = [item.id, item.spotifyUrl, `${(item.title || '').trim().toLowerCase()}::${String(item.releaseDate || '').trim()}`]
+        const normalizedTitle = (item.title || '').trim().toLowerCase();
+        const releaseLevelKey = normalizedTitle ? [
+          normalizedTitle,
+          (item.artist || '').trim().toLowerCase(),
+        ].join('::') : '';
+        const key = [releaseLevelKey, item.id, item.spotifyUrl]
           .map((value) => String(value || '').trim())
           .find(Boolean);
         if (!key || seen.has(key)) return;
@@ -479,6 +567,7 @@ export default function ReleaseScreen() {
         appleUrl: release.appleUrl ?? null,
         imageUrl: release.artworkUrl ?? null,
         providerId: release.providerId ?? null,
+        isrc: release.isrc ?? null,
       });
       if (res.ok) {
         setAdded(true);
@@ -498,12 +587,6 @@ export default function ReleaseScreen() {
         return;
       } catch {}
     }
-    if (preferredPlayer === 'apple' && release.appleUrl) {
-      try {
-        await Linking.openURL(release.appleUrl);
-        return;
-      } catch {}
-    }
     const row: ListenRow = {
       id: release.id,
       item_type: release.itemType === 'album' ? 'album' : 'track',
@@ -515,13 +598,22 @@ export default function ReleaseScreen() {
       release_date: release.releaseDate ?? null,
       apple_url: release.appleUrl ?? null,
       apple_id: release.appleId ?? null,
+      apple_track_id: release.appleTrackId ?? null,
+      apple_album_id: release.appleAlbumId ?? null,
+      apple_storefront: release.appleStorefront ?? null,
+      isrc: release.isrc ?? null,
       spotify_url: release.spotifyUrl ?? null,
       spotify_id: release.spotifyId ?? null,
       done_at: null,
     };
     const ok = await openByDefaultPlayer(row);
     if (!ok) {
-      Alert.alert('Could not open', 'Try switching your default player in Settings.');
+      Alert.alert(
+        'Could not open',
+        preferredPlayer === 'apple'
+          ? 'Could not open an Apple Music link for this release.'
+          : 'Try switching your default player in Settings.'
+      );
     }
   }, [release, preferredPlayer]);
 
@@ -586,6 +678,8 @@ export default function ReleaseScreen() {
   }, [release]);
 
   const openLabel = preferredPlayer === 'apple' ? 'Open in Apple Music' : 'Open in Spotify';
+  const primaryCtaLabel = added ? openLabel : adding ? 'Adding...' : 'Add to Listen list';
+  const onPrimaryCtaPress = added ? onOpenExternal : onAdd;
   const heroArtworkSize = 220;
   const moreByLabel = release?.artistName ? `More by ${release.artistName}` : 'More by this artist';
 
@@ -692,38 +786,40 @@ export default function ReleaseScreen() {
 
               <View style={{ paddingHorizontal: 20, marginTop: 24 }}>
                 <Pressable
-                  onPress={onAdd}
-                  disabled={adding || added}
+                  onPress={onPrimaryCtaPress}
+                  disabled={adding}
                   style={({ pressed }) => ({
                     paddingVertical: 15,
                     borderRadius: 16,
-                    backgroundColor: added ? colors.overlay.softLight : colors.accent.primary,
+                    backgroundColor: colors.accent.primary,
                     borderWidth: 1,
-                    borderColor: added ? colors.overlay.softLight : colors.accent.primary,
+                    borderColor: colors.accent.primary,
                     opacity: pressed ? 0.92 : 1,
                   })}
                 >
-                  <Text style={{ textAlign: 'center', fontWeight: '800', color: added ? colors.text.inverted : colors.text.inverted }}>
-                    {added ? 'Added to Listen list' : adding ? 'Adding...' : 'Add to Listen list'}
+                  <Text style={{ textAlign: 'center', fontWeight: '800', color: colors.text.inverted }}>
+                    {primaryCtaLabel}
                   </Text>
                 </Pressable>
 
-                <Pressable
-                  onPress={onOpenExternal}
-                  style={({ pressed }) => ({
-                    alignSelf: 'center',
-                    marginTop: 12,
-                    paddingHorizontal: 16,
-                    paddingVertical: 10,
-                    borderRadius: 999,
-                    backgroundColor: 'transparent',
-                    borderWidth: 1,
-                    borderColor: colors.overlay.softLight,
-                    opacity: pressed ? 0.88 : 1,
-                  })}
-                >
-                  <Text style={{ textAlign: 'center', fontWeight: '700', color: colors.text.subtle, fontSize: 13 }}>{openLabel}</Text>
-                </Pressable>
+                {!added ? (
+                  <Pressable
+                    onPress={onOpenExternal}
+                    style={({ pressed }) => ({
+                      alignSelf: 'center',
+                      marginTop: 12,
+                      paddingHorizontal: 16,
+                      paddingVertical: 10,
+                      borderRadius: 999,
+                      backgroundColor: 'transparent',
+                      borderWidth: 1,
+                      borderColor: colors.overlay.softLight,
+                      opacity: pressed ? 0.88 : 1,
+                    })}
+                  >
+                    <Text style={{ textAlign: 'center', fontWeight: '700', color: colors.text.subtle, fontSize: 13 }}>{openLabel}</Text>
+                  </Pressable>
+                ) : null}
               </View>
 
               <View style={{ marginTop: 34, paddingHorizontal: 20 }}>
@@ -746,7 +842,7 @@ export default function ReleaseScreen() {
                   <GlassCard style={{ padding: 18, borderRadius: 20 }}>
                     <Text style={{ color: colors.text.secondary, fontWeight: '800', fontSize: 15 }}>No more releases yet</Text>
                     <Text style={{ color: colors.text.muted, marginTop: 6, lineHeight: 20 }}>
-                      We do not have other recent releases for this artist right now.
+                      We do not have other releases for this artist right now.
                     </Text>
                   </GlassCard>
                 ) : (
@@ -786,9 +882,16 @@ export default function ReleaseScreen() {
                             <Text style={{ color: colors.text.secondary, fontWeight: '700' }} numberOfLines={1}>
                               {item.title}
                             </Text>
-                            <Text style={{ color: colors.text.muted, fontSize: 12, marginTop: 4 }} numberOfLines={1}>
-                              {item.releaseDate ? formatDate(item.releaseDate) : (item.type ? String(item.type).toUpperCase() : 'Release')}
-                            </Text>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 }}>
+                              <Text style={{ color: colors.text.muted, fontSize: 10, fontWeight: '900', letterSpacing: 0.8 }} numberOfLines={1}>
+                                {releaseTypeLabel(item)}
+                              </Text>
+                              {item.releaseDate ? (
+                                <Text style={{ color: colors.text.muted, fontSize: 12, flexShrink: 1 }} numberOfLines={1}>
+                                  {formatDate(item.releaseDate)}
+                                </Text>
+                              ) : null}
+                            </View>
                           </View>
                           <Ionicons name="chevron-forward" size={16} color={colors.text.muted} />
                         </Pressable>

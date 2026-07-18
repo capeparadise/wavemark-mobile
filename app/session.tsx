@@ -21,10 +21,6 @@ export default function SessionGateScreen() {
       const hasSeenOnboarding = await getHasSeenOnboarding();
       if (cancelled) return;
       if (!hasSeenOnboarding) {
-        try {
-          await AsyncStorage.removeItem(POST_AUTH_REDIRECT_KEY);
-        } catch {}
-        if (cancelled) return;
         router.replace('/onboarding');
         return;
       }

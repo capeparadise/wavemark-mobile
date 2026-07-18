@@ -10,6 +10,8 @@ export type ResolvedAppleUrl = {
   trackId?: string;
   albumId?: string;
   artistName?: string;
+  confidence?: number;
+  source?: 'id' | 'isrc' | 'upc' | 'search';
 };
 
 async function fetchJSON(url: string): Promise<any | null> {
@@ -31,11 +33,28 @@ async function lookupOnce(params: Record<string,string>, country: string): Promi
   const storefront = country.toLowerCase();
   if (trackUrl) {
     const canonical = trackUrl.replace('itunes.apple.com','music.apple.com') + (trackUrl.includes('?') ? '&' : '?') + 'app=music';
-    return { url: canonical, storefront, kind: 'track', trackId: String(item.trackId), albumId: item.collectionId ? String(item.collectionId) : undefined };
+    return {
+      url: canonical,
+      storefront,
+      kind: 'track',
+      trackId: String(item.trackId),
+      albumId: item.collectionId ? String(item.collectionId) : undefined,
+      artistName: item.artistName,
+      confidence: 1,
+      source: params.isrc ? 'isrc' : (params.upc ? 'upc' : 'id'),
+    };
   }
   if (albumUrl) {
     const canonical = albumUrl.replace('itunes.apple.com','music.apple.com') + (albumUrl.includes('?') ? '&' : '?') + 'app=music';
-    return { url: canonical, storefront, kind: 'album', albumId: String(item.collectionId) };
+    return {
+      url: canonical,
+      storefront,
+      kind: 'album',
+      albumId: String(item.collectionId),
+      artistName: item.artistName,
+      confidence: 1,
+      source: params.isrc ? 'isrc' : (params.upc ? 'upc' : 'id'),
+    };
   }
   return null;
 }
@@ -71,6 +90,8 @@ export async function resolveAppleTrackStrict(title: string, artist: string, sto
       trackId: String(best.trackId),
       albumId: best.collectionId ? String(best.collectionId) : undefined,
       artistName: best.artistName,
+      confidence: 1,
+      source: 'search',
     };
   }
   return null;
@@ -152,6 +173,7 @@ export async function resolveAppleUrl(input: {
   appleTrackId?: string | null;
   appleAlbumId?: string | null;
   isrc?: string | null;
+  upc?: string | null;
   title?: string | null;
   artist?: string | null;
   storefront?: string; // preferred storefront (gb/us etc.)
@@ -172,11 +194,9 @@ export async function resolveAppleUrl(input: {
       const hit = await lookupOnce({ isrc: input.isrc }, country);
       if (hit) return hit;
     }
-    if (input.title && input.artist) {
-      // First pass: lookup as song (existing behavior)
-      const term = `${input.artist} ${input.title}`;
-      const hitSong = await lookupOnce({ term, entity: 'song', limit: '1' }, country);
-      if (hitSong) return hitSong;
+    if (input.itemType === 'album' && input.upc) {
+      const hit = await lookupOnce({ upc: input.upc }, country);
+      if (hit) return hit;
     }
   }
   // Fallback: full search API (album or track) with accent-insensitive term variants
@@ -198,7 +218,11 @@ export async function resolveAppleUrl(input: {
           const scored = results.map(r => scoreCandidate({ titleTokens, artistTokens, compressedArtist }, r, preferAlbum)).filter(s => s.canonical);
           scored.sort((a,b) => b.score - a.score);
           const best = scored[0];
-          if (best && best.score >= 0.55 && best.canonical) {
+          const second = scored[1];
+          const confident = !!best
+            && best.score >= 0.9
+            && (!second || best.score >= 1.1 || best.score - second.score >= 0.12);
+          if (confident && best.canonical) {
             // If we requested a track but only got an album (Single), attempt a focused track lookup
             if (input.itemType === 'track' && best.kind === 'album' && best.albumId) {
               // Run a narrow search just for the song title to fetch trackId
@@ -208,7 +232,7 @@ export async function resolveAppleUrl(input: {
                 const narrowScored = narrowResults.map(r => scoreCandidate({ titleTokens, artistTokens, compressedArtist }, r, false)).filter(s => s.canonical);
                 narrowScored.sort((a,b) => b.score - a.score);
                 const trackCandidate = narrowScored.find(c => c.kind === 'track' && c.trackId && c.albumId);
-            if (trackCandidate && trackCandidate.score >= 0.50) {
+            if (trackCandidate && trackCandidate.score >= 0.9) {
                   return {
               url: trackCandidate.canonical!,
               storefront: country.toLowerCase(),
@@ -216,6 +240,8 @@ export async function resolveAppleUrl(input: {
               trackId: trackCandidate.trackId,
               albumId: trackCandidate.albumId,
               artistName: trackCandidate.artistName,
+              confidence: Math.min(1, trackCandidate.score),
+              source: 'search',
                   };
                 }
               }
@@ -227,6 +253,8 @@ export async function resolveAppleUrl(input: {
               trackId: best.trackId,
             albumId: best.albumId,
             artistName: best.artistName,
+            confidence: Math.min(1, best.score),
+            source: 'search',
             };
           }
         }
@@ -248,7 +276,7 @@ export async function resolveAppleUrl(input: {
               if (coverage === 1) { bestSong = s; bestCoverage = coverage; break; }
               if (coverage > bestCoverage && coverage >= 0.6) { bestSong = s; bestCoverage = coverage; }
             }
-            if (bestSong && bestCoverage >= 0.6 && bestSong.trackViewUrl) {
+            if (bestSong && bestCoverage >= 0.9 && bestSong.trackViewUrl) {
               const canonical = bestSong.trackViewUrl.replace('itunes.apple.com','music.apple.com') + (bestSong.trackViewUrl.includes('?') ? '&' : '?') + 'app=music';
               return {
                 url: canonical,
@@ -257,6 +285,8 @@ export async function resolveAppleUrl(input: {
                 trackId: String(bestSong.trackId),
                 albumId: bestSong.collectionId ? String(bestSong.collectionId) : undefined,
                 artistName: bestSong.artistName,
+                confidence: bestCoverage,
+                source: 'search',
               };
             }
           }

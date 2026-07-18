@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   Animated,
   FlatList,
@@ -17,6 +18,8 @@ import GlassCard from '../components/GlassCard';
 import Screen from '../components/Screen';
 import { setHasSeenOnboarding } from '../lib/onboarding';
 import { useTheme } from '../theme/useTheme';
+
+const POST_AUTH_REDIRECT_KEY = 'wavemark:post-auth-redirect';
 
 const ONBOARDING_SCREENS = [
   {
@@ -352,6 +355,14 @@ export default function OnboardingScreen() {
     setIsFinishing(true);
     try {
       await setHasSeenOnboarding();
+    } catch {}
+    try {
+      const redirect = await AsyncStorage.getItem(POST_AUTH_REDIRECT_KEY);
+      if (redirect && redirect.startsWith('/') && !redirect.startsWith('//') && redirect !== '/session') {
+        await AsyncStorage.removeItem(POST_AUTH_REDIRECT_KEY);
+        router.replace(redirect as any);
+        return;
+      }
     } catch {}
     router.replace('/(tabs)');
   };

@@ -23,6 +23,9 @@ export type ArtistAlbum = {
   id: string; title: string; artist: string;
   releaseDate?: string | null; releaseDatePrecision?: 'day' | 'month' | 'year' | string | null;
   spotifyUrl?: string | null; imageUrl?: string | null; type: 'album' | 'single' | 'ep';
+  artistIds?: string[];
+  artistNames?: string[];
+  albumType?: 'album' | 'single' | 'compilation' | string | null;
   albumGroup?: 'album' | 'single' | 'appears_on' | 'compilation' | string;
 };
 
@@ -78,7 +81,7 @@ export async function spotifyMe(): Promise<any | null> {
   }
 }
 
-export async function artistAlbums(artistId: string, market = 'GB'): Promise<ArtistAlbum[]> {
+export async function artistAlbums(artistId: string, market = 'GB', includeGroups = 'album,single,appears_on'): Promise<ArtistAlbum[]> {
   const hasToken = !!process.env.EXPO_PUBLIC_SPOTIFY_TOKEN;
   const fetchWithInspect = async (url: string, allowRetry = true): Promise<{ items: any[]; total?: number | null }> => {
     const res = await fetch(url, {
@@ -127,15 +130,19 @@ export async function artistAlbums(artistId: string, market = 'GB'): Promise<Art
     else if (totalTracks > 2 && totalTracks <= 6) type = 'ep';
     else type = 'album';
     const group = String(a?.album_group || '').toLowerCase();
+    const artists = Array.isArray(a?.artists) ? a.artists : [];
     return {
       id: a.id,
       title: a.name,
       artist: a.artists?.[0]?.name ?? '',
+      artistIds: artists.map((artist: any) => artist?.id).filter(Boolean),
+      artistNames: artists.map((artist: any) => artist?.name).filter(Boolean),
       releaseDate: a.release_date ?? null,
       releaseDatePrecision: a.release_date_precision ?? null,
       spotifyUrl: a.external_urls?.spotify ?? null,
       imageUrl: a.images?.[0]?.url ?? null,
       type,
+      albumType: a?.album_type ?? null,
       albumGroup: group as any,
     };
   });
@@ -144,7 +151,7 @@ export async function artistAlbums(artistId: string, market = 'GB'): Promise<Art
   const effectiveMarket = market === 'from_token' ? 'GB' : (market || 'GB');
 
   // Try direct Spotify API if a token is available, otherwise fall back to Supabase function
-  const params = new URLSearchParams({ include_groups: 'album,single,appears_on', limit: '50' });
+  const params = new URLSearchParams({ include_groups: includeGroups, limit: '50' });
   if (!useTokenMarket) params.set('market', effectiveMarket);
   const directUrl = `https://api.spotify.com/v1/artists/${artistId}/albums?${params.toString()}`;
 
@@ -161,7 +168,7 @@ export async function artistAlbums(artistId: string, market = 'GB'): Promise<Art
   }
 
   try {
-    const fnUrl = `${FN}/spotify-search/artist-albums?` + new URLSearchParams({ artistId, market: effectiveMarket }).toString();
+    const fnUrl = `${FN}/spotify-search/artist-albums?` + new URLSearchParams({ artistId, market: effectiveMarket, include_groups: includeGroups }).toString();
     const r = await fetchFn(fnUrl);
     const raw = await r.text().catch(() => '');
     const ctype = r.headers.get('content-type') || '';

@@ -815,7 +815,9 @@ serve(async (req) => {
         item.artistPopularity = maxPop;
         return typeof maxPop === "number" && maxPop >= popularityFloor;
       });
-      const dedupeResult = await dedupeDiscoveryItems(popularityPassed, {
+      const popularityFallbackUsed = popularityPassed.length === 0 && datePassed.length > 0;
+      const qualityInput = popularityFallbackUsed ? datePassed : popularityPassed;
+      const dedupeResult = await dedupeDiscoveryItems(qualityInput, {
         hdrs,
         market: marketFixed,
         stagePrefix: "top_picks_dedupe",
@@ -856,6 +858,7 @@ serve(async (req) => {
           deduped_count: deduped.length,
           date_pass_count: datePassed.length,
           popularity_pass_count: popularityPassed.length,
+          popularity_fallback_used: popularityFallbackUsed,
           dedupe_input_count: dedupeResult.stats.dedupe_input_count,
           dedupe_output_count: dedupeResult.stats.dedupe_output_count,
           dropped_tracks_due_to_album_preference: dedupeResult.stats.dropped_tracks_due_to_album_preference,
@@ -1133,8 +1136,10 @@ serve(async (req) => {
           return typeof maxPop === "number" && maxPop >= popularityFloor;
         });
         popularityPassCount = finalPopPassed.length;
+        const popularityFallbackUsed = finalPopPassed.length === 0 && finalDatePassed.length > 0;
+        const qualityInput = popularityFallbackUsed ? finalDatePassed : finalPopPassed;
 
-        const dedupeResult = await dedupeDiscoveryItems(finalPopPassed, {
+        const dedupeResult = await dedupeDiscoveryItems(qualityInput, {
           hdrs,
           market: marketFixed,
           stagePrefix: `genre_dedupe_${bucketKey}`,
@@ -1175,6 +1180,7 @@ serve(async (req) => {
           search_raw_count: searchRawCount,
           date_pass_count: datePassCount,
           popularity_pass_count: popularityPassCount,
+          popularity_fallback_used: popularityFallbackUsed,
           dedupe_input_count: dedupeResult.stats.dedupe_input_count,
           dedupe_output_count: dedupeResult.stats.dedupe_output_count,
           dropped_tracks_due_to_album_preference: dedupeResult.stats.dropped_tracks_due_to_album_preference,
@@ -1426,10 +1432,15 @@ serve(async (req) => {
     // NEW: artist albums (recent first)
     if (pathname.endsWith("/artist-albums")) {
       if (!artistId) return new Response("artistId required", { status: 400, headers: addBuildHeader() });
-      // Include appears_on to surface features
+      const includeGroups = (url.searchParams.get("include_groups") ?? "album,single,appears_on")
+        .split(",")
+        .map((group) => group.trim())
+        .filter((group) => ["album", "single", "appears_on"].includes(group))
+        .join(",") || "album,single,appears_on";
+      // Default includes appears_on for artist pages; Discover can request release-only groups.
       const r = await fetchWithTimeout(
         `https://api.spotify.com/v1/artists/${artistId}/albums?` +
-          new URLSearchParams({ include_groups: "album,single,appears_on", market, limit: "50" }),
+          new URLSearchParams({ include_groups: includeGroups, market, limit: "50" }),
         { headers: hdrs },
         8000,
         "artist-albums"

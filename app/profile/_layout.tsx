@@ -18,7 +18,6 @@ export default function ProfileStackLayout() {
         headerStyle: { backgroundColor: 'transparent' },
         headerShadowVisible: false,
         headerTitleStyle: { fontWeight: '800', fontSize: 18, color: colors.text.secondary },
-        headerBackTitleVisible: false,
         headerLeft: () => (
           <Pressable onPress={() => router.back()} hitSlop={10} style={{ paddingHorizontal: 8 }}>
             <Ionicons name="chevron-back" size={24} color={colors.text.secondary} />

@@ -10,7 +10,9 @@ export const FN_BASE: string = (() => {
 
 export const SUPABASE_ANON_KEY: string = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '';
 
-export function withFnHeaders(headers?: HeadersInit): Headers {
+type FnHeadersInit = ConstructorParameters<typeof Headers>[0];
+
+export function withFnHeaders(headers?: FnHeadersInit): Headers {
   const h = new Headers(headers);
   if (SUPABASE_ANON_KEY) {
     h.set('apikey', SUPABASE_ANON_KEY);

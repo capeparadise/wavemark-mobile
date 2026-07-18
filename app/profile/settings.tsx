@@ -1,11 +1,11 @@
 import React, { useEffect, useState } from 'react';
+import * as AppleAuthentication from 'expo-apple-authentication';
 import { router } from 'expo-router';
-import { ActivityIndicator, Alert, Pressable, ScrollView, Switch, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, ScrollView, Switch, Text, View } from 'react-native';
+import PlayerToggle from '../../components/PlayerToggle';
 import Screen from '../../components/StackScreen';
+import { deleteAccount } from '../../lib/accountDeletion';
 import { emit } from '../../lib/events';
-import { backfillArtworkMissing, bulkRefreshAppleLinks } from '../../lib/listen';
-import { getMarketOverride, initMarketOverride, setMarketOverride } from '../../lib/market';
-import { getMarket as getDeviceMarket, spotifyLookup } from '../../lib/spotify';
 import { supabase } from '../../lib/supabase';
 import { getAdvancedRatingsEnabled, setAdvancedRatingsEnabled } from '../../lib/user';
 import { isHapticsEnabled, setHapticsEnabled } from '../../components/haptics';
@@ -13,28 +13,12 @@ import { useTheme } from '../../theme/useTheme';
 
 export default function ProfileSettingsPage() {
   const { colors } = useTheme();
-  const [market, setMarket] = useState<string>('');
-  const [saved, setSaved] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
-  const [repairing, setRepairing] = useState(false);
-  const [repairDone, setRepairDone] = useState(false);
-  const [repairCount, setRepairCount] = useState<number | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
-  const [refreshResult, setRefreshResult] = useState<{ processed: number; updated: number } | null>(null);
-  const [repairSinglesBusy, setRepairSinglesBusy] = useState(false);
-  const [repairSinglesResult, setRepairSinglesResult] = useState<{ scanned: number; changed: number } | null>(null);
+  const [deletingAccount, setDeletingAccount] = useState(false);
   const [advEnabled, setAdvEnabled] = useState<boolean>(false);
   const [advSaving, setAdvSaving] = useState<boolean>(false);
   const [hapticsEnabled, setHapticsEnabledState] = useState<boolean>(true);
   const [hapticSaving, setHapticSaving] = useState<boolean>(false);
-
-  useEffect(() => {
-    (async () => {
-      await initMarketOverride();
-      const v = getMarketOverride();
-      setMarket(v ?? '');
-    })();
-  }, []);
 
   useEffect(() => {
     // Load advanced rating preference
@@ -43,30 +27,28 @@ export default function ProfileSettingsPage() {
     setHapticsEnabledState(isHapticsEnabled());
   }, []);
 
-  useEffect(() => {
-    if (saved) {
-      const t = setTimeout(() => setSaved(false), 1200);
-      return () => clearTimeout(t);
-    }
-  }, [saved]);
-
-  const onSave = async () => {
-    const v = market.trim().toUpperCase();
-    if (v && !/^[A-Z]{2}$/.test(v)) {
-      Alert.alert('Market must be a 2-letter country code (e.g., GB, US)');
-      return;
-    }
-    await setMarketOverride(v || null);
-    setSaved(true);
-  };
-
-  const onClear = async () => {
-    await setMarketOverride(null);
-    setMarket('');
-    setSaved(true);
-  };
-
   const APPLE_ENABLED = process.env.EXPO_PUBLIC_ENABLE_APPLE === 'true';
+
+  const currentUserUsesApple = async () => {
+    const { data } = await supabase.auth.getUser();
+    const user = data.user as any;
+    const providers = Array.isArray(user?.app_metadata?.providers) ? user.app_metadata.providers : [];
+    const identities = Array.isArray(user?.identities) ? user.identities : [];
+    return providers.includes('apple') || identities.some((identity: any) => identity?.provider === 'apple');
+  };
+
+  const getAppleAuthorizationCode = async () => {
+    const available = await AppleAuthentication.isAvailableAsync().catch(() => false);
+    if (!available) {
+      throw new Error('Apple reauthorization is not available on this device.');
+    }
+    const credential = await AppleAuthentication.signInAsync();
+    const code = credential.authorizationCode?.trim();
+    if (!code) {
+      throw new Error('Apple did not return an authorization code. Please try again.');
+    }
+    return code;
+  };
 
   const onSignOut = () => {
     if (signingOut) return;
@@ -92,41 +74,67 @@ export default function ProfileSettingsPage() {
     ]);
   };
 
+  const runDeleteAccount = async () => {
+    if (deletingAccount) return;
+    try {
+      setDeletingAccount(true);
+      const usesApple = await currentUserUsesApple();
+      const appleAuthorizationCode = usesApple ? await getAppleAuthorizationCode() : null;
+      const result = await deleteAccount({ appleAuthorizationCode });
+      if (!result.ok) {
+        Alert.alert('Delete account failed', result.message || 'Could not delete your account. Please try again.');
+        return;
+      }
+      router.replace('/(auth)/welcome');
+    } catch (e: any) {
+      if (e?.code === 'ERR_REQUEST_CANCELED') return;
+      Alert.alert('Delete account failed', e?.message || 'Could not delete your account. Please try again.');
+    } finally {
+      setDeletingAccount(false);
+    }
+  };
+
+  const onDeleteAccount = () => {
+    if (deletingAccount) return;
+    Alert.alert(
+      'Delete account?',
+      'This permanently removes your profile, saved releases, follows, connections, and account data. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Continue',
+          style: 'destructive',
+          onPress: () => {
+            Alert.alert(
+              'Delete permanently?',
+              'This is the final confirmation. Your RPPL account and account data will be removed permanently.',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Delete Account', style: 'destructive', onPress: runDeleteAccount },
+              ],
+            );
+          },
+        },
+      ],
+    );
+  };
+
   return (
     <Screen edges={['left', 'right']}>
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 28 }}>
         <Text style={{ fontSize: 22, fontWeight: '700', marginBottom: 8, color: colors.text.secondary }}>Settings</Text>
-        <Text style={{ color: colors.text.muted, marginBottom: 18 }}>Personalize how results are fetched.</Text>
+        <Text style={{ color: colors.text.muted, marginBottom: 18 }}>Manage your app preferences.</Text>
 
-      <View style={{ marginBottom: 16 }}>
-        <Text style={{ fontWeight: '700', marginBottom: 6, color: colors.text.secondary }}>Market override</Text>
-        <TextInput
-          value={market}
-          onChangeText={setMarket}
-          placeholder="e.g., GB or US"
-          autoCapitalize="characters"
-          placeholderTextColor={colors.text.muted}
-          style={{
-            borderWidth: 1,
-            borderColor: colors.border.subtle,
-            borderRadius: 8,
-            paddingHorizontal: 12,
-            paddingVertical: 8,
-            backgroundColor: colors.bg.secondary,
-            color: colors.text.secondary,
-          }}
-        />
-        <Text style={{ color: colors.text.muted, marginTop: 6 }}>Leave blank to use device locale.</Text>
-        <View style={{ flexDirection: 'row', gap: 12, marginTop: 12 }}>
-          <Pressable onPress={onSave} style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, backgroundColor: colors.accent.primary }}>
-            <Text style={{ color: colors.text.inverted, fontWeight: '700' }}>Save</Text>
-          </Pressable>
-          <Pressable onPress={onClear} style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, backgroundColor: colors.bg.muted }}>
-            <Text style={{ color: colors.text.secondary, fontWeight: '700' }}>Clear</Text>
-          </Pressable>
-          {saved && <Text style={{ color: colors.accent.success, alignSelf: 'center' }}>Saved</Text>}
+      {APPLE_ENABLED ? (
+        <View style={{ marginBottom: 24 }}>
+          <Text style={{ fontWeight: '700', marginBottom: 6, color: colors.text.secondary }}>Default player</Text>
+          <Text style={{ color: colors.text.muted, marginBottom: 8 }}>Choose where releases open.</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 8 }}>
+            <Text style={{ fontSize: 16, color: colors.text.secondary }}>Player</Text>
+            <PlayerToggle />
+          </View>
         </View>
-      </View>
+      ) : null}
 
       {/* Advanced rating mode */}
       <View style={{ marginBottom: 24 }}>
@@ -184,198 +192,18 @@ export default function ProfileSettingsPage() {
           </View>
       </View>
 
-      <View style={{ marginBottom: 24 }}>
-        <Text style={{ fontWeight: '700', marginBottom: 6, color: colors.text.secondary }}>Data repair: Artwork</Text>
-        <Text style={{ color: colors.text.muted, marginBottom: 8 }}>
-          Fix missing album artwork for saved items.
-        </Text>
-        <Pressable
-          onPress={async () => {
-            try {
-              setRepairing(true);
-              const res = await backfillArtworkMissing(25);
-              setRepairCount(res?.changed ?? 0);
-              setRepairDone(true);
-              Alert.alert('Done', `${res?.changed ?? 0} items updated`);
-            } catch (e:any) {
-              Alert.alert('Backfill failed', String(e?.message || e));
-            } finally {
-              setRepairing(false);
-            }
-          }}
-          disabled={repairing}
-          style={{ paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, backgroundColor: repairing ? colors.bg.muted : colors.accent.primary }}
-        >
-          {repairing ? <ActivityIndicator color={colors.text.inverted} /> : <Text style={{ color: colors.text.inverted, fontWeight: '700' }}>Fix artwork</Text>}
-        </Pressable>
-      </View>
-
-      <View style={{ marginBottom: 24 }}>
-        <Text style={{ fontWeight: '700', marginBottom: 6, color: colors.text.secondary }}>Data repair: Singles vs Albums</Text>
-        <Text style={{ color: colors.text.muted, marginBottom: 8 }}>
-          If a single was saved as an album, this will correct the stored type to track.
-        </Text>
-        <Pressable
-          onPress={async () => {
-            if (repairSinglesBusy) return;
-            setRepairSinglesResult(null);
-            setRepairSinglesBusy(true);
-            try {
-              const { data: auth } = await supabase.auth.getUser();
-              const user = auth?.user;
-              if (!user) throw new Error('Not signed in');
-              // Fetch candidate rows: stored as album but likely singles
-              const { data: rows, error } = await supabase
-                .from('listen_list')
-                .select('id,item_type,title,artist_name,spotify_id,spotify_url')
-                .eq('user_id', user.id)
-                .eq('item_type', 'album');
-              if (error) throw new Error(error.message);
-              const list = rows || [];
-              let changed = 0;
-              let scanned = 0;
-              for (const r of list) {
-                scanned++;
-                try {
-                  // Heuristic: Spotify track URL indicates single/track
-                  const isTrackUrl = !!r.spotify_url && /open\.spotify\.com\/track\//.test(r.spotify_url);
-                  let isSingle = false;
-                  if (r.spotify_id) {
-                    const res = await spotifyLookup(r.spotify_id, 'album');
-                    const first = res?.[0];
-                    // albumType === 'single' should be treated as track for listen_list purposes
-                    if (first?.albumType === 'single' || first?.type === 'track') isSingle = true;
-                  }
-                  if (isTrackUrl || isSingle) {
-                    const upd = await supabase
-                      .from('listen_list')
-                      .update({ item_type: 'track' })
-                      .eq('id', r.id);
-                    if (!upd.error) changed++;
-                  }
-                } catch {}
-              }
-              setRepairSinglesResult({ scanned, changed });
-              // Notify listeners (e.g., Listen tab) to refresh immediately
-              emit('listen:updated');
-            } catch (e: any) {
-              Alert.alert('Repair failed', String(e?.message || e));
-            } finally {
-              setRepairSinglesBusy(false);
-            }
-          }}
-          disabled={repairSinglesBusy}
-          style={{ paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, backgroundColor: repairSinglesBusy ? colors.bg.muted : colors.accent.primary, marginBottom: 8 }}
-        >
-          {repairSinglesBusy ? (
-            <ActivityIndicator color={colors.text.inverted} />
-          ) : (
-            <Text style={{ color: colors.text.inverted, fontWeight: '700' }}>Repair Singles Tagged As Albums</Text>
-          )}
-        </Pressable>
-        {repairSinglesResult && (
-          <Text style={{ color: colors.accent.success }}>
-            Scanned {repairSinglesResult.scanned}, changed {repairSinglesResult.changed}
-          </Text>
-        )}
-      </View>
-
-	      {APPLE_ENABLED ? (
-	        <View style={{ marginBottom: 24 }}>
-	          <Text style={{ fontWeight: '700', marginBottom: 6, color: colors.text.secondary }}>Apple Music Deep Links</Text>
-	          <Pressable
-            onPress={async () => {
-              if (repairing) return;
-              setRepairDone(false);
-              setRepairCount(null);
-              setRepairing(true);
-              try {
-                const { data: auth } = await supabase.auth.getUser();
-                const user = auth?.user;
-                if (!user) throw new Error('Not signed in');
-                const { data: rows } = await supabase
-                  .from('listen_list')
-                  .select('id,item_type,title,artist_name,apple_url,apple_id,provider_id,release_date')
-                  .eq('user_id', user.id);
-                const targets = (rows || []).filter(r => !r.apple_url || !/https:\/\/music\.apple\.com\//.test(r.apple_url));
-                let fixed = 0;
-                const cc = (getDeviceMarket() || 'US').toUpperCase();
-                const ccLower = cc.toLowerCase();
-                const norm = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,' ').trim();
-                for (const r of targets) {
-                  try {
-                    let url: string | null = null;
-                    const term = encodeURIComponent([r.title, r.artist_name].filter(Boolean).join(' '));
-                    const entity = r.item_type === 'track' ? 'musicTrack' : 'album';
-                    const searchRes = await fetch(`https://itunes.apple.com/search?term=${term}&country=${cc}&entity=${entity}&limit=8`).then(x => x.ok ? x.json() : null).catch(() => null) as any;
-                    const picks = Array.isArray(searchRes?.results) ? searchRes.results : [];
-                    const wantTitle = norm(r.title);
-                    const match = picks.find((p: any) => norm(r.item_type==='track'?p.trackName:p.collectionName) === wantTitle);
-                    if (match) {
-                      const albumId = match.collectionId ? String(match.collectionId) : null;
-                      const trackId = match.trackId ? String(match.trackId) : null;
-                      if (r.item_type === 'track' && albumId && trackId) url = `https://music.apple.com/${ccLower}/album/${albumId}?i=${trackId}`;
-                      else if (albumId) url = `https://music.apple.com/${ccLower}/album/${albumId}`;
-                    }
-                    if (url) {
-                      await supabase.from('listen_list').update({ apple_url: url }).eq('id', r.id);
-                      fixed++;
-                    }
-                  } catch {}
-                }
-                setRepairCount(fixed);
-                setRepairDone(true);
-              } catch (e:any) {
-                Alert.alert('Repair failed', String(e?.message || e));
-              } finally {
-                setRepairing(false);
-              }
-            }}
-            disabled={repairing}
-            style={{ paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, backgroundColor: repairing ? colors.bg.muted : colors.accent.primary, marginBottom: 12 }}
-          >
-            {repairing ? <ActivityIndicator color={colors.text.inverted} /> : <Text style={{ color: colors.text.inverted, fontWeight: '700' }}>Repair Apple Links</Text>}
-          </Pressable>
-          {repairDone && <Text style={{ marginBottom: 12, color: colors.accent.success }}>{repairCount ?? 0} repaired</Text>}
-          <Pressable
-            onPress={async () => {
-              if (refreshing) return;
-              setRefreshResult(null);
-              setRefreshing(true);
-              try {
-                const res = await bulkRefreshAppleLinks(150);
-                setRefreshResult(res);
-              } catch (e:any) {
-                Alert.alert('Bulk refresh failed', String(e?.message || e));
-              } finally {
-                setRefreshing(false);
-              }
-            }}
-            disabled={refreshing}
-            style={{ paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, backgroundColor: refreshing ? colors.bg.muted : colors.accent.primary }}
-          >
-            {refreshing ? <ActivityIndicator color={colors.text.inverted} /> : <Text style={{ color: colors.text.inverted, fontWeight: '700' }}>Bulk Refresh Apple Links</Text>}
-          </Pressable>
-          {refreshResult && (
-            <Text style={{ marginTop: 8, color: colors.accent.success }}>
-              Processed {refreshResult.processed}, updated {refreshResult.updated}
-            </Text>
-	          )}
-	        </View>
-	      ) : null}
-
         <View style={{ marginTop: 8 }}>
           <Text style={{ fontWeight: '700', marginBottom: 6, color: colors.text.secondary }}>Account</Text>
           <Pressable
             onPress={onSignOut}
-            disabled={signingOut}
+            disabled={signingOut || deletingAccount}
             style={{
               padding: 12,
               borderRadius: 14,
               backgroundColor: colors.bg.secondary,
               borderWidth: 1,
               borderColor: colors.border.subtle,
-              opacity: signingOut ? 0.6 : 1,
+              opacity: signingOut || deletingAccount ? 0.6 : 1,
             }}
           >
             <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
@@ -383,6 +211,35 @@ export default function ProfileSettingsPage() {
                 Sign out
               </Text>
               {signingOut ? <ActivityIndicator /> : null}
+            </View>
+          </Pressable>
+        </View>
+
+        <View style={{ marginTop: 26, paddingTop: 18, borderTopWidth: 1, borderTopColor: colors.border.subtle }}>
+          <Text style={{ fontWeight: '700', marginBottom: 6, color: colors.text.secondary }}>Delete account</Text>
+          <Text style={{ color: colors.text.muted, marginBottom: 10 }}>
+            Permanently remove your account and RPPL data.
+          </Text>
+          <Pressable
+            onPress={onDeleteAccount}
+            disabled={deletingAccount || signingOut}
+            accessibilityRole="button"
+            accessibilityLabel="Delete Account"
+            style={{
+              minHeight: 48,
+              padding: 12,
+              borderRadius: 14,
+              backgroundColor: colors.bg.secondary,
+              borderWidth: 1,
+              borderColor: '#ff3b30',
+              opacity: deletingAccount || signingOut ? 0.6 : 1,
+            }}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+              <Text style={{ fontWeight: '800', color: '#ff3b30' }}>
+                Delete Account
+              </Text>
+              {deletingAccount ? <ActivityIndicator /> : null}
             </View>
           </Pressable>
         </View>

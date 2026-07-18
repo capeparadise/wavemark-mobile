@@ -2,8 +2,11 @@
   "expo": {
     "name": "RPPL",
     "slug": "rppl-mobile",
-    "owner": "capeparadise",
-    "scheme": ["wavemark", "rppl"],
+    "owner": "cape4paradise",
+    "scheme": [
+      "wavemark",
+      "rppl"
+    ],
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "splash": {
@@ -13,6 +16,7 @@
     },
     "ios": {
       "bundleIdentifier": "com.capeparadise.rppl",
+      "usesAppleSignIn": true,
       "supportsTablet": true,
       "infoPlist": {
         "LSApplicationQueriesSchemes": [
@@ -41,8 +45,15 @@
       "expo-localization",
       "expo-font",
       "expo-image-picker",
+      "expo-apple-authentication",
       "expo-router",
       "expo-web-browser"
-    ]
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "5e98e0c7-5d19-4d62-a08e-468a761d5eb5"
+      }
+    }
   }
 }
