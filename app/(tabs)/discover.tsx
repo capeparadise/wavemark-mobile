@@ -181,6 +181,7 @@ export default function DiscoverTab() {
   const headerAnim = useRef(new Animated.Value(1)).current;
   const headerVisibleRef = useRef(true);
   const lastScrollYRef = useRef(0);
+  const searchInputRef = useRef<TextInput>(null);
   const [q, setQ] = useState('');
   const [busy, setBusy] = useState(false);
   const [searchRows, setSearchRows] = useState<SpotifyResult[]>([]);
@@ -207,6 +208,7 @@ export default function DiscoverTab() {
   const [forYouItems, setForYouItems] = useState<Array<{ id: string; name: string; imageUrl?: string | null; latestId?: string; latestDate?: string | null }>>([]);
   const [forYouLoading, setForYouLoading] = useState<boolean>(true);
   const [followedArtistRows, setFollowedArtistRows] = useState<FollowedUpdateArtist[]>([]);
+  const [followedArtistsLoaded, setFollowedArtistsLoaded] = useState(false);
   const [yourUpdatesReleases, setYourUpdatesReleases] = useState<Array<{ id: string; title: string; artist: string; artistId?: string | null; releaseDate?: string | null; spotifyUrl?: string | null; imageUrl?: string | null; type?: 'album' | 'single' | 'ep' }>>([]);
   const [expandedUpdateArtists, setExpandedUpdateArtists] = useState<Set<string>>(new Set());
   const [topPicksLoading, setTopPicksLoading] = useState<boolean>(true);
@@ -516,7 +518,7 @@ export default function DiscoverTab() {
     setDraftGenres(visibleGenres.size ? new Set(visibleGenres) : new Set(['all']));
   }, [selectedGenres]);
 
-  const yourUpdatesLoading = pickedLoading || forYouLoading;
+  const yourUpdatesLoading = pickedLoading || forYouLoading || !followedArtistsLoaded;
   const freshYourUpdatesReleases = useMemo(() => {
     const cutoffTs = discoverWindowCutoff(UPDATES_DAYS);
     return yourUpdatesReleases.filter((item) => isWithinDiscoverWindow(item.releaseDate ?? null, cutoffTs));
@@ -638,6 +640,14 @@ export default function DiscoverTab() {
   const hasYourUpdates = useMemo(() => (
     followedArtists.length > 0 || freshYourUpdatesReleases.length > 0
   ), [followedArtists.length, freshYourUpdatesReleases.length]);
+
+  const focusDiscoverSearch = useCallback(() => {
+    H.tap();
+    setHeaderVisible(true);
+    requestAnimationFrame(() => {
+      searchInputRef.current?.focus();
+    });
+  }, [setHeaderVisible]);
 
   const hasDiscoverContent = useMemo(() => {
     const genreContent = genreRows.length > 0;
@@ -1276,8 +1286,10 @@ export default function DiscoverTab() {
         if (!preserveExisting) {
           setPickedLoading(true);
           setForYouLoading(true);
+          setFollowedArtistsLoaded(false);
         }
         const followed = await listFollowedArtists();
+        setFollowedArtistsLoaded(true);
         if (!followed || followed.length === 0) {
           setFollowedDetails({});
           setRecentByArtist({});
@@ -1835,6 +1847,7 @@ export default function DiscoverTab() {
         }
       } catch (err) {
         setYourUpdatesError(err);
+        setFollowedArtistsLoaded(true);
         if (__DEV__) console.warn('[updates] load failed', err);
       }
       finally { setPickedLoading(false); setForYouLoading(false); }
@@ -2809,42 +2822,34 @@ export default function DiscoverTab() {
           </View>
         );
 
-        const renderFollowedArtistFallback = () => (
-          <View style={{ marginBottom: 8 }}>
-            <FlatList
-              data={followedArtists.slice(0, 24)}
-              keyExtractor={(item) => `followed-update-${item.id}`}
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={{ paddingHorizontal: horizontalPad }}
-              ItemSeparatorComponent={() => <View style={{ width: 10 }} />}
-              renderItem={({ item }) => (
-                <Pressable
-                  onPress={() => openArtist(item.id, { name: item.name, highlight: item.latestId ?? null })}
-                  hitSlop={8}
-                  style={({ pressed }) => ({
-                    width: 86,
-                    alignItems: 'center',
-                    opacity: pressed ? 0.88 : 1,
-                  })}
-                >
-                  <View style={{ width: 62, height: 62, borderRadius: 31, backgroundColor: colors.bg.muted, overflow: 'hidden', borderWidth: 1, borderColor: colors.border.subtle }}>
-                    {item.imageUrl ? (
-                      <Image source={{ uri: item.imageUrl }} style={{ width: 62, height: 62 }} />
-                    ) : (
-                      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-                        <Text style={{ color: colors.text.secondary, fontWeight: '900', fontSize: 18 }}>
-                          {(item.name || '?').slice(0, 1).toUpperCase()}
-                        </Text>
-                      </View>
-                    )}
-                  </View>
-                  <Text style={{ marginTop: 7, color: colors.text.secondary, fontSize: 12, fontWeight: '700', textAlign: 'center' }} numberOfLines={1}>
-                    {item.name || 'Unknown'}
-                  </Text>
-                </Pressable>
-              )}
-            />
+        const renderZeroFollowedArtistsState = () => (
+          <View style={{ paddingHorizontal: horizontalPad, marginBottom: 8, gap: 8 }}>
+            <View style={{ gap: 4 }}>
+              <Text style={{ color: colors.text.secondary, fontSize: 14, fontWeight: '800' }}>
+                Follow artists for updates
+              </Text>
+              <Text style={{ color: colors.text.muted, fontSize: 13, lineHeight: 18 }}>
+                Search for artists you follow to see their new releases from the last 14 days.
+              </Text>
+            </View>
+            <Pressable
+              onPress={focusDiscoverSearch}
+              hitSlop={8}
+              style={({ pressed }) => ({
+                alignSelf: 'flex-start',
+                paddingHorizontal: 12,
+                paddingVertical: 8,
+                borderRadius: 10,
+                borderWidth: 1,
+                borderColor: colors.border.subtle,
+                backgroundColor: colors.bg.muted,
+                opacity: pressed ? 0.82 : 1,
+              })}
+            >
+              <Text style={{ color: colors.text.secondary, fontSize: 13, fontWeight: '800' }}>
+                Find artists
+              </Text>
+            </Pressable>
           </View>
         );
 
@@ -2865,10 +2870,10 @@ export default function DiscoverTab() {
                 ? renderSectionSkeleton('your-updates-loading')
                 : yourUpdatesState.status === 'error'
                   ? renderInlineState('Could not load updates right now.', 'error')
-                  : yourUpdatesState.status === 'empty'
-                    ? followedArtists.length
-                      ? renderFollowedArtistFallback()
-                      : renderInlineState('No new releases in the last 14 days', 'muted')
+                : yourUpdatesState.status === 'empty'
+                    ? followedArtistRows.length > 0
+                      ? renderInlineState('No new releases from your artists in the last 14 days.', 'muted')
+                      : renderZeroFollowedArtistsState()
                     : renderUpdatesSection(yourUpdatesDisplayItems, 'your-updates')}
             </View>
             <View key="top-picks" style={{ marginBottom: 16 }}>
@@ -2945,6 +2950,7 @@ export default function DiscoverTab() {
         <BlurView intensity={68} tint="dark" style={{ paddingHorizontal: 10, paddingVertical: 8 }}>
           <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
             <TextInput
+              ref={searchInputRef}
               value={q}
               onChangeText={setQ}
               placeholder="Search music: artists, albums, tracks"
