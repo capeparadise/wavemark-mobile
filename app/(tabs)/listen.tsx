@@ -23,6 +23,7 @@ import {
   markDone,
   reconcileListenUpcoming,
   removeListen,
+  setDefaultPlayer as saveDefaultPlayer,
   type ListenPlayer,
   type ListenRow,
   type UpcomingItem,
@@ -320,8 +321,13 @@ export default function ListenTab() {
 
   // Rating handled via RatingModal on both platforms
 
+  const chooseDefaultPlayer = useCallback(async (player: ListenPlayer) => {
+    setDefaultPlayer(player);
+    await saveDefaultPlayer(player);
+  }, []);
+
   const onOpen = (item: ListenRow) => {
-    goToRelease(item.id);
+    goToRelease(item.id, { preferredPlayer: defaultPlayer });
   };
 
   const optimisticRemove = (id: string) => {
@@ -485,7 +491,7 @@ export default function ListenTab() {
             }}
           >
             <Text style={{ fontSize: 22, fontWeight: '700', color: colors.text.secondary }}>Your Listen List</Text>
-            <PlayerToggle />
+            <PlayerToggle value={defaultPlayer} onChange={chooseDefaultPlayer} />
           </View>
 
           {/* Content-type filter chips */}

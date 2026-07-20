@@ -84,6 +84,7 @@ export default function ReleaseScreen() {
     type?: string;
     artistId?: string;
     releaseDate?: string;
+    preferredPlayer?: string;
   }>();
   const getParam = (v: string | string[] | undefined) => Array.isArray(v) ? v[0] : v;
   const releaseId = String(getParam(params.id) || '').trim();
@@ -95,6 +96,7 @@ export default function ReleaseScreen() {
   const imageUrlParam = String(getParam(params.imageUrl) || '').trim();
   const typeParam = String(getParam(params.type) || '').trim();
   const releaseDateParam = String(getParam(params.releaseDate) || '').trim();
+  const preferredPlayerParam = String(getParam(params.preferredPlayer) || '').trim();
   const paramKey = [
     releaseId,
     spotifyIdParam,
@@ -178,8 +180,12 @@ export default function ReleaseScreen() {
   }, []);
 
   useEffect(() => {
+    if (preferredPlayerParam === 'apple' || preferredPlayerParam === 'spotify') {
+      setPreferredPlayer(preferredPlayerParam);
+      return;
+    }
     getDefaultPlayer().then(setPreferredPlayer).catch(() => {});
-  }, []);
+  }, [preferredPlayerParam]);
 
   useEffect(() => {
     const urls = moreByArtist.map((it) => it.imageUrl).filter(Boolean) as string[];
@@ -606,7 +612,7 @@ export default function ReleaseScreen() {
       spotify_id: release.spotifyId ?? null,
       done_at: null,
     };
-    const ok = await openByDefaultPlayer(row);
+    const ok = await openByDefaultPlayer(row, preferredPlayer);
     if (!ok) {
       Alert.alert(
         'Could not open',

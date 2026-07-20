@@ -3,7 +3,7 @@
    PURPOSE: Quick toggle between Apple ↔ Spotify using lib/listen helpers.
    ======================================================================== */
 import FontAwesome from '@expo/vector-icons/FontAwesome';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Pressable, View } from 'react-native';
 import { getDefaultPlayer, setDefaultPlayer } from '../lib/listen';
 import { useTheme } from '../theme/useTheme';
@@ -11,23 +11,31 @@ import { icon, ui } from '../constants/ui';
 
 type Player = 'apple' | 'spotify';
 
-export default function PlayerToggle() {
+type PlayerToggleProps = {
+  value?: Player;
+  onChange?: (player: Player) => void | Promise<void>;
+};
+
+export default function PlayerToggle({ value, onChange }: PlayerToggleProps) {
   const { colors } = useTheme();
   const APPLE_ENABLED = process.env.EXPO_PUBLIC_ENABLE_APPLE === 'true';
-  const [player, setPlayer] = useState<Player>(APPLE_ENABLED ? 'apple' : 'spotify');
+  const [localPlayer, setLocalPlayer] = useState<Player>(APPLE_ENABLED ? 'apple' : 'spotify');
+  const player = useMemo(() => value ?? localPlayer, [localPlayer, value]);
 
   useEffect(() => {
+    if (value) return;
     (async () => {
       const p = await getDefaultPlayer();
-      if (p === 'apple' || p === 'spotify') setPlayer(p);
+      if (p === 'apple' || p === 'spotify') setLocalPlayer(p);
     })();
-  }, []);
+  }, [value]);
 
   const onToggle = async () => {
     if (!APPLE_ENABLED) return; // ignore toggles when Apple is disabled globally
     const next = player === 'apple' ? 'spotify' : 'apple';
-    setPlayer(next);
-    await setDefaultPlayer(next);
+    if (!value) setLocalPlayer(next);
+    await onChange?.(next);
+    if (!value) await setDefaultPlayer(next);
   };
 
   return (
