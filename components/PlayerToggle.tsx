@@ -5,7 +5,7 @@
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import React, { useEffect, useMemo, useState } from 'react';
 import { Pressable, View } from 'react-native';
-import { getDefaultPlayer, setDefaultPlayer } from '../lib/listen';
+import { APPLE_ENABLED, getDefaultPlayer, setDefaultPlayer } from '../lib/listen';
 import { useTheme } from '../theme/useTheme';
 import { icon, ui } from '../constants/ui';
 
@@ -16,9 +16,12 @@ type PlayerToggleProps = {
   onChange?: (player: Player) => void | Promise<void>;
 };
 
+export function getNextPlayer(player: Player): Player {
+  return player === 'apple' ? 'spotify' : 'apple';
+}
+
 export default function PlayerToggle({ value, onChange }: PlayerToggleProps) {
   const { colors } = useTheme();
-  const APPLE_ENABLED = process.env.EXPO_PUBLIC_ENABLE_APPLE === 'true';
   const [localPlayer, setLocalPlayer] = useState<Player>(APPLE_ENABLED ? 'apple' : 'spotify');
   const player = useMemo(() => value ?? localPlayer, [localPlayer, value]);
 
@@ -32,7 +35,7 @@ export default function PlayerToggle({ value, onChange }: PlayerToggleProps) {
 
   const onToggle = async () => {
     if (!APPLE_ENABLED) return; // ignore toggles when Apple is disabled globally
-    const next = player === 'apple' ? 'spotify' : 'apple';
+    const next = getNextPlayer(player);
     if (!value) setLocalPlayer(next);
     await onChange?.(next);
     if (!value) await setDefaultPlayer(next);

@@ -8,7 +8,7 @@ import { getMarket, spotifyLookup } from './spotify';
 import { supabase } from './supabase';
 
 const debug = debugNS('listen');
-const APPLE_ENABLED = process.env.EXPO_PUBLIC_ENABLE_APPLE === 'true';
+export const APPLE_ENABLED = process.env.EXPO_PUBLIC_ENABLE_APPLE !== 'false';
 
 export type ListenPlayer = 'apple' | 'spotify';
 
@@ -1157,10 +1157,6 @@ export async function openByDefaultPlayer(
   preferredOverride?: ListenPlayer
 ): Promise<boolean> {
   const preferred = preferredOverride ?? (await getDefaultPlayer());
-
-  // DEBUG START
-  debug('openByDefaultPlayer', 'preferred =', preferred, 'title =', item.title);
-  // DEBUG END
 
   if (!APPLE_ENABLED) {
     const s = await trySpotify(item);
