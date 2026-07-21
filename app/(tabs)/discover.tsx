@@ -35,6 +35,18 @@ type DebugFetchResult = { url: string; status: number; build: string | null; bod
 type SectionStatus = 'loading' | 'success' | 'empty' | 'error';
 type FollowedUpdateArtist = { id: string; name: string; imageUrl?: string | null; latestId?: string; latestDate?: string | null };
 type FollowedArtistDetails = Record<string, { name: string; imageUrl?: string | null }>;
+type UpdateAttributionArtist = { id: string; name: string };
+type YourUpdatesRelease = {
+  id: string;
+  title: string;
+  artist: string;
+  artistId?: string | null;
+  releaseDate?: string | null;
+  spotifyUrl?: string | null;
+  imageUrl?: string | null;
+  type?: 'album' | 'single' | 'ep';
+  followedBecauseArtists?: UpdateAttributionArtist[];
+};
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 type DiscoverViewMode = 'mixed' | 'pills';
@@ -125,6 +137,66 @@ function getReleaseArtistNames(release: any): string[] {
   return name ? [String(name)] : [];
 }
 
+function getReleaseCreditArtists(release: any): UpdateAttributionArtist[] {
+  if (Array.isArray(release?.artists)) {
+    return release.artists
+      .map((artist: any) => ({
+        id: artist?.id ? String(artist.id) : '',
+        name: artist?.name ? String(artist.name) : '',
+      }))
+      .filter((artist: UpdateAttributionArtist) => !!artist.id && !!artist.name);
+  }
+
+  const ids = getReleaseArtistIds(release);
+  const names = getReleaseArtistNames(release);
+  return ids
+    .map((id, index) => ({
+      id,
+      name: names[index] || '',
+    }))
+    .filter((artist) => !!artist.id && !!artist.name);
+}
+
+function getPrimaryReleaseArtist(release: any): UpdateAttributionArtist | null {
+  const credits = getReleaseCreditArtists(release);
+  if (credits[0]) return credits[0];
+  const id = release?.artistId ?? release?.artist_id ?? null;
+  const name = release?.artist ?? release?.artist_name ?? null;
+  if (!id || !name) return null;
+  return { id: String(id), name: String(name) };
+}
+
+function buildFollowedBecauseArtists(
+  release: any,
+  followedIds: Set<string>,
+  followedNameById: Map<string, string>,
+  matchedArtist?: UpdateAttributionArtist | null
+): UpdateAttributionArtist[] {
+  const primary = getPrimaryReleaseArtist(release);
+  if (primary?.id && followedIds.has(primary.id)) return [];
+
+  const seen = new Set<string>();
+  const matches: UpdateAttributionArtist[] = [];
+  const addMatch = (artist?: UpdateAttributionArtist | null) => {
+    if (!artist?.id || seen.has(artist.id) || !followedIds.has(artist.id)) return;
+    const name = artist.name || followedNameById.get(artist.id) || '';
+    if (!name) return;
+    seen.add(artist.id);
+    matches.push({ id: artist.id, name });
+  };
+
+  getReleaseCreditArtists(release).forEach(addMatch);
+  addMatch(matchedArtist);
+  return matches;
+}
+
+function attributionLabelForRelease(item: YourUpdatesRelease): string | null {
+  const artists = item.followedBecauseArtists?.filter((artist) => !!artist.name) ?? [];
+  if (!artists.length) return null;
+  const remaining = artists.length - 1;
+  return `With ${artists[0].name}${remaining > 0 ? ` +${remaining}` : ''}`;
+}
+
 function isPrimaryFollowedRelease(release: any, followedArtistId: string): boolean {
   if (String(release?.type ?? '').toLowerCase() === 'track') return false;
   if (!isSpotifyAlbumUrl(release?.spotifyUrl ?? release?.spotify_url ?? null)) return false;
@@ -209,7 +281,7 @@ export default function DiscoverTab() {
   const [forYouLoading, setForYouLoading] = useState<boolean>(true);
   const [followedArtistRows, setFollowedArtistRows] = useState<FollowedUpdateArtist[]>([]);
   const [followedArtistsLoaded, setFollowedArtistsLoaded] = useState(false);
-  const [yourUpdatesReleases, setYourUpdatesReleases] = useState<Array<{ id: string; title: string; artist: string; artistId?: string | null; releaseDate?: string | null; spotifyUrl?: string | null; imageUrl?: string | null; type?: 'album' | 'single' | 'ep' }>>([]);
+  const [yourUpdatesReleases, setYourUpdatesReleases] = useState<YourUpdatesRelease[]>([]);
   const [expandedUpdateArtists, setExpandedUpdateArtists] = useState<Set<string>>(new Set());
   const [topPicksLoading, setTopPicksLoading] = useState<boolean>(true);
   const [topPicksError, setTopPicksError] = useState<any | null>(null);
@@ -1384,7 +1456,29 @@ export default function DiscoverTab() {
           const followedNameById = new Map<string, string>(followed.map((f) => [f.id, f.name]));
           const followedIdByName = new Map<string, string>(followed.map((f) => [(f.name || '').toLowerCase().trim(), f.id]));
           const validFollowedIds = Array.from(followedIds).filter((id) => /^[A-Za-z0-9]{22}$/.test(id));
-          let seedYourUpdatesReleases: Array<{ id: string; title: string; artist: string; artistId?: string | null; releaseDate?: string | null; spotifyUrl?: string | null; imageUrl?: string | null; type?: 'album' | 'single' | 'ep' }> = [];
+          const releaseCreditLookupCache = new Map<string, Promise<SpotifyResult | null>>();
+          const resolveReleaseCredits = async (release: any, sid: string): Promise<any> => {
+            if (getReleaseCreditArtists(release).length > 1) return release;
+            if (!sid || !/^[A-Za-z0-9]{22}$/.test(sid)) return release;
+            if (!releaseCreditLookupCache.has(sid)) {
+              releaseCreditLookupCache.set(
+                sid,
+                spotifyLookup(sid, 'album')
+                  .then((items) => items[0] ?? null)
+                  .catch(() => null)
+              );
+            }
+            const lookedUp = await releaseCreditLookupCache.get(sid);
+            if (!lookedUp) return release;
+            return {
+              ...release,
+              artistIds: lookedUp.artistIds ?? getReleaseArtistIds(release),
+              artistNames: lookedUp.artistNames ?? getReleaseArtistNames(release),
+              artistId: lookedUp.artistId ?? release?.artistId ?? release?.artist_id ?? null,
+              artist: lookedUp.artist ?? release?.artist ?? release?.artist_name ?? null,
+            };
+          };
+          let seedYourUpdatesReleases: YourUpdatesRelease[] = [];
           let seedFollowedItems: FollowedUpdateArtist[] = [];
           let builtFromFeed = false;
           const hasVisibleUpdates = forYouItemsRef.current.length > 0 || yourUpdatesReleasesRef.current.length > 0;
@@ -1398,7 +1492,7 @@ export default function DiscoverTab() {
               isWithinDiscoverWindow(it.release_date ?? null, cutoffTs)
             ));
             if (recentFeed.length) {
-              const releases: Array<{ id: string; title: string; artist: string; artistId?: string | null; releaseDate?: string | null; spotifyUrl?: string | null; imageUrl?: string | null; type?: 'album' | 'single' | 'ep' }> = [];
+              const releases: YourUpdatesRelease[] = [];
               const seenRelease = new Set<string>();
               const byArtist = new Map<string, { artistId: string; artistName: string; latestId: string; latestDate: string | null }>();
 
@@ -1418,15 +1512,24 @@ export default function DiscoverTab() {
 
                 const artistId = it.artist_id;
                 const artistName = it.artist_name || followedNameById.get(artistId) || 'Unknown';
+                const releaseWithCredits = await resolveReleaseCredits(it, sid);
+                const displayArtist = getPrimaryReleaseArtist(releaseWithCredits)?.name || artistName;
+                const followedBecauseArtists = buildFollowedBecauseArtists(
+                  releaseWithCredits,
+                  followedIds,
+                  followedNameById,
+                  { id: artistId, name: artistName }
+                );
                 releases.push({
                   id: sid,
                   title: it.title,
-                  artist: artistName,
+                  artist: displayArtist,
                   artistId,
                   releaseDate: it.release_date ?? null,
                   spotifyUrl: it.spotify_url ?? null,
                   imageUrl: it.image_url ?? it.artwork_url ?? null,
                   type: toType((it as any).release_type ?? (it as any).item_type ?? null),
+                  followedBecauseArtists,
                 });
 
                 const prev = byArtist.get(artistId);
@@ -1497,7 +1600,7 @@ export default function DiscoverTab() {
                 isWithinDiscoverWindow(it.release_date ?? null, cutoffTs)
               ));
               if (recentFeed.length) {
-                const releases: Array<{ id: string; title: string; artist: string; artistId?: string | null; releaseDate?: string | null; spotifyUrl?: string | null; imageUrl?: string | null; type?: 'album' | 'single' | 'ep' }> = [];
+                const releases: YourUpdatesRelease[] = [];
                 const seenRelease = new Set<string>();
                 const byArtist = new Map<string, { artistId: string; artistName: string; latestId: string; latestDate: string | null }>();
                 const toType = (t?: string | null): 'album' | 'single' | 'ep' | undefined => {
@@ -1514,15 +1617,24 @@ export default function DiscoverTab() {
                   seenRelease.add(relKey);
                   const artistId = it.artist_id;
                   const artistName = it.artist_name || followedNameById.get(artistId) || 'Unknown';
+                  const releaseWithCredits = await resolveReleaseCredits(it, sid);
+                  const displayArtist = getPrimaryReleaseArtist(releaseWithCredits)?.name || artistName;
+                  const followedBecauseArtists = buildFollowedBecauseArtists(
+                    releaseWithCredits,
+                    followedIds,
+                    followedNameById,
+                    { id: artistId, name: artistName }
+                  );
                   releases.push({
                     id: sid,
                     title: it.title,
-                    artist: artistName,
+                    artist: displayArtist,
                     artistId,
                     releaseDate: it.release_date ?? null,
                     spotifyUrl: it.spotify_url ?? null,
                     imageUrl: it.image_url ?? it.artwork_url ?? null,
                     type: toType((it as any).release_type ?? (it as any).item_type ?? null),
+                    followedBecauseArtists,
                   });
                   const prev = byArtist.get(artistId);
                   const prevTs = prev?.latestDate ? discoverDateTimestamp(prev.latestDate) : 0;
@@ -1599,6 +1711,7 @@ export default function DiscoverTab() {
 	            const releases = fallbackFromNr.slice(0, 60).map((r: any) => {
 	              const { name: aname } = primaryArtist(r);
                 const artistId = followedArtistIdForRelease(r);
+                const matchedArtist = artistId ? { id: artistId, name: followedNameById.get(artistId) || r.artist || r.artist_name || 'Unknown' } : null;
 	              const sid = spotifyKey(r.id, r.spotifyUrl ?? null) || String(r.id || '');
 	              return {
                 id: sid,
@@ -1609,6 +1722,7 @@ export default function DiscoverTab() {
                 spotifyUrl: r.spotifyUrl ?? null,
                 imageUrl: r.imageUrl || r.image_url || null,
                 type: (r.type === 'single' ? 'single' : r.type === 'album' ? 'album' : undefined) as any,
+                followedBecauseArtists: buildFollowedBecauseArtists(r, followedIds, followedNameById, matchedArtist),
               };
             }).filter((x: any) => !!x.id);
             setYourUpdatesReleases(releases);
@@ -1651,7 +1765,7 @@ export default function DiscoverTab() {
             cacheForYou(items, FOR_YOU_UPDATES_CACHE_KEY);
             if (__DEV__) console.log('[updates] recents built (fallback new releases)', { total: items.length, cutoff: new Date(cutoffTs).toISOString().slice(0,10) });
           } else {
-            const releases: Array<{ id: string; title: string; artist: string; artistId?: string | null; releaseDate?: string | null; spotifyUrl?: string | null; imageUrl?: string | null; type?: 'album' | 'single' | 'ep' }> = [];
+            const releases: YourUpdatesRelease[] = [];
             const seenRelease = new Set<string>();
             const scanFollowedArtist = async (fa: (typeof followed)[number]) => {
               const id = fa.id;
@@ -1773,6 +1887,12 @@ export default function DiscoverTab() {
                     spotifyUrl: album.spotifyUrl ?? null,
                     imageUrl: album.imageUrl ?? null,
                     type: albumType === 'single' ? 'single' : albumType === 'ep' ? 'ep' : 'album',
+                    followedBecauseArtists: buildFollowedBecauseArtists(
+                      album,
+                      followedIds,
+                      followedNameById,
+                      { id, name: details[id]?.name || fa.name || 'Unknown' }
+                    ),
                   });
                 });
               }
@@ -1823,7 +1943,7 @@ export default function DiscoverTab() {
               }));
               cacheForYou(items, FOR_YOU_UPDATES_CACHE_KEY);
             }
-            const releaseByKey = new Map<string, { id: string; title: string; artist: string; artistId?: string | null; releaseDate?: string | null; spotifyUrl?: string | null; imageUrl?: string | null; type?: 'album' | 'single' | 'ep' }>();
+            const releaseByKey = new Map<string, YourUpdatesRelease>();
             [...seedYourUpdatesReleases, ...releases].forEach((release) => {
               const key = spotifyKey(release.id, release.spotifyUrl ?? null) || `${release.artistId || release.artist}-${release.title}-${release.releaseDate || ''}`;
               if (!key || releaseByKey.has(key)) return;
@@ -2538,9 +2658,10 @@ export default function DiscoverTab() {
 
         const renderReleaseCard = (
           item: any,
-          options?: { moreCount?: number; hideArtist?: boolean; onPress?: () => void }
+          options?: { moreCount?: number; hideArtist?: boolean; onPress?: () => void; attributionLabel?: string | null }
         ) => {
           const moreCount = options?.moreCount;
+          const attributionLabel = options?.attributionLabel ?? null;
           const stat = statusFor(item.id, item.spotifyUrl);
           const isAdded = isAddedFor(item.id, item.spotifyUrl) || !!stat;
           const label = tagLabel(stat, isAdded);
@@ -2598,6 +2719,25 @@ export default function DiscoverTab() {
                   )}
                 </View>
                 <View style={{ flex: 1, gap: 4, minWidth: 0 }}>
+                  {attributionLabel ? (
+                    <View
+                      pointerEvents="none"
+                      style={{
+                        alignSelf: 'flex-start',
+                        maxWidth: '100%',
+                        paddingHorizontal: 7,
+                        paddingVertical: 3,
+                        borderRadius: 999,
+                        backgroundColor: colors.bg.muted,
+                        borderWidth: 1,
+                        borderColor: colors.border.subtle,
+                      }}
+                    >
+                      <Text style={{ color: colors.text.muted, fontSize: 10, fontWeight: '800' }} numberOfLines={1} ellipsizeMode="tail">
+                        {attributionLabel}
+                      </Text>
+                    </View>
+                  ) : null}
                   <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                     <Text style={{ flex: 1, fontWeight: '700', color: colors.text.secondary, lineHeight: 18 }} numberOfLines={1} ellipsizeMode="tail">
                       {item.title}
@@ -2629,7 +2769,7 @@ export default function DiscoverTab() {
 
         const renderHeroCard = (
           item: any,
-          options?: { moreCount?: number; hideArtist?: boolean; onPress?: () => void }
+          options?: { moreCount?: number; hideArtist?: boolean; onPress?: () => void; attributionLabel?: string | null }
         ) => {
           const moreCount = options?.moreCount;
           const stat = statusFor(item.id, item.spotifyUrl);
@@ -2661,6 +2801,7 @@ export default function DiscoverTab() {
               artist={options?.hideArtist ? null : item.artist || null}
               imageUrl={item.imageUrl || null}
               releaseDate={item.releaseDate ?? null}
+              attributionLabel={options?.attributionLabel ?? null}
               saved={isAdded}
               titleBadge={moreCount ? `+${moreCount}` : null}
               width={heroCardWidth}
@@ -2741,6 +2882,7 @@ export default function DiscoverTab() {
                       {renderReleaseCard(entry.item, {
                         moreCount: entry.moreCount,
                         hideArtist: entry.hideArtist,
+                        attributionLabel: attributionLabelForRelease(entry.item),
                         onPress: entry.expandOnPress ? () => expandUpdateGroup(entry.artistKey) : undefined,
                       })}
                     </React.Fragment>
@@ -2825,6 +2967,7 @@ export default function DiscoverTab() {
                   renderItem={({ item: entry }) => renderHeroCard(entry.item, {
                     moreCount: entry.moreCount,
                     hideArtist: entry.hideArtist,
+                    attributionLabel: attributionLabelForRelease(entry.item),
                     onPress: entry.expandOnPress ? () => expandUpdateGroup(entry.artistKey) : undefined,
                   })}
                 />

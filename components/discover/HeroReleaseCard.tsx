@@ -10,6 +10,7 @@ export type HeroReleaseCardProps = {
   artist?: string | null;
   imageUrl?: string | null;
   releaseDate?: string | null;
+  attributionLabel?: string | null;
   saved?: boolean;
   titleBadge?: string | null;
   onPress?: () => void;
@@ -25,6 +26,7 @@ export default function HeroReleaseCard({
   artist,
   imageUrl,
   releaseDate,
+  attributionLabel,
   saved,
   titleBadge,
   onPress,
@@ -134,6 +136,26 @@ export default function HeroReleaseCard({
           </View>
 
           <View style={{ flex: 1, minWidth: 0, paddingBottom: 6 }}>
+            {attributionLabel ? (
+              <View
+                pointerEvents="none"
+                style={{
+                  alignSelf: 'flex-start',
+                  maxWidth: '100%',
+                  paddingHorizontal: 8,
+                  paddingVertical: 4,
+                  borderRadius: 999,
+                  backgroundColor: 'rgba(20,20,25,0.48)',
+                  borderWidth: 1,
+                  borderColor: 'rgba(255,255,255,0.14)',
+                  marginBottom: 6,
+                }}
+              >
+                <Text style={{ color: 'rgba(255,255,255,0.82)', fontSize: 10, fontWeight: '800' }} numberOfLines={1} ellipsizeMode="tail">
+                  {attributionLabel}
+                </Text>
+              </View>
+            ) : null}
             <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
               <Text style={{ flex: 1, color: '#fff', fontWeight: '900', fontSize: 18, letterSpacing: 0.2 }} numberOfLines={1} ellipsizeMode="tail">
                 {title}

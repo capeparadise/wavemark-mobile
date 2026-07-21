@@ -16,6 +16,8 @@ export type SpotifyResult = {
   albumType?: 'album' | 'single' | 'compilation';
   albumId?: string | null;   // for tracks (parent album), for albums (same as id)
   artistId?: string | null;  // primary artist id when available
+  artistIds?: string[];
+  artistNames?: string[];
   isrc?: string | null;
   upc?: string | null;
   popularity?: number;
@@ -96,6 +98,16 @@ function firstSpotifyArtistId(artists: any): string | null {
   const items = Array.isArray(artists?.items) ? artists.items : Array.isArray(artists) ? artists : [];
   const first = items[0];
   return first?.id ?? spotifyIdFromUri(first?.uri) ?? null;
+}
+
+function spotifyArtistIds(artists: any): string[] {
+  const items = Array.isArray(artists?.items) ? artists.items : Array.isArray(artists) ? artists : [];
+  return items.map((artist: any) => artist?.id ?? spotifyIdFromUri(artist?.uri)).filter(Boolean).map(String);
+}
+
+function spotifyArtistNames(artists: any): string[] {
+  const items = Array.isArray(artists?.items) ? artists.items : Array.isArray(artists) ? artists : [];
+  return items.map((artist: any) => artist?.profile?.name ?? artist?.name).filter(Boolean).map(String);
 }
 
 function decodeBase64Utf8(input: string): string {
@@ -189,6 +201,8 @@ function mapSpotifyWebAlbum(data: any, albumId: string, fallback?: Partial<Spoti
     albumType: (album?.type ?? fallback?.albumType ?? null) as any,
     albumId: album?.id ?? albumId,
     artistId: firstSpotifyArtistId(album?.artists) ?? fallback?.artistId ?? null,
+    artistIds: spotifyArtistIds(album?.artists),
+    artistNames: spotifyArtistNames(album?.artists),
     isrc: null,
     upc: fallback?.upc ?? null,
     totalTracks,
@@ -231,6 +245,8 @@ export async function spotifyLookup(id: string, lookupType: 'album' | 'track'): 
   albumType: (data.album_type ?? null) as any,
   albumId: data.id ?? null,
   artistId: data.artists?.[0]?.id ?? null,
+  artistIds: spotifyArtistIds(data.artists),
+  artistNames: spotifyArtistNames(data.artists),
   isrc: null,
   upc: data.external_ids?.upc ?? null,
   totalTracks,
