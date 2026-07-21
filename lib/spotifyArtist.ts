@@ -27,6 +27,7 @@ export type ArtistAlbum = {
   artistNames?: string[];
   albumType?: 'album' | 'single' | 'compilation' | string | null;
   albumGroup?: 'album' | 'single' | 'appears_on' | 'compilation' | string;
+  totalTracks?: number | null;
 };
 
 const FN_ENV = process.env.EXPO_PUBLIC_FN_BASE ?? '';
@@ -144,6 +145,7 @@ export async function artistAlbums(artistId: string, market = 'GB', includeGroup
       type,
       albumType: a?.album_type ?? null,
       albumGroup: group as any,
+      totalTracks: totalTracks || null,
     };
   });
 

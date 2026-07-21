@@ -1,6 +1,7 @@
 import * as Localization from 'expo-localization';
 import { FN_BASE, fetchFn } from './fnBase';
 import { getMarketOverride } from './market';
+import { type ReleaseTrack } from './releaseModel';
 
 export type SpotifyResult = {
   id: string;              // Spotify id
@@ -19,6 +20,8 @@ export type SpotifyResult = {
   upc?: string | null;
   popularity?: number;
   followers?: number | null;
+  totalTracks?: number | null;
+  tracks?: ReleaseTrack[];
 };
 
 // Use centralized base (with safe fallback)
@@ -60,12 +63,161 @@ export function parseSpotifyUrlOrId(input: string): { id: string; lookupType: 'a
   return null;
 }
 
+function mapSpotifyAlbumTracks(data: any): ReleaseTrack[] {
+  const items = Array.isArray(data?.tracks?.items) ? data.tracks.items : [];
+  return items
+    .filter((track: any) => !!track?.name)
+    .map((track: any) => ({
+      id: track.id ?? null,
+      provider: 'spotify' as const,
+      providerId: track.id ?? null,
+      title: track.name,
+      artist: track.artists?.[0]?.name ?? null,
+      trackNumber: typeof track.track_number === 'number' ? track.track_number : null,
+      durationMs: typeof track.duration_ms === 'number' ? track.duration_ms : null,
+      spotifyUrl: track.external_urls?.spotify ?? (track.id ? `https://open.spotify.com/track/${track.id}` : null),
+      appleUrl: null,
+    }));
+}
+
+function spotifyIdFromUri(uri?: string | null): string | null {
+  if (!uri) return null;
+  const match = String(uri).match(/^spotify:[^:]+:([A-Za-z0-9]+)$/);
+  return match?.[1] ?? null;
+}
+
+function firstSpotifyArtistName(artists: any): string | null {
+  const items = Array.isArray(artists?.items) ? artists.items : Array.isArray(artists) ? artists : [];
+  const first = items[0];
+  return first?.profile?.name ?? first?.name ?? null;
+}
+
+function firstSpotifyArtistId(artists: any): string | null {
+  const items = Array.isArray(artists?.items) ? artists.items : Array.isArray(artists) ? artists : [];
+  const first = items[0];
+  return first?.id ?? spotifyIdFromUri(first?.uri) ?? null;
+}
+
+function decodeBase64Utf8(input: string): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const clean = input.replace(/[\r\n\s]/g, '');
+  let binary = '';
+  let buffer = 0;
+  let bits = 0;
+  for (let i = 0; i < clean.length; i += 1) {
+    const char = clean[i];
+    if (char === '=') break;
+    const value = chars.indexOf(char);
+    if (value < 0) continue;
+    buffer = (buffer << 6) | value;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      binary += String.fromCharCode((buffer >> bits) & 0xff);
+    }
+  }
+
+  try {
+    const chunks: string[] = [];
+    for (let i = 0; i < binary.length; i += 2048) {
+      const slice = binary.slice(i, i + 2048);
+      let encoded = '';
+      for (let j = 0; j < slice.length; j += 1) {
+        encoded += `%${slice.charCodeAt(j).toString(16).padStart(2, '0')}`;
+      }
+      chunks.push(decodeURIComponent(encoded));
+    }
+    return chunks.join('');
+  } catch {
+    return binary;
+  }
+}
+
+function mapSpotifyWebAlbum(data: any, albumId: string, fallback?: Partial<SpotifyResult>): SpotifyResult | null {
+  const items = data?.entities?.items ?? {};
+  const albumKey = `spotify:album:${albumId}`;
+  const album = items[albumKey] ?? Object.values(items).find((item: any) => {
+    return item?.id === albumId || item?.uri === albumKey;
+  });
+  if (!album) return null;
+
+  const trackItems = Array.isArray(album?.tracksV2?.items) ? album.tracksV2.items : [];
+  const tracks = trackItems
+    .map((item: any): ReleaseTrack | null => {
+      const track = item?.track ?? item;
+      const trackId = track?.id ?? spotifyIdFromUri(track?.uri);
+      const title = track?.name;
+      if (!trackId || !title) return null;
+      return {
+        id: trackId,
+        provider: 'spotify',
+        providerId: trackId,
+        title,
+        artist: firstSpotifyArtistName(track?.artists) ?? fallback?.artist ?? null,
+        trackNumber: typeof track?.trackNumber === 'number' ? track.trackNumber : null,
+        durationMs: typeof track?.duration?.totalMilliseconds === 'number' ? track.duration.totalMilliseconds : null,
+        spotifyUrl: `https://open.spotify.com/track/${trackId}`,
+        appleUrl: null,
+      };
+    })
+    .filter((track: ReleaseTrack | null): track is ReleaseTrack => track != null);
+
+  const totalTracks =
+    typeof album?.tracksV2?.totalCount === 'number'
+      ? album.tracksV2.totalCount
+      : (tracks.length || fallback?.totalTracks || null);
+  const imageSources = Array.isArray(album?.coverArt?.sources) ? album.coverArt.sources : [];
+  const largestImage = imageSources
+    .slice()
+    .sort((a: any, b: any) => (b?.width ?? 0) - (a?.width ?? 0))[0]?.url;
+  const releaseDate =
+    album?.date?.isoString?.slice?.(0, 10)
+    ?? album?.releaseDate?.isoString?.slice?.(0, 10)
+    ?? fallback?.releaseDate
+    ?? null;
+
+  return {
+    id: album?.id ?? albumId,
+    providerId: album?.id ?? albumId,
+    provider: 'spotify',
+    type: 'album',
+    title: album?.name ?? fallback?.title ?? 'Untitled',
+    artist: firstSpotifyArtistName(album?.artists) ?? fallback?.artist ?? '',
+    releaseDate,
+    spotifyUrl: `https://open.spotify.com/album/${album?.id ?? albumId}`,
+    imageUrl: largestImage ?? fallback?.imageUrl ?? null,
+    albumType: (album?.type ?? fallback?.albumType ?? null) as any,
+    albumId: album?.id ?? albumId,
+    artistId: firstSpotifyArtistId(album?.artists) ?? fallback?.artistId ?? null,
+    isrc: null,
+    upc: fallback?.upc ?? null,
+    totalTracks,
+    tracks,
+  };
+}
+
+async function spotifyWebAlbumLookup(albumId: string, fallback?: Partial<SpotifyResult>): Promise<SpotifyResult | null> {
+  const res = await fetch(`https://open.spotify.com/album/${encodeURIComponent(albumId)}`, {
+    headers: {
+      'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148',
+    },
+  });
+  if (!res.ok) return null;
+  const html = await res.text();
+  const match = html.match(/<script[^>]+id=["']initialState["'][^>]*>([^<]+)/);
+  if (!match?.[1]) return null;
+  const state = JSON.parse(decodeBase64Utf8(match[1]));
+  return mapSpotifyWebAlbum(state, albumId, fallback);
+}
+
 export async function spotifyLookup(id: string, lookupType: 'album' | 'track'): Promise<SpotifyResult[]> {
   const market = getMarket();
   const res = await fetchFn(`${FN}/spotify-search/lookup?` + new URLSearchParams({ id, lookupType, market }));
   if (!res.ok) throw new Error('Spotify lookup failed');
   const data: any = await res.json();
   if (lookupType === 'album') {
+    const tracks = mapSpotifyAlbumTracks(data);
+    const totalTracks = typeof data.total_tracks === 'number' ? data.total_tracks : (tracks.length || null);
     return [{
       id: data.id,
       providerId: data.id,
@@ -81,6 +233,8 @@ export async function spotifyLookup(id: string, lookupType: 'album' | 'track'): 
   artistId: data.artists?.[0]?.id ?? null,
   isrc: null,
   upc: data.external_ids?.upc ?? null,
+  totalTracks,
+  tracks,
     }];
   } else {
     return [{
@@ -97,8 +251,73 @@ export async function spotifyLookup(id: string, lookupType: 'album' | 'track'): 
   artistId: data.artists?.[0]?.id ?? null,
   isrc: data.external_ids?.isrc ?? null,
   upc: data.album?.external_ids?.upc ?? null,
+  totalTracks: 1,
     }];
   }
+}
+
+export async function spotifyResolveRelease(
+  type: 'album' | 'track',
+  title: string,
+  artist?: string | null
+): Promise<SpotifyResult | null> {
+  const res = await fetchFn(`${FN}/spotify-resolve`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ type, title, artist: artist || undefined }),
+  });
+  if (!res.ok) throw new Error('Spotify resolve failed');
+  const data: any = await res.json();
+  const detail = data?.detail ?? null;
+  const source = detail || data;
+  if (!source?.id && !data?.id) return null;
+
+  if (type === 'album') {
+    const albumData = detail || source;
+    const tracks = mapSpotifyAlbumTracks(albumData);
+    const totalTracks = typeof albumData?.total_tracks === 'number' ? albumData.total_tracks : (tracks.length || null);
+    const albumResult: SpotifyResult = {
+      id: albumData.id ?? data.id,
+      providerId: albumData.id ?? data.id,
+      provider: 'spotify',
+      type: 'album',
+      title: albumData.name ?? title,
+      artist: albumData.artists?.[0]?.name ?? artist ?? '',
+      releaseDate: albumData.release_date ?? null,
+      spotifyUrl: albumData.external_urls?.spotify ?? data.url ?? null,
+      imageUrl: albumData.images?.[0]?.url ?? null,
+      albumType: (albumData.album_type ?? null) as any,
+      albumId: albumData.id ?? data.id ?? null,
+      artistId: albumData.artists?.[0]?.id ?? null,
+      isrc: null,
+      upc: albumData.external_ids?.upc ?? null,
+      totalTracks,
+      tracks,
+    };
+    if (tracks.length < 2) {
+      const webResult = await spotifyWebAlbumLookup(albumResult.id, albumResult).catch(() => null);
+      if (webResult?.tracks?.length) return webResult;
+    }
+    return albumResult;
+  }
+
+  const trackData = detail || source;
+  return {
+    id: trackData.id ?? data.id,
+    providerId: trackData.id ?? data.id,
+    provider: 'spotify',
+    type: 'track',
+    title: trackData.name ?? title,
+    artist: trackData.artists?.[0]?.name ?? artist ?? '',
+    releaseDate: trackData.album?.release_date ?? null,
+    spotifyUrl: trackData.external_urls?.spotify ?? data.url ?? null,
+    imageUrl: trackData.album?.images?.[0]?.url ?? null,
+    albumId: trackData.album?.id ?? null,
+    artistId: trackData.artists?.[0]?.id ?? null,
+    isrc: trackData.external_ids?.isrc ?? null,
+    upc: trackData.album?.external_ids?.upc ?? null,
+    totalTracks: 1,
+  };
 }
 
 export async function spotifySearch(q: string, types: string = 'album,track,artist'): Promise<SpotifyResult[]> {
@@ -149,6 +368,7 @@ export async function spotifySearch(q: string, types: string = 'album,track,arti
       artistId: t.artists?.[0]?.id ?? null,
       isrc: t.external_ids?.isrc ?? null,
       popularity: t.popularity ?? 0,
+      totalTracks: 1,
     });
   }
   for (const a of data.albums?.items ?? []) {
@@ -165,6 +385,7 @@ export async function spotifySearch(q: string, types: string = 'album,track,arti
       isrc: null,
       upc: a.external_ids?.upc ?? null,
       popularity: a.popularity ?? 0,
+      totalTracks: typeof a.total_tracks === 'number' ? a.total_tracks : null,
     });
   }
   for (const ar of data.artists?.items ?? []) {

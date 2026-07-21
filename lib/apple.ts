@@ -1,5 +1,6 @@
 // app/lib/apple.ts
 // Tiny wrapper around the iTunes Search/Lookup API for our needs.
+import { type ReleaseTrack } from './releaseModel';
 
 const ITUNES = "https://itunes.apple.com";
 
@@ -44,6 +45,7 @@ export type AppleAlbum = {
   artistId: number;
   releaseDate?: string;
   artworkUrl: string; // normalized to 100px URL
+  trackCount?: number | null;
 };
 
 // Provide releaseType for compatibility (album vs ep)
@@ -201,7 +203,27 @@ export async function fetchCollectionById(collectionId: number): Promise<AppleAl
     artistId: r.artistId,
     releaseDate: r.releaseDate,
     artworkUrl: normalizeArt(r.artworkUrl100),
+    trackCount: typeof r.trackCount === 'number' ? r.trackCount : null,
   };
+}
+
+/** Lookup the songs contained by a collection in provider order */
+export async function fetchCollectionTracksById(collectionId: number): Promise<ReleaseTrack[]> {
+  const url = `${ITUNES}/lookup?id=${collectionId}&entity=song&limit=200`;
+  const data = await fetchJSON<{ results: any[] }>(url);
+  return (data.results ?? [])
+    .filter((r) => r.wrapperType === 'track')
+    .map((r) => ({
+      id: r.trackId ? String(r.trackId) : null,
+      provider: 'apple' as const,
+      providerId: r.trackId ? String(r.trackId) : null,
+      title: r.trackName,
+      artist: r.artistName ?? null,
+      trackNumber: typeof r.trackNumber === 'number' ? r.trackNumber : null,
+      durationMs: typeof r.trackTimeMillis === 'number' ? r.trackTimeMillis : null,
+      spotifyUrl: null,
+      appleUrl: r.trackId ? buildTrackInAlbumUrl(r.trackId, r.trackName, collectionId, r.collectionName ?? 'album') : null,
+    }));
 }
 
 // Compatibility helpers expected by app/artist code
@@ -233,6 +255,7 @@ export async function fetchAlbumsByType(
       artistId: r.artistId,
       releaseDate: r.releaseDate,
       artworkUrl: normalizeArt(r.artworkUrl100),
+      trackCount: typeof r.trackCount === 'number' ? r.trackCount : null,
     })) as AppleAlbum[];
 
   if (type === "ep") {
@@ -259,5 +282,6 @@ export async function fetchAllAlbums(artistId: number): Promise<AppleAlbum[]> {
       artistId: r.artistId,
       releaseDate: r.releaseDate,
       artworkUrl: normalizeArt(r.artworkUrl100),
+      trackCount: typeof r.trackCount === 'number' ? r.trackCount : null,
     }));
 }

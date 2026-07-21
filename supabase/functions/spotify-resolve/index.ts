@@ -84,6 +84,38 @@ async function searchOnce(q: string, type: 'track'|'album', limit = 5) {
   return type === 'track' ? json.tracks?.items ?? [] : json.albums?.items ?? [];
 }
 
+async function fetchSpotifyDetail(id: string, type: 'track' | 'album') {
+  const url = new URL(`https://api.spotify.com/v1/${type}s/${id}`);
+  if (MARKET) url.searchParams.set('market', MARKET);
+  const res = await fetch(url.toString(), {
+    headers: { Authorization: `Bearer ${await getAppToken()}` },
+  });
+  const text = await res.text().catch(() => '');
+  if (!res.ok) return { detail: null, error: { status: res.status, head: text.slice(0, 80) } };
+  try {
+    return { detail: JSON.parse(text), error: null };
+  } catch {
+    return { detail: null, error: { status: res.status, head: text.slice(0, 80) } };
+  }
+}
+
+async function fetchSpotifyAlbumTracks(id: string) {
+  const url = new URL(`https://api.spotify.com/v1/albums/${id}/tracks`);
+  if (MARKET) url.searchParams.set('market', MARKET);
+  url.searchParams.set('limit', '50');
+  const res = await fetch(url.toString(), {
+    headers: { Authorization: `Bearer ${await getAppToken()}` },
+  });
+  const text = await res.text().catch(() => '');
+  if (!res.ok) return { items: [], error: { status: res.status, head: text.slice(0, 80) } };
+  try {
+    const json = JSON.parse(text);
+    return { items: Array.isArray(json?.items) ? json.items : [], error: null };
+  } catch {
+    return { items: [], error: { status: res.status, head: text.slice(0, 80) } };
+  }
+}
+
 function stripDecorations(t: string) {
   return t.replace(/\s*-\s*(single|ep|deluxe|expanded|clean|explicit)\b.*$/i, '')
           .replace(/\s*\(.*?\)\s*$/g, '')
@@ -136,7 +168,17 @@ Deno.serve(async (req) => {
       ? `https://open.spotify.com/track/${id}`
       : `https://open.spotify.com/album/${id}`;
 
-    return Response.json({ id, url: urlOut }, { status: 200 });
+    const detailResult = await fetchSpotifyDetail(id, type).catch((error) => ({ detail: null, error: { status: null, head: String(error?.message ?? error).slice(0, 80) } }));
+    let detail = detailResult.detail;
+    if (type === 'album' && !detail) {
+      const tracksResult = await fetchSpotifyAlbumTracks(id).catch((error) => ({ items: [], error: { status: null, head: String(error?.message ?? error).slice(0, 80) } }));
+      detail = {
+        ...best,
+        external_urls: best.external_urls ?? { spotify: urlOut },
+        tracks: { items: tracksResult.items },
+      };
+    }
+    return Response.json({ id, url: urlOut, detail }, { status: 200 });
   } catch (err: any) {
     return Response.json({ error: String(err?.message ?? err) }, { status: 500 });
   }

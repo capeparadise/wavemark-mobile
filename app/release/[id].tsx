@@ -2,19 +2,20 @@ import { router, useLocalSearchParams } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { LinearGradient } from 'expo-linear-gradient';
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { ActivityIndicator, Alert, FlatList, Image, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Image, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import GlassCard from '../../components/GlassCard';
 import { formatDate } from '../../lib/date';
 import { addToListFromSearch, getDefaultPlayer, openByDefaultPlayer, type ListenPlayer, type ListenRow } from '../../lib/listen';
 import { type SimpleAlbum } from '../../lib/recommend';
-import { parseSpotifyUrlOrId, spotifyLookup, spotifySearch, type SpotifyResult } from '../../lib/spotify';
-import { buildAlbumUrl, buildTrackUrl, fetchAllAlbums, fetchCollectionById, fetchTrackById } from '../../lib/apple';
+import { parseSpotifyUrlOrId, spotifyLookup, spotifyResolveRelease, spotifySearch, type SpotifyResult } from '../../lib/spotify';
+import { buildAlbumUrl, buildTrackUrl, fetchAllAlbums, fetchCollectionById, fetchCollectionTracksById, fetchTrackById } from '../../lib/apple';
 import { artistAlbums } from '../../lib/spotifyArtist';
 import { supabase } from '../../lib/supabase';
 import { openArtist } from '../../lib/openArtist';
 import { useTheme } from '../../theme/useTheme';
 import { goToRelease } from '../../lib/navigation';
+import { normalizeReleasePresentationType, parseTrackCount, releasePresentationLabel, type ReleasePresentationType, type ReleaseTrack } from '../../lib/releaseModel';
 
 export const options = { title: 'Release', headerShown: false };
 
@@ -26,7 +27,9 @@ type ReleaseDetails = {
   artistName?: string | null;
   artistId?: string | null;
   releaseDate?: string | null;
-  releaseType?: 'album' | 'single' | 'ep' | 'track' | 'compilation' | null;
+  releaseType?: ReleasePresentationType | 'album' | 'ep' | 'track' | 'compilation' | null;
+  totalTracks?: number | null;
+  tracks?: ReleaseTrack[];
   artworkUrl?: string | null;
   spotifyUrl?: string | null;
   spotifyId?: string | null;
@@ -65,11 +68,12 @@ const releaseTimestamp = (value?: string | null) => {
   return Number.isNaN(timestamp) ? 0 : timestamp;
 };
 
-const releaseTypeLabel = (item: Pick<SimpleAlbum, 'title' | 'type'>) => {
-  const title = item.title || '';
-  if (item.type === 'ep' || /(^|\s)EP(\s|$)/i.test(title)) return 'EP';
-  if (item.type === 'single' || item.type === 'track' || / - Single$/i.test(title)) return 'SINGLE';
-  return 'ALBUM';
+const formatDuration = (durationMs?: number | null) => {
+  if (typeof durationMs !== 'number' || !Number.isFinite(durationMs) || durationMs <= 0) return null;
+  const totalSeconds = Math.round(durationMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
 };
 
 export default function ReleaseScreen() {
@@ -85,6 +89,7 @@ export default function ReleaseScreen() {
     artistId?: string;
     releaseDate?: string;
     preferredPlayer?: string;
+    totalTracks?: string;
   }>();
   const getParam = (v: string | string[] | undefined) => Array.isArray(v) ? v[0] : v;
   const releaseId = String(getParam(params.id) || '').trim();
@@ -97,6 +102,7 @@ export default function ReleaseScreen() {
   const typeParam = String(getParam(params.type) || '').trim();
   const releaseDateParam = String(getParam(params.releaseDate) || '').trim();
   const preferredPlayerParam = String(getParam(params.preferredPlayer) || '').trim();
+  const totalTracksParam = String(getParam(params.totalTracks) || '').trim();
   const paramKey = [
     releaseId,
     spotifyIdParam,
@@ -107,6 +113,7 @@ export default function ReleaseScreen() {
     typeParam,
     artistIdParam,
     releaseDateParam,
+    totalTracksParam,
   ].join('|');
   const lastParamKeyRef = React.useRef<string>('');
   const paramDetail = useMemo<ReleaseDetails | null>(() => {
@@ -118,9 +125,10 @@ export default function ReleaseScreen() {
     const type = (typeParam || '').toLowerCase();
     const artistId = artistIdParam || null;
     const releaseDate = releaseDateParam || null;
+    const totalTracks = parseTrackCount(totalTracksParam);
     if (!spotifyUrl && !spotifyId && !title && !artistName && !imageUrl) return null;
     const isTrack = type === 'track';
-    const releaseType = isTrack ? 'single' : (type ? (type as any) : null);
+    const releaseType = normalizeReleasePresentationType(totalTracks, isTrack ? 'single' : type);
     return {
       id: releaseId || String(spotifyId || ''),
       provider: 'spotify',
@@ -130,6 +138,8 @@ export default function ReleaseScreen() {
       artistId,
       releaseDate,
       releaseType,
+      totalTracks,
+      tracks: [],
       artworkUrl: imageUrl,
       spotifyUrl,
       spotifyId: spotifyId || null,
@@ -151,6 +161,7 @@ export default function ReleaseScreen() {
     typeParam,
     artistIdParam,
     releaseDateParam,
+    totalTracksParam,
   ]);
 
   const [release, setRelease] = useState<ReleaseDetails | null>(null);
@@ -161,6 +172,8 @@ export default function ReleaseScreen() {
   const [preferredPlayer, setPreferredPlayer] = useState<ListenPlayer>('spotify');
   const [moreByArtist, setMoreByArtist] = useState<SimpleAlbum[]>([]);
   const [moreByArtistLoading, setMoreByArtistLoading] = useState(false);
+  const [savedTrackIds, setSavedTrackIds] = useState<Set<string>>(new Set());
+  const [savingTrackIds, setSavingTrackIds] = useState<Set<string>>(new Set());
   const skeletonTiles = useMemo(() => Array.from({ length: 5 }, (_, i) => i), []);
   const lastMoreByKeyRef = React.useRef<string>('');
 
@@ -168,6 +181,7 @@ export default function ReleaseScreen() {
   const artistKey = String(release?.artistId || artistIdParam || '').trim();
   const artistNameKey = String(release?.artistName || artistNameParam || '').trim().toLowerCase();
   const moreByKey = artistKey || artistNameKey ? `${release?.provider || 'unknown'}:${artistKey || artistNameKey}:${releaseKey}` : '';
+  const releaseTracks = useMemo(() => release?.tracks ?? [], [release?.tracks]);
 
   const sameIds = useCallback((a: SimpleAlbum[], b: SimpleAlbum[]) => {
     if (a.length !== b.length) return false;
@@ -178,6 +192,16 @@ export default function ReleaseScreen() {
     }
     return true;
   }, []);
+
+  const trackProviderId = useCallback((track: ReleaseTrack) => {
+    return String(track.providerId || track.id || '').trim();
+  }, []);
+
+  const trackSaveKey = useCallback((track: ReleaseTrack) => {
+    const provider = track.provider === 'apple' ? 'apple' : 'spotify';
+    const providerId = trackProviderId(track);
+    return providerId ? `${provider}:${providerId}` : '';
+  }, [trackProviderId]);
 
   useEffect(() => {
     if (preferredPlayerParam === 'apple' || preferredPlayerParam === 'spotify') {
@@ -193,6 +217,65 @@ export default function ReleaseScreen() {
       Image.prefetch(url).catch(() => {});
     });
   }, [moreByArtist]);
+
+  useEffect(() => {
+    let active = true;
+    const loadSavedTracks = async () => {
+      const trackKeys = releaseTracks
+        .map((track) => ({ key: trackSaveKey(track), provider: track.provider === 'apple' ? 'apple' : 'spotify', providerId: trackProviderId(track) }))
+        .filter((item) => !!item.key && !!item.providerId);
+      if (!trackKeys.length) {
+        setSavedTrackIds(new Set());
+        return;
+      }
+      try {
+        const { data: auth } = await supabase.auth.getUser();
+        const user = auth?.user ?? null;
+        if (!user) {
+          if (active) setSavedTrackIds(new Set());
+          return;
+        }
+        const spotifyIds = trackKeys.filter((item) => item.provider === 'spotify').map((item) => item.providerId);
+        const appleIds = trackKeys.filter((item) => item.provider === 'apple').map((item) => item.providerId);
+        const found = new Set<string>();
+
+        if (spotifyIds.length) {
+          const { data } = await supabase
+            .from('listen_list')
+            .select('provider,provider_id,spotify_id')
+            .eq('user_id', user.id)
+            .eq('provider', 'spotify')
+            .in('provider_id', spotifyIds);
+          (data || []).forEach((row: any) => {
+            const providerId = String(row.provider_id || row.spotify_id || '').trim();
+            if (providerId) found.add(`spotify:${providerId}`);
+          });
+        }
+
+        if (appleIds.length) {
+          const { data } = await supabase
+            .from('listen_list')
+            .select('provider,provider_id,apple_id,apple_track_id')
+            .eq('user_id', user.id)
+            .eq('provider', 'apple')
+            .in('provider_id', appleIds);
+          (data || []).forEach((row: any) => {
+            const providerId = String(row.provider_id || row.apple_track_id || row.apple_id || '').trim();
+            if (providerId) found.add(`apple:${providerId}`);
+          });
+        }
+
+        if (active) setSavedTrackIds(found);
+      } catch {
+        if (active) setSavedTrackIds(new Set());
+      }
+    };
+
+    loadSavedTracks();
+    return () => {
+      active = false;
+    };
+  }, [releaseTracks, trackProviderId, trackSaveKey]);
 
   useEffect(() => {
     if (!paramDetail) return;
@@ -222,6 +305,7 @@ export default function ReleaseScreen() {
       const mapListenRow = (row: any): ReleaseDetails => {
         const provider: 'spotify' | 'apple' = row.provider === 'apple' || (!!row.apple_url && !row.spotify_url) ? 'apple' : 'spotify';
         const itemType = row.item_type === 'album' ? 'album' : 'track';
+        const releaseType = normalizeReleasePresentationType(null, itemType === 'track' ? 'single' : 'project');
         return {
           id: String(row.id || releaseId),
           provider,
@@ -230,7 +314,9 @@ export default function ReleaseScreen() {
           artistName: row.artist_name ?? null,
           artistId: row.artist_id ?? null,
           releaseDate: row.release_date ?? null,
-          releaseType: row.item_type === 'album' ? 'album' : 'single',
+          releaseType,
+          totalTracks: null,
+          tracks: [],
           artworkUrl: row.artwork_url ?? null,
           spotifyUrl: row.spotify_url ?? null,
           spotifyId: row.spotify_id ?? null,
@@ -274,8 +360,35 @@ export default function ReleaseScreen() {
         }
       } catch {}
 
-      if (!detail) {
-        const parsed = parseSpotifyUrlOrId(paramDetail?.spotifyUrl || paramDetail?.spotifyId || releaseId);
+      if (!detail || (detail.provider === 'spotify' && detail.itemType === 'album')) {
+        const spotifyInput = detail?.spotifyUrl || detail?.spotifyId || detail?.providerId || paramDetail?.spotifyUrl || paramDetail?.spotifyId || releaseId;
+        const parsed = parseSpotifyUrlOrId(String(spotifyInput || ''));
+        const applySpotifyResult = (r: SpotifyResult, currentDetail: ReleaseDetails | null): ReleaseDetails => {
+          const totalTracks = parseTrackCount(r.totalTracks) ?? parseTrackCount(r.tracks?.length);
+          const releaseType = normalizeReleasePresentationType(totalTracks, r.type === 'track' ? 'single' : r.albumType);
+          return {
+            id: currentDetail?.id || releaseId,
+            provider: 'spotify',
+            providerId: r.id,
+            title: r.title || 'Untitled',
+            artistName: r.artist ?? null,
+            artistId: r.artistId ?? null,
+            releaseDate: r.releaseDate ?? null,
+            releaseType,
+            totalTracks,
+            tracks: r.tracks ?? [],
+            artworkUrl: r.imageUrl ?? null,
+            spotifyUrl: r.spotifyUrl ?? null,
+            spotifyId: r.id,
+            appleUrl: null,
+            appleId: null,
+            appleTrackId: null,
+            appleAlbumId: null,
+            appleStorefront: null,
+            isrc: r.isrc ?? null,
+            itemType: r.type === 'track' ? 'track' : 'album',
+          };
+        };
         if (parsed) {
           try {
             let results = await spotifyLookup(parsed.id, parsed.lookupType);
@@ -284,37 +397,33 @@ export default function ReleaseScreen() {
             }
             const r = results?.[0];
             if (r) {
-              detail = {
-                id: releaseId,
-                provider: 'spotify',
-                providerId: r.id,
-                title: r.title || 'Untitled',
-                artistName: r.artist ?? null,
-                artistId: r.artistId ?? null,
-                releaseDate: r.releaseDate ?? null,
-                releaseType: r.albumType ?? (r.type === 'track' ? 'single' : 'album'),
-                artworkUrl: r.imageUrl ?? null,
-                spotifyUrl: r.spotifyUrl ?? null,
-                spotifyId: r.id,
-                appleUrl: null,
-                appleId: null,
-                appleTrackId: null,
-                appleAlbumId: null,
-                appleStorefront: null,
-                isrc: r.isrc ?? null,
-                itemType: r.type === 'track' ? 'track' : 'album',
-              };
+              detail = applySpotifyResult(r, detail);
             }
           } catch {}
         }
+        const shouldResolveAlbumTracks =
+          (!detail || (detail.provider === 'spotify' && detail.itemType === 'album' && (detail.tracks?.length ?? 0) < 2));
+        if (shouldResolveAlbumTracks) {
+          const resolveTitle = String(detail?.title || titleParam || '').trim();
+          const resolveArtist = String(detail?.artistName || artistNameParam || '').trim();
+          if (resolveTitle) {
+            try {
+              const resolved = await spotifyResolveRelease('album', resolveTitle, resolveArtist || undefined);
+              if (resolved) detail = applySpotifyResult(resolved, detail);
+            } catch {}
+          }
+        }
       }
 
-      if (!detail) {
-        const appleId = extractAppleId(releaseId);
+      if (!detail || (detail.provider === 'apple' && detail.itemType === 'album')) {
+        const appleId = extractAppleId(String(detail?.appleAlbumId || detail?.appleId || detail?.providerId || releaseId));
         if (appleId) {
           try {
             const album = await fetchCollectionById(appleId);
             if (album) {
+              const tracks = await fetchCollectionTracksById(album.collectionId).catch(() => []);
+              const totalTracks = parseTrackCount(album.trackCount) ?? parseTrackCount(tracks.length);
+              const releaseType = normalizeReleasePresentationType(totalTracks, 'project');
               detail = {
                 id: releaseId,
                 provider: 'apple',
@@ -323,7 +432,9 @@ export default function ReleaseScreen() {
                 artistName: album.artistName ?? null,
                 artistId: String(album.artistId),
                 releaseDate: album.releaseDate ?? null,
-                releaseType: 'album',
+                releaseType,
+                totalTracks,
+                tracks,
                 artworkUrl: album.artworkUrl ?? null,
                 spotifyUrl: null,
                 spotifyId: null,
@@ -348,6 +459,8 @@ export default function ReleaseScreen() {
                   artistId: String(track.artistId),
                   releaseDate: track.releaseDate ?? null,
                   releaseType: 'single',
+                  totalTracks: 1,
+                  tracks: [],
                   artworkUrl: track.artworkUrl ?? null,
                   spotifyUrl: null,
                   spotifyId: null,
@@ -370,24 +483,9 @@ export default function ReleaseScreen() {
       }
 
       if (!detail) {
-        detail = {
-          id: releaseId,
-          provider: 'unknown',
-          title: 'Release',
-          artistName: null,
-          releaseDate: null,
-          releaseType: null,
-          artworkUrl: null,
-          spotifyUrl: null,
-          spotifyId: null,
-          appleUrl: null,
-          appleId: null,
-          appleTrackId: null,
-          appleAlbumId: null,
-          appleStorefront: null,
-          isrc: null,
-          itemType: 'album',
-        };
+        setError('Could not load this release.');
+        if (!paramDetail) setLoading(false);
+        return;
       }
 
       if (!active) return;
@@ -441,7 +539,8 @@ export default function ReleaseScreen() {
           releaseDate: item.releaseDate ?? null,
           spotifyUrl: item.spotifyUrl ?? null,
           imageUrl: item.imageUrl ?? null,
-          type: item.type,
+          type: normalizeReleasePresentationType(item.totalTracks ?? null, item.type),
+          totalTracks: item.totalTracks ?? null,
         }));
       }
 
@@ -485,7 +584,8 @@ export default function ReleaseScreen() {
             releaseDate: album?.releaseDate ?? source.releaseDate ?? null,
             spotifyUrl: album?.spotifyUrl ?? source.spotifyUrl ?? null,
             imageUrl: album?.imageUrl ?? source.imageUrl ?? null,
-            type: album?.albumType === 'single' ? 'single' : 'album',
+            type: normalizeReleasePresentationType(album?.totalTracks ?? null, album?.albumType ?? source.type),
+            totalTracks: album?.totalTracks ?? null,
           } satisfies SimpleAlbum;
         }));
         nextItems = groupedItems.filter((item): item is SimpleAlbum => item != null);
@@ -501,7 +601,8 @@ export default function ReleaseScreen() {
             releaseDate: item.releaseDate ?? null,
             spotifyUrl: null,
             imageUrl: item.artworkUrl ?? null,
-            type: 'album' as const,
+            type: normalizeReleasePresentationType(item.trackCount ?? null, 'project'),
+            totalTracks: item.trackCount ?? null,
           }));
         }
       }
@@ -552,8 +653,7 @@ export default function ReleaseScreen() {
 
   const metaLine = useMemo(() => {
     if (!release) return null;
-    const type = release.releaseType === 'track' ? 'single' : release.releaseType;
-    const typeLabel = type ? String(type).toUpperCase() : null;
+    const typeLabel = release.releaseType ? releasePresentationLabel(release.releaseType) : null;
     const year = release.releaseDate ? String(release.releaseDate).slice(0, 4) : null;
     const parts = [typeLabel, year].filter(Boolean);
     return parts.length ? parts.join(' · ') : null;
@@ -584,6 +684,43 @@ export default function ReleaseScreen() {
       setAdding(false);
     }
   }, [adding, added, release]);
+
+  const onSaveTrack = useCallback(async (track: ReleaseTrack) => {
+    if (!release) return;
+    const key = trackSaveKey(track);
+    const providerId = trackProviderId(track);
+    if (!key || !providerId || savedTrackIds.has(key) || savingTrackIds.has(key)) return;
+
+    setSavingTrackIds((prev) => new Set(prev).add(key));
+    try {
+      const provider = track.provider === 'apple' ? 'apple' : 'spotify';
+      const spotifyUrl = provider === 'spotify'
+        ? (track.spotifyUrl || (providerId ? `https://open.spotify.com/track/${providerId}` : null))
+        : null;
+      const appleUrl = provider === 'apple' ? (track.appleUrl ?? null) : null;
+      const res = await addToListFromSearch({
+        type: 'track',
+        title: track.title,
+        artist: track.artist ?? release.artistName ?? null,
+        releaseDate: release.releaseDate ?? null,
+        spotifyUrl,
+        appleUrl,
+        artworkUrl: release.artworkUrl ?? null,
+        providerId,
+      });
+      if (res.ok) {
+        setSavedTrackIds((prev) => new Set(prev).add(key));
+      } else {
+        Alert.alert('Could not save track', res.message || 'Please try again.');
+      }
+    } finally {
+      setSavingTrackIds((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    }
+  }, [release, savedTrackIds, savingTrackIds, trackProviderId, trackSaveKey]);
 
   const onOpenExternal = useCallback(async () => {
     if (!release) return;
@@ -828,6 +965,77 @@ export default function ReleaseScreen() {
                 ) : null}
               </View>
 
+              {releaseTracks.length >= 2 ? (
+                <View style={{ marginTop: 30, paddingHorizontal: 20 }}>
+                  <Text style={{ fontSize: 19, fontWeight: '800', color: colors.text.inverted, marginBottom: 12 }}>
+                    Tracklist
+                  </Text>
+                  <GlassCard style={{ paddingVertical: 6, paddingHorizontal: 0, borderRadius: 20 }}>
+                    {releaseTracks.map((track, index) => {
+                      const duration = formatDuration(track.durationMs);
+                      const trackNumber = track.trackNumber ?? index + 1;
+                      const saveKey = trackSaveKey(track);
+                      const trackSaved = !!saveKey && savedTrackIds.has(saveKey);
+                      const trackSaving = !!saveKey && savingTrackIds.has(saveKey);
+                      return (
+                        <View
+                          key={`${track.id || track.title}-${index}`}
+                          style={{
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            gap: 12,
+                            paddingHorizontal: 14,
+                            paddingVertical: 10,
+                            borderTopWidth: index === 0 ? 0 : StyleSheet.hairlineWidth,
+                            borderTopColor: colors.border.subtle,
+                          }}
+                        >
+                          <Text style={{ width: 24, textAlign: 'right', color: colors.text.muted, fontWeight: '800', fontSize: 12 }}>
+                            {trackNumber}
+                          </Text>
+                          <View style={{ flex: 1, minWidth: 0 }}>
+                            <Text style={{ color: colors.text.secondary, fontWeight: '800' }} numberOfLines={1}>
+                              {track.title}
+                            </Text>
+                            {track.artist ? (
+                              <Text style={{ color: colors.text.muted, marginTop: 3, fontSize: 12 }} numberOfLines={1}>
+                                {track.artist}
+                              </Text>
+                            ) : null}
+                          </View>
+                          {duration ? (
+                            <Text style={{ color: colors.text.muted, fontSize: 12, fontWeight: '700' }}>
+                              {duration}
+                            </Text>
+                          ) : null}
+                          <Pressable
+                            onPress={() => onSaveTrack(track)}
+                            disabled={!saveKey || trackSaved || trackSaving}
+                            hitSlop={8}
+                            style={({ pressed }) => ({
+                              minWidth: 58,
+                              paddingHorizontal: 10,
+                              paddingVertical: 7,
+                              borderRadius: 999,
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              backgroundColor: trackSaved ? colors.bg.muted : `${colors.bg.muted}cc`,
+                              borderWidth: 1,
+                              borderColor: `${colors.border.subtle}66`,
+                              opacity: pressed ? 0.9 : 1,
+                            })}
+                          >
+                            <Text style={{ color: colors.text.secondary, fontSize: 12, fontWeight: '800' }}>
+                              {trackSaved ? 'Saved' : trackSaving ? 'Saving' : 'Save'}
+                            </Text>
+                          </Pressable>
+                        </View>
+                      );
+                    })}
+                  </GlassCard>
+                </View>
+              ) : null}
+
               <View style={{ marginTop: 34, paddingHorizontal: 20 }}>
                 <Text style={{ fontSize: 19, fontWeight: '800', color: colors.text.inverted, marginBottom: 12 }}>
                   {moreByLabel}
@@ -858,12 +1066,14 @@ export default function ReleaseScreen() {
                         <Pressable
                           onPress={() =>
                             goToRelease(item.id, {
+                              spotifyId: item.id ?? null,
                               title: item.title,
                               artistName: item.artist,
                               imageUrl: item.imageUrl ?? null,
                               artistId: item.artistId ?? null,
                               releaseDate: item.releaseDate ?? null,
                               type: item.type ?? null,
+                              totalTracks: item.totalTracks ?? null,
                               spotifyUrl: item.spotifyUrl ?? null,
                             })
                           }
@@ -890,7 +1100,7 @@ export default function ReleaseScreen() {
                             </Text>
                             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 }}>
                               <Text style={{ color: colors.text.muted, fontSize: 10, fontWeight: '900', letterSpacing: 0.8 }} numberOfLines={1}>
-                                {releaseTypeLabel(item)}
+                                {releasePresentationLabel(item.type)}
                               </Text>
                               {item.releaseDate ? (
                                 <Text style={{ color: colors.text.muted, fontSize: 12, flexShrink: 1 }} numberOfLines={1}>

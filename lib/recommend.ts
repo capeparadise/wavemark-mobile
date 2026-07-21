@@ -13,7 +13,8 @@ export type SimpleAlbum = {
   releaseDate?: string | null;
   spotifyUrl?: string | null;
   imageUrl?: string | null;
-  type?: 'album' | 'single' | 'ep' | 'track';
+  type?: 'album' | 'single' | 'ep' | 'track' | 'project';
+  totalTracks?: number | null;
 };
 
 const GENRE_BUCKETS: Record<string, string[]> = {

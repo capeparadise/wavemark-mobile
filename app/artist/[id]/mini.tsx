@@ -11,6 +11,7 @@ import { H } from '../../../components/haptics';
 import { addToListFromSearch } from '../../../lib/listen';
 import { formatDate } from '../../../lib/date';
 import { goToRelease } from '../../../lib/navigation';
+import { normalizeReleasePresentationType, releasePresentationLabel, type ReleasePresentationType } from '../../../lib/releaseModel';
 import { getMarket, spotifyLookup, spotifySearch } from '../../../lib/spotify';
 import { artistAlbums, artistSearch, fetchArtistDetails } from '../../../lib/spotifyArtist';
 import { supabase } from '../../../lib/supabase';
@@ -44,7 +45,7 @@ export default function ArtistMiniScreen() {
   // Only store confirmed artist profile images. V2 adds a kind flag to avoid album art leaks.
   const IMAGE_CACHE_KEY_V2 = 'artistImagesCacheV2';
   const IMAGE_CACHE_KEY_V1 = 'artistImagesCacheV1';
-  const [filter, setFilter] = useState<'all' | 'single' | 'album'>('all');
+  const [filter, setFilter] = useState<'all' | 'single' | 'project'>('all');
   const fadeIn = useRef(new Animated.Value(0)).current;
   const scrollY = useRef(new Animated.Value(0)).current;
 
@@ -215,6 +216,7 @@ export default function ArtistMiniScreen() {
                   spotifyUrl: a.spotifyUrl ?? null,
                   imageUrl: a.imageUrl ?? null,
                   type: (a.albumType === 'single' ? 'single' : 'album') as any,
+                  totalTracks: a.totalTracks ?? null,
                 }));
             }
           } catch {}
@@ -249,6 +251,7 @@ export default function ArtistMiniScreen() {
                 imageUrl: a.imageUrl ?? null,
                 type: fallbackType,
                 albumGroup: fallbackType,
+                totalTracks: a.totalTracks ?? null,
               } as any);
               return true;
             };
@@ -265,6 +268,7 @@ export default function ArtistMiniScreen() {
                 imageUrl: highlightImageUrl ? String(highlightImageUrl) : null,
                 type,
                 albumGroup: type,
+                totalTracks: null,
               } as any);
               return true;
             };
@@ -348,7 +352,19 @@ export default function ArtistMiniScreen() {
   }
 
   // Render only this artist's albums/singles (no per-track rows)
-  const merged: Array<{ kind: 'album'|'track'; id: string; title: string; artist: string; imageUrl?: string | null; releaseDate?: string | null; spotifyUrl?: string | null; albumGroup?: string | null; badge?: 'single'|'album'|'ep'|'feature' }> = [];
+  const merged: Array<{
+    kind: 'album'|'track';
+    id: string;
+    title: string;
+    artist: string;
+    imageUrl?: string | null;
+    releaseDate?: string | null;
+    spotifyUrl?: string | null;
+    albumGroup?: string | null;
+    badge?: ReleasePresentationType | 'feature';
+    presentationType: ReleasePresentationType;
+    totalTracks?: number | null;
+  }> = [];
   const normDate = (s?: string | null) => {
     if (!s) return '1970-01-01';
     let x = String(s);
@@ -358,8 +374,7 @@ export default function ArtistMiniScreen() {
   };
   const normTitle = (s?: string | null) => String(s ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
   const pickWeight = (badge?: string) => {
-    if (badge === 'album') return 30;
-    if (badge === 'ep') return 20;
+    if (badge === 'project') return 30;
     if (badge === 'single') return 10;
     if (badge === 'feature') return 5;
     return 0;
@@ -368,13 +383,12 @@ export default function ArtistMiniScreen() {
   for (const a of albums) {
     const albumGroup = (a as any)?.albumGroup ?? null;
     const type = (a as any)?.type ?? null;
+    const totalTracks = typeof (a as any)?.totalTracks === 'number' ? (a as any).totalTracks : null;
     const isFeature = String(albumGroup || '').toLowerCase() === 'appears_on';
-    const badge: any =
-      isFeature ? 'feature' :
-      (String(type).toLowerCase() === 'ep' ? 'ep' :
-        ((String(albumGroup).toLowerCase() === 'single' || String(type).toLowerCase() === 'single') ? 'single' : 'album'));
-    const kind: 'album' | 'track' = badge === 'single' ? 'track' : 'album';
-    const item = { kind, id: a.id, title: a.title, artist: a.artist, imageUrl: a.imageUrl, releaseDate: a.releaseDate, spotifyUrl: a.spotifyUrl, albumGroup, badge };
+    const presentationType = normalizeReleasePresentationType(totalTracks, type);
+    const badge = isFeature ? 'feature' : presentationType;
+    const kind: 'album' | 'track' = presentationType === 'single' ? 'track' : 'album';
+    const item = { kind, id: a.id, title: a.title, artist: a.artist, imageUrl: a.imageUrl, releaseDate: a.releaseDate, spotifyUrl: a.spotifyUrl, albumGroup, badge, presentationType, totalTracks };
     const gk = `${normTitle(item.title)}__${normDate(item.releaseDate)}`;
     const score = Date.parse(normDate(item.releaseDate)) + pickWeight(item.badge);
     const prev = bestByKey.get(gk);
@@ -404,8 +418,8 @@ export default function ArtistMiniScreen() {
   const followersText = followersLabel(artistMeta?.followers);
 
   const filtered = merged.filter((m) => {
-    if (filter === 'single') return m.kind === 'track';
-    if (filter === 'album') return m.kind === 'album';
+    if (filter === 'single') return m.presentationType === 'single';
+    if (filter === 'project') return m.presentationType === 'project';
     return true;
   });
 
@@ -503,7 +517,7 @@ export default function ArtistMiniScreen() {
               {([
                 { key: 'all' as const, label: 'All' },
                 { key: 'single' as const, label: 'Singles' },
-                { key: 'album' as const, label: 'Albums' },
+                { key: 'project' as const, label: 'Projects' },
               ]).map((opt) => {
                 const selected = filter === opt.key;
                 return (
@@ -538,8 +552,7 @@ export default function ArtistMiniScreen() {
             const label = tagLabel(stat, isAdded);
             const badgeLabel =
               item.badge === 'feature' ? 'FEATURE' :
-              item.badge === 'ep' ? 'EP' :
-              item.kind === 'track' ? 'SINGLE' : 'ALBUM';
+              releasePresentationLabel(item.presentationType);
             const canSave = label === 'Save';
             const actionBg = stat?.done
               ? `${colors.accent.success}22`
@@ -554,7 +567,19 @@ export default function ArtistMiniScreen() {
                 <Pressable
                   onPress={() => {
                     const releaseId = spotifyKey(item.id, item.spotifyUrl) || item.id;
-                    if (releaseId) goToRelease(releaseId);
+                    if (releaseId) {
+                      goToRelease(releaseId, {
+                        spotifyId: item.id,
+                        spotifyUrl: item.spotifyUrl ?? null,
+                        title: item.title,
+                        artistName: item.artist,
+                        imageUrl: item.imageUrl ?? null,
+                        artistId,
+                        releaseDate: item.releaseDate ?? null,
+                        type: item.presentationType,
+                        totalTracks: item.totalTracks ?? null,
+                      });
+                    }
                   }}
                   style={({ pressed }) => ({
                     flexDirection: 'row',
