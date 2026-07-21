@@ -18,6 +18,9 @@
       "bundleIdentifier": "com.capeparadise.rppl",
       "usesAppleSignIn": true,
       "supportsTablet": true,
+      "config": {
+        "usesNonExemptEncryption": false
+      },
       "infoPlist": {
         "LSApplicationQueriesSchemes": [
           "music",
