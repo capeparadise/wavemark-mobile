@@ -90,6 +90,9 @@ export default function ReleaseScreen() {
     releaseDate?: string;
     preferredPlayer?: string;
     totalTracks?: string;
+    provider?: string;
+    appleId?: string;
+    appleUrl?: string;
   }>();
   const getParam = (v: string | string[] | undefined) => Array.isArray(v) ? v[0] : v;
   const releaseId = String(getParam(params.id) || '').trim();
@@ -103,10 +106,16 @@ export default function ReleaseScreen() {
   const releaseDateParam = String(getParam(params.releaseDate) || '').trim();
   const preferredPlayerParam = String(getParam(params.preferredPlayer) || '').trim();
   const totalTracksParam = String(getParam(params.totalTracks) || '').trim();
+  const providerParam = String(getParam(params.provider) || '').trim();
+  const appleIdParam = String(getParam(params.appleId) || '').trim();
+  const appleUrlParam = String(getParam(params.appleUrl) || '').trim();
   const paramKey = [
     releaseId,
     spotifyIdParam,
     spotifyUrlParam,
+    providerParam,
+    appleIdParam,
+    appleUrlParam,
     titleParam,
     artistNameParam,
     imageUrlParam,
@@ -119,6 +128,8 @@ export default function ReleaseScreen() {
   const paramDetail = useMemo<ReleaseDetails | null>(() => {
     const spotifyUrl = spotifyUrlParam || null;
     const spotifyId = spotifyIdParam || null;
+    const appleUrl = appleUrlParam || null;
+    const appleId = appleIdParam || null;
     const title = titleParam || null;
     const artistName = artistNameParam || null;
     const imageUrl = imageUrlParam || null;
@@ -126,13 +137,17 @@ export default function ReleaseScreen() {
     const artistId = artistIdParam || null;
     const releaseDate = releaseDateParam || null;
     const totalTracks = parseTrackCount(totalTracksParam);
-    if (!spotifyUrl && !spotifyId && !title && !artistName && !imageUrl) return null;
-    const isTrack = type === 'track';
+    const provider: 'spotify' | 'apple' = providerParam === 'apple' || !!appleUrl || !!appleId ? 'apple' : 'spotify';
+    if (!spotifyUrl && !spotifyId && !appleUrl && !appleId && !title && !artistName && !imageUrl) return null;
+    const isTrack = type === 'track' || type === 'single';
     const releaseType = normalizeReleasePresentationType(totalTracks, isTrack ? 'single' : type);
+    const providerId = provider === 'apple'
+      ? appleId || releaseId || null
+      : spotifyId || releaseId || null;
     return {
-      id: releaseId || String(spotifyId || ''),
-      provider: 'spotify',
-      providerId: spotifyId || releaseId || null,
+      id: releaseId || String(providerId || ''),
+      provider,
+      providerId,
       title: title || 'Release',
       artistName,
       artistId,
@@ -141,12 +156,12 @@ export default function ReleaseScreen() {
       totalTracks,
       tracks: [],
       artworkUrl: imageUrl,
-      spotifyUrl,
-      spotifyId: spotifyId || null,
-      appleUrl: null,
-      appleId: null,
-      appleTrackId: null,
-      appleAlbumId: null,
+      spotifyUrl: provider === 'spotify' ? spotifyUrl : null,
+      spotifyId: provider === 'spotify' ? spotifyId || null : null,
+      appleUrl: provider === 'apple' ? appleUrl : null,
+      appleId: provider === 'apple' ? appleId || releaseId || null : null,
+      appleTrackId: provider === 'apple' && isTrack ? appleId || releaseId || null : null,
+      appleAlbumId: provider === 'apple' && !isTrack ? appleId || releaseId || null : null,
       appleStorefront: null,
       isrc: null,
       itemType: isTrack ? 'track' : 'album',
@@ -155,6 +170,9 @@ export default function ReleaseScreen() {
     releaseId,
     spotifyIdParam,
     spotifyUrlParam,
+    providerParam,
+    appleIdParam,
+    appleUrlParam,
     titleParam,
     artistNameParam,
     imageUrlParam,

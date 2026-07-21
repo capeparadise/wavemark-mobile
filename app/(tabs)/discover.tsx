@@ -2337,38 +2337,85 @@ export default function DiscoverTab() {
     const label = tagLabel(stat, isAdded);
     const artUrl = r.imageUrl || artistImageMap[r.id] || null;
     const releaseDateLabel = formatDate(r.releaseDate);
+    const provider = (r as any).provider === 'apple' ? 'apple' : 'spotify';
+    const externalUrl = provider === 'apple' ? ((r as any).appleUrl ?? null) : (r.spotifyUrl ?? null);
+    const releaseId = provider === 'apple'
+      ? String((r as any).appleId || (r as any).providerId || r.id || '').trim()
+      : String(spotifyKey(r.id, r.spotifyUrl) || r.providerId || r.id || '').trim();
+    const normalizedType = r.type === 'album' ? 'project' : 'single';
+    const openSearchRelease = () => {
+      if (r.type === 'artist') {
+        openArtist(r.id, { name: r.title });
+        return;
+      }
+      if (!releaseId) return;
+      goToRelease(releaseId, provider === 'apple'
+        ? {
+          provider,
+          appleId: (r as any).appleId ?? (r as any).providerId ?? r.id,
+          appleUrl: externalUrl,
+          title: r.title ?? '',
+          artistName: r.artist ?? '',
+          imageUrl: r.imageUrl ?? null,
+          type: normalizedType,
+          artistId: r.artistId ?? null,
+          releaseDate: r.releaseDate ?? null,
+          totalTracks: r.totalTracks ?? null,
+        }
+        : {
+          provider,
+          spotifyId: r.id,
+          spotifyUrl: externalUrl,
+          title: r.title ?? '',
+          artistName: r.artist ?? '',
+          imageUrl: r.imageUrl ?? null,
+          type: normalizedType,
+          artistId: r.artistId ?? null,
+          releaseDate: r.releaseDate ?? null,
+          totalTracks: r.totalTracks ?? null,
+          parentProjectId: r.type === 'track' ? r.albumId ?? null : null,
+        }
+      );
+    };
     return (
       <GlassCard asChild style={{ marginVertical: 4, marginHorizontal: 16, padding: 0 }}>
         <View style={{ paddingVertical: 10, paddingHorizontal: 6, opacity: 1 }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-            {(() => {
-              const thumb = artUrl ? (
-                <Image source={{ uri: artUrl }} style={{ width: 60, height: 60, borderRadius: 12, backgroundColor: colors.bg.muted }} />
-              ) : (
-                <View style={{ width: 60, height: 60, borderRadius: 12, backgroundColor: colors.bg.muted, alignItems: 'center', justifyContent: 'center' }}>
-                  <Text style={{ color: colors.text.muted, fontWeight: '800' }}>{(r.title || '?').slice(0,1)}</Text>
-                </View>
-              );
-              if (r.type !== 'artist') return thumb;
-              return (
-                <Pressable
-                  onPress={() => openArtist(r.id, { name: r.title })}
-                  hitSlop={10}
-                  style={({ pressed }) => ({ opacity: pressed ? 0.9 : 1 })}
-                >
-                  {thumb}
-                </Pressable>
-              );
-            })()}
-            <View style={{ flex: 1, paddingRight: 12 }}>
-              <Text style={{ fontSize: 16, fontWeight: '500', color: colors.text.secondary }} numberOfLines={1}>{r.title}</Text>
-              <Text style={{ color: colors.text.muted, marginTop: 2 }} numberOfLines={1}>{r.artist ?? typeLabel}</Text>
-              {!!releaseDateLabel && (
-                <Text style={{ color: presave ? colors.accent.success : colors.text.muted, marginTop: 2 }}>
-                  {presave ? `Presave · ${releaseDateLabel}` : `Released · ${releaseDateLabel}`}
-                </Text>
-              )}
-            </View>
+            <Pressable
+              onPress={openSearchRelease}
+              style={({ pressed }) => ({
+                flex: 1,
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 12,
+                opacity: pressed ? 0.9 : 1,
+              })}
+            >
+              {(() => {
+                const thumb = artUrl ? (
+                  <Image source={{ uri: artUrl }} style={{ width: 60, height: 60, borderRadius: 12, backgroundColor: colors.bg.muted }} />
+                ) : (
+                  <View style={{ width: 60, height: 60, borderRadius: 12, backgroundColor: colors.bg.muted, alignItems: 'center', justifyContent: 'center' }}>
+                    <Text style={{ color: colors.text.muted, fontWeight: '800' }}>{(r.title || '?').slice(0,1)}</Text>
+                  </View>
+                );
+                if (r.type !== 'artist') return thumb;
+                return (
+                  <View>
+                    {thumb}
+                  </View>
+                );
+              })()}
+              <View style={{ flex: 1, paddingRight: 12 }}>
+                <Text style={{ fontSize: 16, fontWeight: '500', color: colors.text.secondary }} numberOfLines={1}>{r.title}</Text>
+                <Text style={{ color: colors.text.muted, marginTop: 2 }} numberOfLines={1}>{r.artist ?? typeLabel}</Text>
+                {!!releaseDateLabel && (
+                  <Text style={{ color: presave ? colors.accent.success : colors.text.muted, marginTop: 2 }}>
+                    {presave ? `Presave · ${releaseDateLabel}` : `Released · ${releaseDateLabel}`}
+                  </Text>
+                )}
+              </View>
+            </Pressable>
             {r.type === 'artist' ? (
               <View style={{ alignItems: 'flex-end' }}>
                 <FollowButton artistId={r.id} artistName={r.title} />
@@ -2395,7 +2442,6 @@ export default function DiscoverTab() {
       </GlassCard>
     );
   };
-
   const renderItem = ({ item }: { item: Row }) => {
     if (item.kind === 'section-title') {
       return (
