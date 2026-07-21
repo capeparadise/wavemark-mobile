@@ -413,6 +413,24 @@ export default function ListenTab() {
       const toFetch = visibleRows.slice(0, 40); // cap to keep it light
       for (const r of toFetch) {
         const key = artKeyFor(r);
+        const persistedArtwork = typeof r.artwork_url === 'string' && r.artwork_url.trim()
+          ? r.artwork_url.trim()
+          : null;
+        if (persistedArtwork) {
+          if (!artMap[key]) {
+            setArtMap(prev => {
+              if (prev[key]) return prev;
+              const next = { ...prev, [key]: persistedArtwork };
+              try {
+                const store: any = {};
+                Object.entries(next).forEach(([k,v]) => { store[k] = { url: v, ts: Date.now() }; });
+                AsyncStorage.setItem(ART_CACHE_KEY, JSON.stringify(store)).catch(()=>{});
+              } catch {}
+              return next;
+            });
+          }
+          continue;
+        }
         if (artMap[key]) continue;
         if (artPending.current.has(key)) continue;
         artPending.current.add(key);
@@ -614,7 +632,10 @@ export default function ListenTab() {
                       {/* cover art */}
                       {(() => {
                         const key = artKeyFor(item);
-                        const url = artMap[key];
+                        const persistedArtwork = typeof item.artwork_url === 'string' && item.artwork_url.trim()
+                          ? item.artwork_url.trim()
+                          : null;
+                        const url = persistedArtwork || artMap[key];
                         const size = 54;
                         return (
                           <View style={{ width: size, height: size, borderRadius: 12, backgroundColor: colors.bg.muted, overflow: 'hidden' }}>

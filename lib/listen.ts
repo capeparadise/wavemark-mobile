@@ -473,6 +473,7 @@ export async function addToListFromSearch(input: {
   spotifyUrl?: string | null,
   imageUrl?: string | null,
   artworkUrl?: string | null,
+  artworkUrl100?: string | null,
   providerId?: string | null,
   isrc?: string | null,
   upc?: string | null,
@@ -608,6 +609,11 @@ export async function addToListFromSearch(input: {
 
   // Map UI "single" to DB-supported item_type "track"
   const dbItemType: 'track' | 'album' = input.type === 'album' ? 'album' : 'track';
+  const artworkUrl =
+    input.artworkUrl?.trim() ||
+    input.imageUrl?.trim() ||
+    input.artworkUrl100?.trim() ||
+    null;
 
   const payload = {
     user_id: user.id,
@@ -625,16 +631,18 @@ export async function addToListFromSearch(input: {
     spotify_id: spotifyId ?? null,
     release_date: input.releaseDate ?? null,
     upcoming,
-    artwork_url: input.artworkUrl ?? input.imageUrl ?? null,
+    artwork_url: artworkUrl,
   };
 
   const normalizeRow = (row: any) => row ? { ...row, rating_details: row.rating_details ?? null } : row;
+  const saveSelect = 'id, upcoming, rating, rating_details, done_at, artwork_url';
+  const saveSelectNoDetails = 'id, upcoming, rating, done_at, artwork_url';
 
   // If the item already exists for this user+provider+id, reuse it to avoid UNIQUE violations.
   try {
     const { data: existing, error: existingErr } = await supabase
       .from('listen_list')
-      .select('id, upcoming, rating, rating_details, done_at')
+      .select(saveSelect)
       .eq('user_id', user.id)
       .eq('provider', provider)
       .eq('provider_id', provider_id)
@@ -661,14 +669,14 @@ export async function addToListFromSearch(input: {
           .update({ done_at: null })
           .eq('id', existing.id)
           .eq('user_id', user.id)
-          .select('id, upcoming, rating, rating_details, done_at')
+          .select(saveSelect)
           .maybeSingle();
         if (updated) {
-          const normalized = normalizeRow(updated);
+          const normalized = normalizeRow({ ...updated, ...patch });
           return { ok: true, id: normalized.id, upcoming: normalized.upcoming ?? upcoming, message: 'Already on your list', row: normalized };
         }
       }
-      const normalized = normalizeRow(existing);
+      const normalized = normalizeRow({ ...existing, ...patch });
       return { ok: true, id: normalized.id, upcoming: normalized.upcoming ?? upcoming, message: 'Already on your list', row: normalized };
     }
   } catch {}
@@ -676,14 +684,14 @@ export async function addToListFromSearch(input: {
   let { data, error } = await supabase
     .from('listen_list')
     .insert(payload)
-    .select('id, upcoming, rating, rating_details, done_at')
+    .select(saveSelect)
     .single();
 
   if (error && ((error as any)?.code === '42703' || (error as any)?.code === 'PGRST204')) {
     const fallback = await supabase
       .from('listen_list')
       .insert(payload)
-      .select('id, upcoming, rating, done_at')
+      .select(saveSelectNoDetails)
       .single();
     data = fallback.data ? normalizeRow(fallback.data) : null;
     error = fallback.error;
@@ -694,13 +702,12 @@ export async function addToListFromSearch(input: {
     if ((error as any)?.code === '23505') {
       const { data: existing } = await supabase
         .from('listen_list')
-        .select('id, upcoming, rating, rating_details, done_at')
+        .select(saveSelect)
         .eq('user_id', user.id)
         .eq('provider', provider)
         .eq('provider_id', provider_id)
         .maybeSingle();
       if (existing?.id) {
-        const normalized = normalizeRow(existing);
         const patch: Record<string, any> = {};
         if (!(existing as any)?.artwork_url && payload.artwork_url) patch.artwork_url = payload.artwork_url;
         if ((!(existing as any)?.artist_name || (existing as any).artist_name === 'Unknown artist') && payload.artist_name) patch.artist_name = payload.artist_name;
@@ -709,13 +716,14 @@ export async function addToListFromSearch(input: {
         if (Object.keys(patch).length) {
           try { await supabase.from('listen_list').update(patch).eq('id', existing.id).eq('user_id', user.id); } catch {}
         }
+        const normalized = normalizeRow({ ...existing, ...patch });
         return { ok: true, id: normalized.id, upcoming: normalized.upcoming ?? upcoming, message: 'Already on your list', row: normalized };
       }
       // Retry select without rating_details if column missing
       if ((error as any)?.code === '42703' || (error as any)?.code === 'PGRST204') {
         const { data: existingNoDetails } = await supabase
           .from('listen_list')
-          .select('id, upcoming, rating, done_at')
+          .select(saveSelectNoDetails)
           .eq('user_id', user.id)
           .eq('provider', provider)
           .eq('provider_id', provider_id)
@@ -729,8 +737,6 @@ export async function addToListFromSearch(input: {
     return { ok: false, message: error.message };
   }
   const normalized = normalizeRow(data);
-  // eslint-disable-next-line no-console
-  console.log('[listen] addToListFromSearch', { id: normalized?.id, provider, provider_id, artwork_url: payload.artwork_url });
   return { ok: true, id: (normalized as any)?.id, upcoming: (normalized as any)?.upcoming ?? upcoming, row: normalized };
 }
 
