@@ -21,6 +21,14 @@ import { getNewReleasesByGenre, getTopPicks, getWesternNewReleases } from '../..
 import { FN_BASE as FN, fetchFn } from '../../lib/fnBase';
 import { getMarket, parseSpotifyUrlOrId, spotifyLookup, spotifySearch, type SpotifyResult } from '../../lib/spotify';
 import { artistAlbums, artistTopTracks, fetchArtistDetails } from '../../lib/spotifyArtist';
+import {
+  DISCOVER_RELEASE_WINDOW_DAYS,
+  discoverReleaseDateTimestamp,
+  discoverWindowCutoff,
+  filterDiscoverEligibleReleases,
+  isDiscoverReleaseDateEligible,
+  normalizeDiscoverReleaseDate,
+} from '../../lib/discoverFreshness';
 import { supabase } from '../../lib/supabase';
 import { useOffline } from '../../components/useOffline';
 import { useTheme } from '../../theme/useTheme';
@@ -52,13 +60,20 @@ const SCREEN_WIDTH = Dimensions.get('window').width;
 type DiscoverViewMode = 'mixed' | 'pills';
 const DISCOVER_VIEW_MODE_KEY = 'discover.viewMode';
 const DISCOVER_MARKETS = ['US', 'GB'];
-const DISCOVER_GENRE_DAYS = 30;
-const DISCOVER_TOP_PICKS_DAYS = 30;
-const UPDATES_DAYS = 14;
+const DISCOVER_GENRE_DAYS = DISCOVER_RELEASE_WINDOW_DAYS;
+const DISCOVER_TOP_PICKS_DAYS = DISCOVER_RELEASE_WINDOW_DAYS;
+const UPDATES_DAYS = DISCOVER_RELEASE_WINDOW_DAYS;
 const YOUR_UPDATES_CAP = 20;
 const DISCOVER_HEADER_HEIGHT = 76;
 const UPDATES_DEEP_REFRESH_TTL_MS = 15 * 60 * 1000;
 const UPDATES_SCAN_BATCH_SIZE = 3;
+const DISCOVER_REFRESH_TTL_MS = 30 * 60 * 1000;
+
+type DiscoverCachedSectionFeed = {
+  topPicks: Awaited<ReturnType<typeof getTopPicks>>;
+  genreRows: { genre: CanonicalGenre; items: Awaited<ReturnType<typeof getWesternNewReleases>> }[];
+  candidates: Awaited<ReturnType<typeof getWesternNewReleases>>;
+};
 
 function spotifyKey(id?: string | null, spotifyUrl?: string | null) {
   const parse = (v?: string | null) => {
@@ -73,32 +88,15 @@ function spotifyKey(id?: string | null, spotifyUrl?: string | null) {
 }
 
 function normalizeDiscoverDate(value?: string | null, precision?: string | null): string | null {
-  if (!value) return null;
-  let normalized = String(value);
-  const normalizedPrecision = (precision || '').toLowerCase();
-  if (normalizedPrecision === 'year') normalized = `${normalized}-01-01`;
-  else if (normalizedPrecision === 'month') normalized = `${normalized}-01`;
-  else if (/^\d{4}$/.test(normalized)) normalized = `${normalized}-07-01`;
-  else if (/^\d{4}-\d{2}$/.test(normalized)) normalized = `${normalized}-15`;
-  return normalized;
+  return normalizeDiscoverReleaseDate(value, precision);
 }
 
 function discoverDateTimestamp(value?: string | null, precision?: string | null): number {
-  const normalized = normalizeDiscoverDate(value, precision);
-  if (!normalized) return 0;
-  const timestamp = Date.parse(normalized);
-  return Number.isNaN(timestamp) ? 0 : timestamp;
+  return discoverReleaseDateTimestamp(value, precision);
 }
 
 function isWithinDiscoverWindow(value: string | null | undefined, cutoffTs: number, precision?: string | null): boolean {
-  return discoverDateTimestamp(value, precision) >= cutoffTs;
-}
-
-function discoverWindowCutoff(days: number) {
-  const date = new Date();
-  date.setHours(0, 0, 0, 0);
-  date.setDate(date.getDate() - days);
-  return date.getTime();
+  return isDiscoverReleaseDateEligible(value, { cutoffTs, precision });
 }
 
 function normalizeArtistIdentity(value?: string | null): string | null {
@@ -296,6 +294,7 @@ export default function DiscoverTab() {
   const [debugGenre, setDebugGenre] = useState<DebugFetchResult | null>(null);
   const [reasonRow, setReasonRow] = useState<any | null>(null);
   const loadRef = useRef<DiscoverLoad | null>(null);
+  const selectedGenresRef = useRef<Set<CanonicalGenre>>(new Set());
   const allDiscoverSnapshotRef = useRef<{
     topPicks: Awaited<ReturnType<typeof getWesternNewReleases>>;
     genreRows: Array<{ genre: CanonicalGenre; items: Awaited<ReturnType<typeof getWesternNewReleases>> }>;
@@ -314,6 +313,10 @@ export default function DiscoverTab() {
   const artistImgPending = useRef<Set<string>>(new Set());
   const [menuRow, setMenuRow] = useState<any | null>(null);
   const lastFetchRef = useRef<number>(0);
+  const lastSuccessfulRefreshRef = useRef<number>(0);
+  const loadInFlightRef = useRef(false);
+  const initialDiscoverLoadStartedRef = useRef(false);
+  const discoverStartupReadyRef = useRef(false);
   const artistImageMapRef = useRef<Record<string, string>>({});
   const updatesLastDeepScanAtRef = useRef<number>(0);
   const forYouItemsRef = useRef<typeof forYouItems>([]);
@@ -322,21 +325,23 @@ export default function DiscoverTab() {
   const { offline } = useOffline();
   const debugSetNewReleases = useCallback(
     (source: string, items: Awaited<ReturnType<typeof getWesternNewReleases>>) => {
+      const eligible = filterDiscoverEligibleReleases(items);
       if (__DEV__) {
-        const first3 = (items ?? []).slice(0, 3).map((it) => ({
+        const first3 = (eligible ?? []).slice(0, 3).map((it) => ({
           id: it?.id ?? null,
           spotifyUrl: !!it?.spotifyUrl,
           artistId: !!it?.artistId,
         }));
         console.log('[discover][setNewReleases]', {
           source,
-          count: items?.length ?? 0,
-          sampleId: items?.[0]?.id ?? null,
+          count: eligible?.length ?? 0,
+          rawCount: items?.length ?? 0,
+          sampleId: eligible?.[0]?.id ?? null,
           first3,
         });
         console.trace(`[discover][setNewReleases trace] ${source}`);
       }
-      setNewReleases(items);
+      setNewReleases(eligible);
     },
     [setNewReleases]
   );
@@ -353,6 +358,8 @@ export default function DiscoverTab() {
   const FOR_YOU_UPDATES_CACHE_KEY = 'discover_for_you_updates_v1';
   const [pickedDebug, setPickedDebug] = useState<{ followed: number; feedRecents: number; albumRecents: number; trackRecents: number; final: number; missing: number } | null>(null);
   const NEW_RELEASES_CACHE_KEY = 'discover_new_releases_v3';
+  const DISCOVER_FEED_CACHE_KEY = 'discover_feed_sections_v1';
+  const DISCOVER_LAST_SUCCESS_KEY = 'discover_last_successful_refresh_v1';
   // Known canonical IDs to disambiguate same-name artists (minimal, surgical fix)
   const CANONICAL_BY_NAME: Record<string, string> = useMemo(() => ({
     // use lowercase keys
@@ -514,7 +521,7 @@ export default function DiscoverTab() {
         if (!key) return true;
         return !(listenStatus[key] || addedIds[key]);
       });
-      let top = removeSaved(topPicksRaw);
+      let top = removeSaved(filterDiscoverEligibleReleases(topPicksRaw));
       if (effective.size) {
         top = await filterReleasesByGenres(top, effective);
       }
@@ -538,54 +545,7 @@ export default function DiscoverTab() {
   }, [topPicksRaw, selectedGenres, listenStatus, addedIds]);
 
   useEffect(() => {
-    let cancelled = false;
-    const buildGenreRows = async () => {
-      const canonicalOrder = GENRE_OPTIONS.filter((g) => g.key !== 'all').map((g) => g.key as CanonicalGenre);
-      const targets: CanonicalGenre[] = selectedGenres.size ? Array.from(selectedGenres) : canonicalOrder;
-      const buckets = await getNewReleasesByGenre({
-        genres: targets,
-        days: DISCOVER_GENRE_DAYS,
-        market: 'US',
-        strict: false,
-        mode: 'full',
-      });
-      const rowsWithCounts = targets.map((g) => {
-        const bucket = Array.isArray((buckets as any)?.[g]) ? (buckets as any)[g] : [];
-        const items = bucket.filter((it: any) => !!it?.spotifyUrl);
-        return { genre: g, items: items.slice(0, 12), count: items.length };
-      });
-      const MAX_GENRE_ROWS = selectedGenres.size ? 6 : 8;
-      if (!cancelled) {
-        const ordered = rowsWithCounts.slice(0, MAX_GENRE_ROWS);
-        setGenreRows(ordered.map(({ genre, items }) => ({ genre, items })));
-        if (__DEV__) {
-          const wireCounts = Object.fromEntries(ordered.slice(0, 4).map((r) => [r.genre, r.items.length]));
-          console.log('[discover][wire]', { topPicksLength: topPicksRaw.length, genreBucketCounts: wireCounts });
-          const firstItem = rowsWithCounts.find((r) => (r.items?.length ?? 0) > 0)?.items?.[0];
-          console.log('[NRG] first item keys', Object.keys(firstItem ?? {}));
-          const hiphop = rowsWithCounts.find((r) => r.genre === 'hiphop');
-          console.log('[discover rails][predicate sample]', {
-            rail: 'hiphop',
-            readsField: 'genre',
-            comparesTo: 'remote genre bucket from spotify-search/new-releases-genre',
-            matchedCount: hiphop?.count ?? 0,
-          });
-          const counts = Object.fromEntries(rowsWithCounts.map((r) => [r.genre, r.count]));
-          console.log('[discover rails][counts]', {
-            days: DISCOVER_GENRE_DAYS,
-            markets: DISCOVER_MARKETS,
-            genres: targets,
-            strict: false,
-            counts,
-          });
-        }
-      }
-    };
-    buildGenreRows();
-    return () => { cancelled = true; };
-  }, [selectedGenres, topPicksRaw.length]);
-
-  useEffect(() => {
+    selectedGenresRef.current = selectedGenres;
     const visibleGenres = toVisibleGenreSet(selectedGenres);
     setDraftGenres(visibleGenres.size ? new Set(visibleGenres) : new Set(['all']));
   }, [selectedGenres]);
@@ -818,6 +778,7 @@ export default function DiscoverTab() {
   const applyGenres = async () => {
     const next = draftGenres.has('all') ? new Set<CanonicalGenre>() : toVisibleGenreSet(Array.from(draftGenres) as CanonicalGenre[]);
     if (next.size === 0) restoreAllSnapshot();
+    selectedGenresRef.current = next;
     setSelectedGenres(next);
     setFilterVisible(false);
     await saveIncludedGenres(next);
@@ -827,6 +788,7 @@ export default function DiscoverTab() {
   const clearGenres = useCallback(async () => {
     const empty = new Set<CanonicalGenre>();
     restoreAllSnapshot();
+    selectedGenresRef.current = empty;
     setDraftGenres(new Set(['all']));
     setSelectedGenres(empty);
     await saveIncludedGenres(empty);
@@ -1195,14 +1157,80 @@ export default function DiscoverTab() {
 
   const cacheNewReleases = async (items: Awaited<ReturnType<typeof getWesternNewReleases>>) => {
     try {
-      await AsyncStorage.setItem(NEW_RELEASES_CACHE_KEY, JSON.stringify({ items, ts: Date.now() }));
+      const eligible = filterDiscoverEligibleReleases(items);
+      await AsyncStorage.setItem(NEW_RELEASES_CACHE_KEY, JSON.stringify({ items: eligible, ts: Date.now() }));
     } catch {}
   };
   const cacheForYou = async (items: Array<{ id: string; name: string; imageUrl?: string | null; latestId?: string; latestDate?: string | null }>, key: string = FOR_YOU_CACHE_KEY) => {
     try {
-      await AsyncStorage.setItem(key, JSON.stringify({ items, ts: Date.now() }));
+      const cutoffTs = discoverWindowCutoff(UPDATES_DAYS);
+      const eligible = items.filter((item) => isWithinDiscoverWindow(item.latestDate ?? null, cutoffTs));
+      await AsyncStorage.setItem(key, JSON.stringify({ items: eligible, ts: Date.now() }));
     } catch {}
   };
+  const markDiscoverRefreshSuccessful = useCallback((timestamp = Date.now()) => {
+    lastSuccessfulRefreshRef.current = timestamp;
+    AsyncStorage.setItem(DISCOVER_LAST_SUCCESS_KEY, String(timestamp)).catch(() => {});
+  }, [DISCOVER_LAST_SUCCESS_KEY]);
+
+  const cacheDiscoverFeed = useCallback(async (feed: DiscoverCachedSectionFeed) => {
+    try {
+      const raw = await AsyncStorage.getItem(DISCOVER_FEED_CACHE_KEY);
+      let existingRows: { genre: CanonicalGenre; items: Awaited<ReturnType<typeof getWesternNewReleases>> }[] = [];
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw);
+          existingRows = (Array.isArray(parsed?.genreRows) ? parsed.genreRows : [])
+            .map((row: any) => ({
+              genre: row?.genre as CanonicalGenre,
+              items: filterDiscoverEligibleReleases(Array.isArray(row?.items) ? row.items : []) as Awaited<ReturnType<typeof getWesternNewReleases>>,
+            }))
+            .filter((row: any) => row.genre && row.items.length > 0);
+        } catch {}
+      }
+      const existingByGenre = new Map(existingRows.map((row) => [row.genre, row.items]));
+      const genreRows = feed.genreRows.map((row) => {
+        const eligible = filterDiscoverEligibleReleases(row.items || []) as Awaited<ReturnType<typeof getWesternNewReleases>>;
+        return {
+          genre: row.genre,
+          items: eligible.length ? eligible : (existingByGenre.get(row.genre) ?? eligible),
+        };
+      });
+      await AsyncStorage.setItem(DISCOVER_FEED_CACHE_KEY, JSON.stringify({ ...feed, genreRows, ts: Date.now() }));
+    } catch {}
+  }, [DISCOVER_FEED_CACHE_KEY]);
+
+  const hydrateDiscoverFeedFromCache = useCallback(async () => {
+    try {
+      const raw = await AsyncStorage.getItem(DISCOVER_FEED_CACHE_KEY);
+      if (!raw) return false;
+      const parsed = JSON.parse(raw);
+      const topPicks = filterDiscoverEligibleReleases(Array.isArray(parsed?.topPicks) ? parsed.topPicks : []) as Awaited<ReturnType<typeof getWesternNewReleases>>;
+      const genreRows = (Array.isArray(parsed?.genreRows) ? parsed.genreRows : [])
+        .map((row: any) => ({
+          genre: row?.genre as CanonicalGenre,
+          items: filterDiscoverEligibleReleases(Array.isArray(row?.items) ? row.items : []) as Awaited<ReturnType<typeof getWesternNewReleases>>,
+        }))
+        .filter((row: any) => row.genre);
+      const candidates = filterDiscoverEligibleReleases(Array.isArray(parsed?.candidates) ? parsed.candidates : []) as Awaited<ReturnType<typeof getWesternNewReleases>>;
+      const hasEligibleContent = topPicks.length > 0 || genreRows.some((row: any) => row.items.length > 0) || candidates.length > 0;
+      if (!hasEligibleContent) {
+        await AsyncStorage.removeItem(DISCOVER_FEED_CACHE_KEY);
+        return false;
+      }
+      setTopPicksRaw(topPicks);
+      setGenreRows(genreRows);
+      debugSetNewReleases('from section cache', candidates.length ? candidates : topPicks);
+      const parsedRows = Array.isArray(parsed?.genreRows) ? parsed.genreRows : [];
+      const genreItemsChanged = genreRows.some((row: any, index: number) => row.items.length !== (Array.isArray(parsedRows[index]?.items) ? parsedRows[index].items.length : 0));
+      if (topPicks.length !== parsed.topPicks?.length || genreItemsChanged || candidates.length !== parsed.candidates?.length) {
+        await AsyncStorage.setItem(DISCOVER_FEED_CACHE_KEY, JSON.stringify({ ...parsed, topPicks, genreRows, candidates }));
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }, [debugSetNewReleases, DISCOVER_FEED_CACHE_KEY]);
 
   // Hydrate cached picked-for-you so UI shows immediately while refreshing
   useEffect(() => {
@@ -1213,7 +1241,9 @@ export default function DiscoverTab() {
         const parsed = JSON.parse(raw);
         let arr = Array.isArray(parsed?.items) ? parsed.items : [];
         // Drop entries missing valid artistId to avoid broken navigation
-        arr = arr.filter((it: any) => typeof it?.artistId === 'string' && /^[A-Za-z0-9]{22}$/.test(it.artistId));
+        arr = filterDiscoverEligibleReleases(
+          arr.filter((it: any) => typeof it?.artistId === 'string' && /^[A-Za-z0-9]{22}$/.test(it.artistId))
+        );
         const ts = typeof parsed?.ts === 'number' ? parsed.ts : 0;
         const DAY_MS = 24*60*60*1000;
         if (!arr.length) return;
@@ -1245,6 +1275,8 @@ export default function DiscoverTab() {
 
   // Loader
   const load = useCallback<DiscoverLoad>(async (opts) => {
+    if (loadInFlightRef.current) return;
+    loadInFlightRef.current = true;
     const preserveExisting = !!opts?.preserveExisting;
     const NEW_RELEASE_DAYS = DISCOVER_GENRE_DAYS;
     const cycleId = Date.now();
@@ -1261,14 +1293,26 @@ export default function DiscoverTab() {
           note: 'top picks + genre rails fetched separately',
         });
       }
-      const [nrResult, genresResult, topPicksResult] = await Promise.allSettled([
+      const canonicalOrder = GENRE_OPTIONS.filter((g) => g.key !== 'all').map((g) => g.key as CanonicalGenre);
+      const activeSelectedGenres = selectedGenresRef.current;
+      const sectionTargets: CanonicalGenre[] = activeSelectedGenres.size ? Array.from(activeSelectedGenres) : canonicalOrder;
+      const visibleSectionTargets = sectionTargets.slice(0, activeSelectedGenres.size ? 6 : 8);
+      const [nrResult, genresResult, topPicksResult, genreResult] = await Promise.allSettled([
         getWesternNewReleases(NEW_RELEASE_DAYS, 220, DISCOVER_MARKETS),
         loadIncludedGenres(),
         getTopPicks(DISCOVER_TOP_PICKS_DAYS),
+        getNewReleasesByGenre({
+          genres: visibleSectionTargets,
+          days: DISCOVER_GENRE_DAYS,
+          market: DISCOVER_MARKETS[0],
+          strict: false,
+          mode: 'full',
+        }),
       ]);
+      let discoverDataRefreshSucceeded = false;
       let nr: Awaited<ReturnType<typeof getWesternNewReleases>> = [];
       if (nrResult.status === 'fulfilled') {
-        nr = nrResult.value;
+        nr = filterDiscoverEligibleReleases(nrResult.value || []);
         if (__DEV__) {
           const sample = nr?.[0];
           const railsPoolNow = nr.filter((it) => !!it.spotifyUrl && !!it.artistId);
@@ -1318,17 +1362,45 @@ export default function DiscoverTab() {
         }
       }
 
+      let topPicks: Awaited<ReturnType<typeof getTopPicks>> = [];
       if (topPicksResult.status === 'fulfilled') {
-        setTopPicksRaw(topPicksResult.value || []);
-        if (__DEV__) {
-          console.log('[discover][wire]', { topPicksLength: topPicksResult.value?.length ?? 0 });
-        }
+        topPicks = filterDiscoverEligibleReleases(topPicksResult.value || []) as Awaited<ReturnType<typeof getTopPicks>>;
+        setTopPicksRaw(topPicks);
       } else {
         if (!preserveExisting) {
           setTopPicksRaw([]);
         }
         setTopPicksError(topPicksResult.reason);
         if (__DEV__) console.warn('[discover top-picks][failed]', topPicksResult.reason);
+      }
+
+      let directGenreRows: { genre: CanonicalGenre; items: Awaited<ReturnType<typeof getWesternNewReleases>> }[] = [];
+      if (genreResult.status === 'fulfilled') {
+        const buckets = genreResult.value;
+        directGenreRows = visibleSectionTargets.map((genre) => ({
+          genre,
+          items: filterDiscoverEligibleReleases(Array.isArray((buckets as any)?.[genre]) ? (buckets as any)[genre] : []) as Awaited<ReturnType<typeof getWesternNewReleases>>,
+        }));
+        setGenreRows(directGenreRows);
+      } else {
+        if (!preserveExisting) {
+          setGenreRows([]);
+        }
+        setTopPicksError((prev: any | null) => prev ?? genreResult.reason);
+      }
+
+      discoverDataRefreshSucceeded = (
+        topPicksResult.status === 'fulfilled' &&
+        topPicks.length > 0 &&
+        genreResult.status === 'fulfilled'
+      );
+      if (discoverDataRefreshSucceeded) {
+        const genreItems = directGenreRows.flatMap((row) => row.items);
+        await cacheDiscoverFeed({
+          topPicks,
+          genreRows: directGenreRows,
+          candidates: nr.length ? nr : filterDiscoverEligibleReleases([...topPicks, ...genreItems]) as Awaited<ReturnType<typeof getWesternNewReleases>>,
+        });
       }
 
       if (genresResult.status === 'fulfilled') {
@@ -1972,6 +2044,9 @@ export default function DiscoverTab() {
       }
       finally { setPickedLoading(false); setForYouLoading(false); }
       await refreshListenStatus();
+      if (discoverDataRefreshSucceeded) {
+        markDiscoverRefreshSuccessful();
+      }
     } catch (err) {
       setTopPicksError((prev: any | null) => prev ?? err);
       if (__DEV__) console.warn('[discover] load failed', err);
@@ -1979,12 +2054,25 @@ export default function DiscoverTab() {
     finally {
       setTopPicksLoading(false);
       setInitialLoading(false);
+      loadInFlightRef.current = false;
     }
-  }, [cacheArtistImagesV2, debugSetNewReleases, hydrateFollowedArtistImages, refreshListenStatus]);
+  }, [cacheArtistImagesV2, cacheDiscoverFeed, debugSetNewReleases, hydrateFollowedArtistImages, markDiscoverRefreshSuccessful, refreshListenStatus]);
 
   useEffect(() => {
     loadRef.current = load;
   }, [debugSetNewReleases, load]);
+
+  const shouldRefreshDiscover = useCallback(() => {
+    return Date.now() - lastSuccessfulRefreshRef.current > DISCOVER_REFRESH_TTL_MS;
+  }, []);
+
+  const refreshDiscoverIfDue = useCallback(() => {
+    if (offline) return;
+    if (!discoverStartupReadyRef.current) return;
+    if (shouldRefreshDiscover()) {
+      load();
+    }
+  }, [load, offline, shouldRefreshDiscover]);
 
   useEffect(() => {
     const handler = () => { load(); };
@@ -1994,57 +2082,71 @@ export default function DiscoverTab() {
 
   // Initial load with cache hydration
   useEffect(() => {
+    if (initialDiscoverLoadStartedRef.current) return;
+    initialDiscoverLoadStartedRef.current = true;
     let mounted = true;
     (async () => {
+      let hasValidRecentFeed = false;
       try {
+        const successRaw = await AsyncStorage.getItem(DISCOVER_LAST_SUCCESS_KEY);
+        const successTs = Number(successRaw);
+        if (Number.isFinite(successTs) && successTs > 0) {
+          lastSuccessfulRefreshRef.current = successTs;
+        }
+        const hydratedSectionFeed = await hydrateDiscoverFeedFromCache();
+        hasValidRecentFeed = hydratedSectionFeed;
+        if (hydratedSectionFeed) setInitialLoading(false);
         const raw = await AsyncStorage.getItem(NEW_RELEASES_CACHE_KEY);
         if (raw && mounted) {
           const parsed = JSON.parse(raw);
           if (Array.isArray(parsed?.items)) {
-            debugSetNewReleases('from cache', parsed.items);
-            setInitialLoading(false);
+            const eligible = filterDiscoverEligibleReleases(parsed.items) as Awaited<ReturnType<typeof getWesternNewReleases>>;
+            hasValidRecentFeed = hasValidRecentFeed || eligible.length > 0;
+            if (eligible.length !== parsed.items.length) {
+              await AsyncStorage.setItem(NEW_RELEASES_CACHE_KEY, JSON.stringify({ ...parsed, items: eligible }));
+            }
+            if (!hydratedSectionFeed) debugSetNewReleases('from cache', eligible);
+            if (!hydratedSectionFeed && eligible.length) setInitialLoading(false);
           }
         }
       } catch {}
       // Your updates is intentionally not hydrated from cache; stale artist rows are more misleading than a short loading state.
-      if (mounted) await load();
+      const needsRefresh = mounted && !offline && (!hasValidRecentFeed || shouldRefreshDiscover());
+      discoverStartupReadyRef.current = true;
+      if (needsRefresh) await loadRef.current?.();
+      else if (mounted) setInitialLoading(false);
     })();
-    return () => { mounted = false; };
-  }, [debugSetNewReleases, load]);
+    return () => {
+      mounted = false;
+      discoverStartupReadyRef.current = false;
+    };
+  }, [debugSetNewReleases, hydrateDiscoverFeedFromCache, offline, shouldRefreshDiscover]);
 
   // Refresh when coming back online
   useEffect(() => {
-    if (!offline) load();
-  }, [offline, load]);
+    if (!offline) refreshDiscoverIfDue();
+  }, [offline, refreshDiscoverIfDue]);
 
-  // Refresh on focus with 30s throttle
+  // Refresh on focus when the last successful refresh is older than 30 minutes.
   useFocusEffect(
     useCallback(() => {
-      const now = Date.now();
-      if (now - lastFetchRef.current > 30_000) {
-        load();
-      }
-    }, [load])
+      refreshDiscoverIfDue();
+    }, [refreshDiscoverIfDue])
   );
 
   // Also refresh when the tab icon is tapped (even if already focused)
   useEffect(() => {
-    const unsub = (navigation as any).addListener('tabPress', () => { load(); });
+    const unsub = (navigation as any).addListener('tabPress', () => { refreshDiscoverIfDue(); });
     return unsub;
-  }, [navigation, load]);
+  }, [navigation, refreshDiscoverIfDue]);
 
   // No genre management in simplified view
 
-  // Refresh upcoming when tab refocuses (e.g., after adding presaves elsewhere)
-  useFocusEffect(useCallback(() => {
-    load();
-  }, [load]));
-
   // Also refresh when app returns to foreground
   useEffect(() => {
-    const sub = AppState.addEventListener('change', (s) => { if (s === 'active') load(); });
+    const sub = AppState.addEventListener('change', (s) => { if (s === 'active') refreshDiscoverIfDue(); });
     return () => sub.remove();
-  }, [load]);
+  }, [refreshDiscoverIfDue]);
 
   // No extra image fetching; bubbles use details fetched during load()
 
@@ -2894,10 +2996,11 @@ export default function DiscoverTab() {
         };
 
         const renderHeroRow = (data: any[], key: string) => {
-          if (!data.length) return null;
+          const eligible = filterDiscoverEligibleReleases(data);
+          if (!eligible.length) return null;
           return (
             <FlatList
-              data={data}
+              data={eligible}
               keyExtractor={(it, idx) => `${key}-${it?.id ?? it?.spotifyUrl ?? it?.title}-${idx}`}
               horizontal
               showsHorizontalScrollIndicator={false}
@@ -2914,19 +3017,20 @@ export default function DiscoverTab() {
         const getHeroCount = (len: number) => Math.min(3, Math.max(0, len));
 
         const renderSection = (data: any[], title: string, key: string) => {
-          if (!data.length) return null;
+          const eligible = filterDiscoverEligibleReleases(data);
+          if (!eligible.length) return null;
           if (viewMode === 'pills') {
             return (
               <View key={key} style={{ marginBottom: 18 }}>
                 {title ? <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text.secondary, marginBottom: 10, paddingHorizontal: horizontalPad }}>{title}</Text> : null}
-                {renderPillColumns(data, key)}
+                {renderPillColumns(eligible, key)}
               </View>
             );
           }
 
-          const heroCount = getHeroCount(data.length);
-          const hero = data.slice(0, heroCount);
-          const rest = data.slice(heroCount);
+          const heroCount = getHeroCount(eligible.length);
+          const hero = eligible.slice(0, heroCount);
+          const rest = eligible.slice(heroCount);
           return (
             <View key={key} style={{ marginBottom: 18 }}>
               {title ? <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text.secondary, marginBottom: 10, paddingHorizontal: horizontalPad }}>{title}</Text> : null}
@@ -2940,17 +3044,18 @@ export default function DiscoverTab() {
           data: Array<{ item: typeof yourUpdatesVisible[number]; artistKey: string; moreCount?: number; hideArtist?: boolean; expandOnPress?: boolean }>,
           key: string
         ) => {
-          if (!data.length) return null;
+          const eligible = data.filter((entry) => isDiscoverReleaseDateEligible(entry.item.releaseDate ?? null));
+          if (!eligible.length) return null;
           if (viewMode === 'pills') {
             return (
               <View key={key} style={{ marginBottom: 18 }}>
-                {renderUpdatesPillColumns(data, key)}
+                {renderUpdatesPillColumns(eligible, key)}
               </View>
             );
           }
 
-          const hero = data.slice(0, getHeroCount(data.length));
-          const rest = data.slice(hero.length);
+          const hero = eligible.slice(0, getHeroCount(eligible.length));
+          const rest = eligible.slice(hero.length);
           return (
             <View key={key} style={{ marginBottom: 18 }}>
               {hero.length ? (
