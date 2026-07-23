@@ -466,6 +466,84 @@ const isGenreBucketCachePayload = (payload: any) => (
   !!payload && Array.isArray(payload?.items)
 );
 
+const DISCOVER_SERVER_CACHE_TTL_MS = 30 * 60 * 1000;
+const AFROBEATS_SEARCH_TERMS = [
+  "afrobeats",
+  "afrobeat",
+  "afropop",
+  "amapiano",
+  "afroswing",
+  "nigerian pop",
+  "ghanaian pop",
+];
+const AFROBEATS_MARKETS = ["GB", "US"];
+const AFROBEATS_SEARCH_REQUEST_CAP = 14;
+const AFROBEATS_ARTIST_ENRICHMENT_CAP = 100;
+const AFROBEATS_VERIFIED_CANDIDATE_TARGET = 12;
+const AFROBEATS_ARTIST_GENRE_ALIASES = [
+  "afrobeats",
+  "afrobeat",
+  "afropop",
+  "amapiano",
+  "afroswing",
+  "nigerian pop",
+  "ghanaian pop",
+  "afro r&b",
+  "afro soul",
+  "azonto",
+];
+
+const normalizeGenreLabel = (value?: string | null) => (
+  String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase()
+);
+
+const normalizeServerReleaseDate = (releaseDate?: string | null, precision?: string | null): string | null => {
+  if (!releaseDate) return null;
+  const s = String(releaseDate);
+  const p = String(precision ?? "").toLowerCase();
+  if (p === "day" && /^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  if (p === "month" && /^\d{4}-\d{2}$/.test(s)) return `${s}-01`;
+  if (p === "year" && /^\d{4}$/.test(s)) return `${s}-01-01`;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  if (/^\d{4}-\d{2}$/.test(s)) return `${s}-01`;
+  if (/^\d{4}$/.test(s)) return `${s}-01-01`;
+  return null;
+};
+
+const toServerReleaseTs = (releaseDate?: string | null, precision?: string | null): number | null => {
+  const normalized = normalizeServerReleaseDate(releaseDate, precision);
+  if (!normalized) return null;
+  const t = Date.parse(normalized);
+  return Number.isNaN(t) ? null : t;
+};
+
+const discoverCalendarWindow = (days: number, nowMs = Date.now()) => {
+  const cutoff = new Date(nowMs);
+  cutoff.setUTCHours(0, 0, 0, 0);
+  cutoff.setUTCDate(cutoff.getUTCDate() - days);
+  const end = new Date(nowMs);
+  end.setUTCHours(23, 59, 59, 999);
+  return { cutoffMs: cutoff.getTime(), endMs: end.getTime(), cutoffIso: cutoff.toISOString() };
+};
+
+const filterEligibleCachedDiscoverItems = (items: any[], days: number) => {
+  const { cutoffMs, endMs } = discoverCalendarWindow(days);
+  return (Array.isArray(items) ? items : []).filter((item) => {
+    const ts = toServerReleaseTs(item?.releaseDate ?? item?.release_date ?? null, item?.releaseDatePrecision ?? item?.release_date_precision ?? null);
+    return ts != null && ts >= cutoffMs && ts <= endMs;
+  });
+};
+
+const isFreshDiscoverCachePayload = (payload: any) => (
+  isGenreBucketCachePayload(payload) &&
+  typeof payload?.ts === "number" &&
+  Date.now() - payload.ts <= DISCOVER_SERVER_CACHE_TTL_MS
+);
+
 let discoverCacheClient: any = null;
 let discoverCacheClientInitAttempted = false;
 
@@ -925,8 +1003,7 @@ serve(async (req) => {
       const popularityFloor = Math.max(0, Math.min(100, Number.isFinite(popularityFloorParam) ? popularityFloorParam : 50));
       const maxPerArtistParam = Number(url.searchParams.get("max_per_artist") ?? "2");
       const maxPerArtist = Math.max(1, Math.min(5, Number.isFinite(maxPerArtistParam) ? maxPerArtistParam : 2));
-      const cutoffMs = nowMs - daysUsed * 24 * 60 * 60 * 1000;
-      const cutoffIso = new Date(cutoffMs).toISOString();
+      const { cutoffMs, endMs, cutoffIso } = discoverCalendarWindow(daysUsed, nowMs);
       const currentYear = new Date(nowMs).getUTCFullYear();
       const emptyDebugByBucket = () => createGenreDebugByBucket(bucketKeys, {
         maxPerArtist,
@@ -966,6 +1043,7 @@ serve(async (req) => {
       const RAW_CEILING = 250;
       const debugByBucket: Record<string, any> = emptyDebugByBucket();
       const artistPopularityById = new Map<string, number | null>();
+      const artistGenresById = new Map<string, string[]>();
       const toArtistLite = (artists: any[] | undefined): Array<{ id: string | null; name: string | null }> => (
         Array.isArray(artists)
           ? artists.map((a: any) => ({ id: a?.id ?? null, name: a?.name ?? null }))
@@ -1030,7 +1108,10 @@ serve(async (req) => {
           stage = `${stagePrefix}_${Math.floor(i / 50)}`;
           const ar = await fetchWithTimeout(`${API}/artists?ids=${ids.join(",")}`, { headers: hdrs }, 8000, stage);
           if (!ar.ok) {
-            for (const id of ids) artistPopularityById.set(id, null);
+            for (const id of ids) {
+              artistPopularityById.set(id, null);
+              artistGenresById.set(id, []);
+            }
             continue;
           }
           const aj: any = await ar.json();
@@ -1039,9 +1120,13 @@ serve(async (req) => {
             if (!art?.id) continue;
             seenIds.add(art.id);
             artistPopularityById.set(art.id, typeof art?.popularity === "number" ? art.popularity : null);
+            artistGenresById.set(art.id, Array.isArray(art?.genres) ? art.genres.map((g: any) => String(g)) : []);
           }
           for (const id of ids) {
-            if (!seenIds.has(id)) artistPopularityById.set(id, null);
+            if (!seenIds.has(id)) {
+              artistPopularityById.set(id, null);
+              artistGenresById.set(id, []);
+            }
           }
         }
       };
@@ -1057,6 +1142,26 @@ serve(async (req) => {
         if (!vals.length) return null;
         return Math.max(...vals);
       };
+
+      const afrobeatsGenreAliases = new Set(AFROBEATS_ARTIST_GENRE_ALIASES.map(normalizeGenreLabel));
+      const afrobeatsArtistGenreEvidenceFor = (artists: Array<{ id: string | null; name: string | null }>) => {
+        for (const artist of artists ?? []) {
+          const id = artist?.id;
+          if (!id) continue;
+          const genres = artistGenresById.get(id) ?? [];
+          for (const genre of genres) {
+            const normalized = normalizeGenreLabel(genre);
+            if (afrobeatsGenreAliases.has(normalized)) {
+              return { artistId: id, artistName: artist?.name ?? null, genre };
+            }
+          }
+        }
+        return null;
+      };
+
+      const isWithinGenreWindow = (item: any) => (
+        item?.releaseTs != null && item.releaseTs >= cutoffMs && item.releaseTs <= endMs
+      );
 
       for (const bucketKey of requestedBuckets) {
         stage = `genre_search_start_${bucketKey}`;
@@ -1110,7 +1215,7 @@ serve(async (req) => {
             candidates.push(n);
           }
 
-          const datePassed = candidates.filter((item) => item?.releaseTs != null && item.releaseTs >= cutoffMs);
+          const datePassed = candidates.filter(isWithinGenreWindow);
           datePassCount = datePassed.length;
           const artistIds = Array.from(new Set(
             datePassed.flatMap((item: any) => (item?.artists ?? []).map((a: any) => a?.id).filter(Boolean))
@@ -1124,7 +1229,104 @@ serve(async (req) => {
           popularityPassCount = popPassed.length;
         }
 
-        const finalDatePassed = candidates.filter((item) => item?.releaseTs != null && item.releaseTs >= cutoffMs);
+        const afrobeatsExpansion = {
+          enabled: bucketKey === "afrobeats",
+          search_request_cap: AFROBEATS_SEARCH_REQUEST_CAP,
+          search_requests: 0,
+          artist_enrichment_cap: AFROBEATS_ARTIST_ENRICHMENT_CAP,
+          artists_enriched: 0,
+          raw_count: 0,
+          with_artist_ids_count: 0,
+          date_pass_count: 0,
+          with_artist_genre_metadata_count: 0,
+          artist_genre_pass_count: 0,
+          returned_to_pipeline_count: 0,
+          markets_used: [] as string[],
+          terms_used: [] as string[],
+        };
+
+        if (bucketKey === "afrobeats" && candidates.filter(isWithinGenreWindow).length < AFROBEATS_VERIFIED_CANDIDATE_TARGET) {
+          const expansionArtistIds = new Set<string>();
+          const addExpansionUse = (market: string, term: string) => {
+            if (!afrobeatsExpansion.markets_used.includes(market)) afrobeatsExpansion.markets_used.push(market);
+            if (!afrobeatsExpansion.terms_used.includes(term)) afrobeatsExpansion.terms_used.push(term);
+          };
+
+          for (const market of AFROBEATS_MARKETS) {
+            if (afrobeatsExpansion.search_requests >= AFROBEATS_SEARCH_REQUEST_CAP) break;
+            if (afrobeatsExpansion.returned_to_pipeline_count >= AFROBEATS_VERIFIED_CANDIDATE_TARGET) break;
+            for (const term of AFROBEATS_SEARCH_TERMS) {
+              if (afrobeatsExpansion.search_requests >= AFROBEATS_SEARCH_REQUEST_CAP) break;
+              if (afrobeatsExpansion.returned_to_pipeline_count >= AFROBEATS_VERIFIED_CANDIDATE_TARGET) break;
+              addExpansionUse(market, term);
+              const searchUrl = `${API}/search?` + new URLSearchParams({
+                q: `${term} year:${currentYear}`,
+                type: "album,track",
+                market,
+                limit: String(PAGE_LIMIT),
+                offset: "0",
+              });
+              stage = `genre_afrobeats_expand_${market}_${term.replace(/\W+/g, "_")}`;
+              afrobeatsExpansion.search_requests += 1;
+              const res = await fetchWithTimeout(searchUrl, { headers: hdrs }, 8000, stage);
+              if (!res.ok) {
+                if (debugInfo && !debugInfo.spotifyError) {
+                  debugInfo.spotifyError = { stage, status: res.status, message: res.statusText };
+                }
+                continue;
+              }
+
+              const j: any = await res.json();
+              const albumItems = Array.isArray(j?.albums?.items) ? j.albums.items : [];
+              const trackItems = Array.isArray(j?.tracks?.items) ? j.tracks.items : [];
+              const normalizedItems = [
+                ...albumItems.map((item: any) => normalizeSearchItem(item, "album")),
+                ...trackItems.map((item: any) => normalizeSearchItem(item, "track")),
+              ];
+              afrobeatsExpansion.raw_count += normalizedItems.length;
+
+              const freshItems = normalizedItems.filter((item) => {
+                if (!isWithinGenreWindow(item)) return false;
+                afrobeatsExpansion.date_pass_count += 1;
+                const artistIds = (item?.artists ?? []).map((a: any) => a?.id).filter(Boolean);
+                if (artistIds.length) afrobeatsExpansion.with_artist_ids_count += 1;
+                return artistIds.length > 0;
+              });
+              const idsToEnrich: string[] = [];
+              for (const item of freshItems) {
+                for (const artist of item?.artists ?? []) {
+                  const id = artist?.id;
+                  if (!id || expansionArtistIds.has(id)) continue;
+                  if (expansionArtistIds.size >= AFROBEATS_ARTIST_ENRICHMENT_CAP) continue;
+                  expansionArtistIds.add(id);
+                  idsToEnrich.push(id);
+                }
+              }
+              afrobeatsExpansion.artists_enriched = expansionArtistIds.size;
+              await ensureArtistPopularity(idsToEnrich, `genre_afrobeats_expand_artists_${market}`);
+
+              for (const item of freshItems) {
+                const key = item?.id ? `${item.sourceType}:${item.id}` : "";
+                if (!key || seen.has(key)) continue;
+                const hasAnyGenreMetadata = (item?.artists ?? []).some((artist: any) => {
+                  const genres = artist?.id ? artistGenresById.get(artist.id) : [];
+                  return Array.isArray(genres) && genres.length > 0;
+                });
+                if (hasAnyGenreMetadata) afrobeatsExpansion.with_artist_genre_metadata_count += 1;
+                const evidence = afrobeatsArtistGenreEvidenceFor(item?.artists ?? []);
+                if (!evidence) continue;
+                item.afrobeatsGenreEvidence = evidence;
+                seen.add(key);
+                candidates.push(item);
+                afrobeatsExpansion.artist_genre_pass_count += 1;
+                afrobeatsExpansion.returned_to_pipeline_count += 1;
+                if (afrobeatsExpansion.returned_to_pipeline_count >= AFROBEATS_VERIFIED_CANDIDATE_TARGET) break;
+              }
+            }
+          }
+        }
+
+        const finalDatePassed = candidates.filter(isWithinGenreWindow);
         datePassCount = finalDatePassed.length;
         const finalArtistIds = Array.from(new Set(
           finalDatePassed.flatMap((item: any) => (item?.artists ?? []).map((a: any) => a?.id).filter(Boolean))
@@ -1135,9 +1337,19 @@ serve(async (req) => {
           item.artistPopularity = maxPop;
           return typeof maxPop === "number" && maxPop >= popularityFloor;
         });
-        popularityPassCount = finalPopPassed.length;
-        const popularityFallbackUsed = finalPopPassed.length === 0 && finalDatePassed.length > 0;
-        const qualityInput = popularityFallbackUsed ? finalDatePassed : finalPopPassed;
+        const genreVerifiedDatePassed = bucketKey === "afrobeats"
+          ? finalDatePassed.filter((item) => !!afrobeatsArtistGenreEvidenceFor(item?.artists ?? []))
+          : finalDatePassed;
+        const genreVerifiedPopPassed = bucketKey === "afrobeats"
+          ? finalPopPassed.filter((item) => !!afrobeatsArtistGenreEvidenceFor(item?.artists ?? []))
+          : finalPopPassed;
+        popularityPassCount = genreVerifiedPopPassed.length;
+        const afrobeatsUseAllGenreVerified = bucketKey === "afrobeats" && genreVerifiedDatePassed.length > 0;
+        const popularityFallbackUsed = (
+          (genreVerifiedPopPassed.length === 0 && genreVerifiedDatePassed.length > 0) ||
+          afrobeatsUseAllGenreVerified
+        );
+        const qualityInput = popularityFallbackUsed ? genreVerifiedDatePassed : genreVerifiedPopPassed;
 
         const dedupeResult = await dedupeDiscoveryItems(qualityInput, {
           hdrs,
@@ -1195,6 +1407,11 @@ serve(async (req) => {
           pages_scanned: pagesScanned,
           market: marketFixed,
           popularity_floor: popularityFloor,
+          ...(bucketKey === "afrobeats" ? {
+            artist_genre_verified_date_count: genreVerifiedDatePassed.length,
+            artist_genre_verified_popularity_count: genreVerifiedPopPassed.length,
+            afrobeats_expansion: afrobeatsExpansion,
+          } : {}),
         };
       }
 
@@ -1238,6 +1455,10 @@ serve(async (req) => {
             }
             if (!isGenreBucketCachePayload(cachedPayload)) {
               console.log(`[discover-cache] miss key=${cacheKey}`);
+              canServeFromCache = false;
+              break;
+            }
+            if (!isFreshDiscoverCachePayload(cachedPayload)) {
               canServeFromCache = false;
               break;
             }
@@ -1285,10 +1506,22 @@ serve(async (req) => {
       if (!debug) {
         for (const bucketKey of requestedBuckets) {
           const cacheKey = `genre:${bucketKey}`;
+          const computedItems = Array.isArray(computed.payload.buckets[bucketKey])
+            ? computed.payload.buckets[bucketKey]
+            : [];
+          if (computedItems.length === 0) {
+            const { payload: existingPayload } = await readDiscoverCache(cacheKey);
+            const eligibleExistingItems = filterEligibleCachedDiscoverItems(existingPayload?.items, computed.payload.days);
+            if (eligibleExistingItems.length > 0) {
+              continue;
+            }
+          }
           const cachePayload = {
-            items: computed.payload.buckets[bucketKey],
+            items: computedItems,
             debug: computed.debugByBucket[bucketKey],
             year: computed.currentYear,
+            days: computed.payload.days,
+            ts: Date.now(),
           };
           if (!isGenreBucketCachePayload(cachePayload)) continue;
           const { error: cacheWriteError } = await writeDiscoverCache(cacheKey, cachePayload);
