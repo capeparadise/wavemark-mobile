@@ -458,8 +458,14 @@ const createGenreDebugByBucket = (
   }]),
 );
 
+const topPicksItemsFromPayload = (payload: any): any[] => {
+  if (Array.isArray(payload?.items)) return payload.items;
+  if (Array.isArray(payload?.albums?.items)) return payload.albums.items;
+  return [];
+};
+
 const isTopPicksPayload = (payload: any) => (
-  !!payload && Array.isArray(payload?.items) && Array.isArray(payload?.albums?.items)
+  !!payload && (Array.isArray(payload?.items) || Array.isArray(payload?.albums?.items))
 );
 
 const isGenreBucketCachePayload = (payload: any) => (
@@ -467,6 +473,7 @@ const isGenreBucketCachePayload = (payload: any) => (
 );
 
 const DISCOVER_SERVER_CACHE_TTL_MS = 30 * 60 * 1000;
+const DISCOVER_RELEASE_WINDOW_DAYS = 14;
 const AFROBEATS_SEARCH_TERMS = [
   "afrobeats",
   "afrobeat",
@@ -524,10 +531,42 @@ const toServerReleaseTs = (releaseDate?: string | null, precision?: string | nul
 const discoverCalendarWindow = (days: number, nowMs = Date.now()) => {
   const cutoff = new Date(nowMs);
   cutoff.setUTCHours(0, 0, 0, 0);
-  cutoff.setUTCDate(cutoff.getUTCDate() - days);
+  cutoff.setUTCDate(cutoff.getUTCDate() - Math.max(0, days - 1));
   const end = new Date(nowMs);
   end.setUTCHours(23, 59, 59, 999);
   return { cutoffMs: cutoff.getTime(), endMs: end.getTime(), cutoffIso: cutoff.toISOString() };
+};
+
+const discoverServerDateKey = (nowMs = Date.now()) => {
+  const date = new Date(nowMs);
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+const discoverServerFreshnessBand = (releaseTs?: number | null, nowMs = Date.now()) => {
+  if (releaseTs == null) return Number.POSITIVE_INFINITY;
+  const release = new Date(releaseTs);
+  release.setUTCHours(0, 0, 0, 0);
+  const today = new Date(nowMs);
+  today.setUTCHours(0, 0, 0, 0);
+  const ageDays = Math.floor((today.getTime() - release.getTime()) / (24 * 60 * 60 * 1000));
+  if (ageDays < 0 || ageDays >= DISCOVER_RELEASE_WINDOW_DAYS) return Number.POSITIVE_INFINITY;
+  if (ageDays === 0) return 0;
+  if (ageDays <= 3) return 1;
+  if (ageDays <= 7) return 2;
+  return 3;
+};
+
+const compareServerDiscoverFreshness = (a: any, b: any, nowMs = Date.now()) => {
+  const bandDiff = discoverServerFreshnessBand(a?.releaseTs, nowMs) - discoverServerFreshnessBand(b?.releaseTs, nowMs);
+  if (bandDiff) return bandDiff;
+  const popDiff = (b?.artistPopularity ?? b?.artist_popularity ?? 0) - (a?.artistPopularity ?? a?.artist_popularity ?? 0);
+  if (popDiff) return popDiff;
+  const dateDiff = (b?.releaseTs ?? 0) - (a?.releaseTs ?? 0);
+  if (dateDiff) return dateDiff;
+  return String(a?.id ?? "").localeCompare(String(b?.id ?? ""));
 };
 
 const filterEligibleCachedDiscoverItems = (items: any[], days: number) => {
@@ -538,10 +577,40 @@ const filterEligibleCachedDiscoverItems = (items: any[], days: number) => {
   });
 };
 
-const isFreshDiscoverCachePayload = (payload: any) => (
+const withServerReleaseTs = (item: any) => ({
+  ...item,
+  releaseTs: toServerReleaseTs(item?.releaseDate ?? item?.release_date ?? null, item?.releaseDatePrecision ?? item?.release_date_precision ?? null),
+});
+
+const sanitizeTopPicksCachePayload = (payload: any, days: number, nowMs = Date.now()) => {
+  if (!payload) return null;
+  const items = filterEligibleCachedDiscoverItems(topPicksItemsFromPayload(payload), days)
+    .sort((a: any, b: any) => compareServerDiscoverFreshness(withServerReleaseTs(a), withServerReleaseTs(b), nowMs));
+  if (!items.length) return null;
+  return {
+    ...payload,
+    items,
+    albums: { ...(payload?.albums ?? {}), items },
+    days,
+    cacheDate: typeof payload?.cacheDate === "string" ? payload.cacheDate : discoverServerDateKey(nowMs),
+    ts: typeof payload?.ts === "number" ? payload.ts : Date.now(),
+  };
+};
+
+const isFreshDiscoverCachePayload = (payload: any, expectedDays?: number) => (
   isGenreBucketCachePayload(payload) &&
   typeof payload?.ts === "number" &&
-  Date.now() - payload.ts <= DISCOVER_SERVER_CACHE_TTL_MS
+  Date.now() - payload.ts <= DISCOVER_SERVER_CACHE_TTL_MS &&
+  payload?.cacheDate === discoverServerDateKey() &&
+  (expectedDays == null || Number(payload?.days) === expectedDays)
+);
+
+const isFreshTopPicksCachePayload = (payload: any, expectedDays?: number) => (
+  isTopPicksPayload(payload) &&
+  typeof payload?.ts === "number" &&
+  Date.now() - payload.ts <= DISCOVER_SERVER_CACHE_TTL_MS &&
+  payload?.cacheDate === discoverServerDateKey() &&
+  (expectedDays == null || Number(payload?.days) === expectedDays)
 );
 
 let discoverCacheClient: any = null;
@@ -722,12 +791,15 @@ serve(async (req) => {
       return new Response(body, { headers });
     };
 
+    const topPicksNowMs = Date.now();
+    const topPicksDaysParam = Number(url.searchParams.get("days") ?? "30");
+    const topPicksDaysUsed = Math.max(1, Math.min(365, Number.isFinite(topPicksDaysParam) ? topPicksDaysParam : 30));
+
     const computeTopPicksPayload = async () => {
       const marketFixed = "US";
-      const nowMs = Date.now();
+      const nowMs = topPicksNowMs;
       const currentYear = new Date(nowMs).getUTCFullYear();
-      const daysParam = Number(url.searchParams.get("days") ?? "30");
-      const daysUsed = Math.max(1, Math.min(365, Number.isFinite(daysParam) ? daysParam : 30));
+      const daysUsed = topPicksDaysUsed;
       const popularityFloorParam = Number(
         url.searchParams.get("popularity_floor")
         ?? url.searchParams.get("popularityFloor")
@@ -741,8 +813,7 @@ serve(async (req) => {
       const pagesPerQuery = Math.max(1, Math.min(4, Number.isFinite(pagesPerQueryParam) ? pagesPerQueryParam : 2));
       const pageLimit = 50;
       const returnLimit = 30;
-      const cutoffMs = nowMs - daysUsed * 24 * 60 * 60 * 1000;
-      const cutoffIso = new Date(cutoffMs).toISOString();
+      const { cutoffMs, endMs, cutoffIso } = discoverCalendarWindow(daysUsed, nowMs);
       const queriesUsed = [
         `year:${currentYear}`,
         `year:${currentYear} genre:"pop"`,
@@ -849,7 +920,7 @@ serve(async (req) => {
       }
 
       const deduped = Array.from(dedupedById.values());
-      const datePassed = deduped.filter((item: any) => item?.releaseTs != null && item.releaseTs >= cutoffMs);
+      const datePassed = deduped.filter((item: any) => item?.releaseTs != null && item.releaseTs >= cutoffMs && item.releaseTs <= endMs);
       const artistPopularityMap = new Map<string, number | null>();
       const ensureArtistPopularity = async (artistIds: string[], stagePrefix: string) => {
         const missing = artistIds.filter((id) => id && !artistPopularityMap.has(id));
@@ -907,13 +978,7 @@ serve(async (req) => {
         toReleaseTs,
       });
       const qualityDeduped = dedupeResult.items;
-      qualityDeduped.sort((a: any, b: any) => {
-        const popDiff = (b?.artistPopularity ?? 0) - (a?.artistPopularity ?? 0);
-        if (popDiff) return popDiff;
-        const dateDiff = (b?.releaseTs ?? 0) - (a?.releaseTs ?? 0);
-        if (dateDiff) return dateDiff;
-        return String(a?.id ?? "").localeCompare(String(b?.id ?? ""));
-      });
+      qualityDeduped.sort((a: any, b: any) => compareServerDiscoverFreshness(a, b, nowMs));
       const artistCappedResult = capPerArtist(qualityDeduped, maxPerArtist);
       const items = artistCappedResult.items.slice(0, returnLimit).map((item: any) => ({
         id: item?.id,
@@ -927,7 +992,7 @@ serve(async (req) => {
         type: isTrackItem(item) ? "track" : "album",
       }));
 
-      const payload: any = { items, albums: { items } };
+      const payload: any = { items, albums: { items }, ts: Date.now(), cacheDate: discoverServerDateKey(nowMs), days: daysUsed };
       if (debug) {
         payload.build = BUILD_ID;
         payload.debug = {
@@ -959,32 +1024,40 @@ serve(async (req) => {
     const loadTopPicksPayload = async (opts?: { forceRefresh?: boolean }) => {
       const cacheKey = "top_picks";
       const forceRefresh = !!opts?.forceRefresh;
+      let existingEligiblePayload: any = null;
       if (!debug) {
-        if (forceRefresh) {
-          console.log(`[discover-cache] refresh key=${cacheKey}`);
-        } else {
+        try {
           const { payload: cachedPayload, error: cacheReadError } = await readDiscoverCache(cacheKey);
           if (cacheReadError) {
             console.error(`[discover-cache] read-failed key=${cacheKey}`, cacheReadError);
-          } else if (isTopPicksPayload(cachedPayload)) {
-            console.log(`[discover-cache] hit key=${cacheKey}`);
-            return cachedPayload;
           } else {
-            console.log(`[discover-cache] miss key=${cacheKey}`);
+            existingEligiblePayload = sanitizeTopPicksCachePayload(cachedPayload, topPicksDaysUsed, topPicksNowMs);
+            if (forceRefresh) {
+              console.log(`[discover-cache] refresh key=${cacheKey}`);
+            } else if (existingEligiblePayload && isFreshTopPicksCachePayload(existingEligiblePayload, topPicksDaysUsed)) {
+              console.log(`[discover-cache] hit key=${cacheKey}`);
+              return existingEligiblePayload;
+            } else {
+              console.log(`[discover-cache] miss key=${cacheKey}`);
+            }
           }
+        } catch (cacheError) {
+          console.error(`[discover-cache] read-failed key=${cacheKey}`, cacheError);
         }
       }
 
       const payload = await computeTopPicksPayload();
-      if (!debug && isTopPicksPayload(payload)) {
-        const { error: cacheWriteError } = await writeDiscoverCache(cacheKey, payload);
+      const eligiblePayload = sanitizeTopPicksCachePayload(payload, topPicksDaysUsed, topPicksNowMs);
+      if (!eligiblePayload && existingEligiblePayload) return existingEligiblePayload;
+      if (!debug && eligiblePayload) {
+        const { error: cacheWriteError } = await writeDiscoverCache(cacheKey, eligiblePayload);
         if (cacheWriteError) {
           console.error(`[discover-cache] write-failed key=${cacheKey}`, cacheWriteError);
         } else {
           console.log(`[discover-cache] write key=${cacheKey}`);
         }
       }
-      return payload;
+      return eligiblePayload ?? payload;
     };
 
     const computeGenrePayload = async (requestedBuckets: string[]) => {
@@ -1363,13 +1436,7 @@ serve(async (req) => {
           toReleaseTs,
         });
         const qualityDeduped = dedupeResult.items;
-        qualityDeduped.sort((a: any, b: any) => {
-          const popDiff = (b?.artistPopularity ?? 0) - (a?.artistPopularity ?? 0);
-          if (popDiff) return popDiff;
-          const dateDiff = (b?.releaseTs ?? 0) - (a?.releaseTs ?? 0);
-          if (dateDiff) return dateDiff;
-          return String(a?.id ?? "").localeCompare(String(b?.id ?? ""));
-        });
+        qualityDeduped.sort((a: any, b: any) => compareServerDiscoverFreshness(a, b, nowMs));
         const artistCappedResult = capPerArtist(qualityDeduped, maxPerArtist);
 
         const finalItems = artistCappedResult.items.slice(0, MAX_RETURN).map((item: any) => {
@@ -1458,7 +1525,8 @@ serve(async (req) => {
               canServeFromCache = false;
               break;
             }
-            if (!isFreshDiscoverCachePayload(cachedPayload)) {
+            const expectedDays = Math.max(1, Math.min(365, Number.isFinite(Number(url.searchParams.get("days") ?? "30")) ? Number(url.searchParams.get("days") ?? "30") : 30));
+            if (!isFreshDiscoverCachePayload(cachedPayload, expectedDays)) {
               canServeFromCache = false;
               break;
             }
@@ -1522,6 +1590,7 @@ serve(async (req) => {
             year: computed.currentYear,
             days: computed.payload.days,
             ts: Date.now(),
+            cacheDate: discoverServerDateKey(),
           };
           if (!isGenreBucketCachePayload(cachePayload)) continue;
           const { error: cacheWriteError } = await writeDiscoverCache(cacheKey, cachePayload);
@@ -1813,21 +1882,15 @@ serve(async (req) => {
           days_ago: daysAgoFrom(a?.release_date),
         }));
       }
-      const candidates14 = candidatesAll.filter((a: any) => daysAgoFrom(a?.release_date) <= baseDays);
-      const candidates21 = candidatesAll.filter((a: any) => daysAgoFrom(a?.release_date) <= 21);
-      const MIN_AFTER_DAYS = 12;
-      let candidatesWindow = candidates14;
-      let daysWindowUsed: any = baseDays;
-      if (candidates14.length < MIN_AFTER_DAYS) {
-        candidatesWindow = candidatesAll;
-        daysWindowUsed = "browse_fallback";
-      }
+      const candidates14 = candidatesAll.filter((a: any) => daysAgoFrom(a?.release_date) < baseDays);
+      const candidatesWindow = candidates14;
+      const daysWindowUsed: any = baseDays;
       if (debugWide) {
         debugWide.days_window_used = daysWindowUsed;
         debugWide.after_days_filter_count = candidates14.length;
       }
 
-      if (!candidates14.length && !candidates21.length) {
+      if (!candidates14.length) {
         if (debugInfo) {
           debugInfo.sourceBreakdown.spotify = 0;
           debugInfo.sourceBreakdown.apple = 0;
@@ -1868,14 +1931,16 @@ serve(async (req) => {
             const rec = recencyBoost(a?.release_date, 7);
             const mb = marketBoost(a?.__markets ?? [], primaryMarket);
             const score = 0.70 * pop + 0.20 * rec + 0.10 * mb;
-            return { ...a, __score: score, __pop: pop };
+            const normalizedDate = normalizeDate(a?.release_date) ?? "1970-01-01";
+            const releaseTs = Date.parse(normalizedDate);
+            return { ...a, __score: score, __pop: pop, releaseTs: Number.isNaN(releaseTs) ? null : releaseTs };
           });
           scored.sort((a: any, b: any) => {
+            const bandDiff = discoverServerFreshnessBand(a?.releaseTs, Date.now()) - discoverServerFreshnessBand(b?.releaseTs, Date.now());
+            if (bandDiff) return bandDiff;
             if ((b.__score ?? 0) !== (a.__score ?? 0)) return (b.__score ?? 0) - (a.__score ?? 0);
-            const na = normalizeDate(a?.release_date) ?? '1970-01-01';
-            const nb = normalizeDate(b?.release_date) ?? '1970-01-01';
-            const dt = Date.parse(nb) - Date.parse(na);
-            if (dt) return dt;
+            const dateDiff = (b?.releaseTs ?? 0) - (a?.releaseTs ?? 0);
+            if (dateDiff) return dateDiff;
             return (b.__pop ?? 0) - (a.__pop ?? 0);
           });
           return scored;
@@ -1886,12 +1951,10 @@ serve(async (req) => {
         let finalPool = top14;
         let daysUsed = baseDays;
         if (top14.length < 8) {
-          const scored21 = scoreList(candidates21);
-          finalPool = scored21.filter((a: any) => (a.__pop ?? 0) >= 50);
-          daysUsed = 21;
+          finalPool = scored14;
           if (debugWide) debugWide.threshold_relaxed.top_picks = true;
         }
-        if (debugWide && debugWide.days_window_used !== "browse_fallback") debugWide.days_window_used = daysUsed;
+        if (debugWide) debugWide.days_window_used = daysUsed;
         if (debugWide) {
           const popVals = finalPool.map((a: any) => (a.__pop ?? 0)).sort((a: number, b: number) => a - b);
           const mid = Math.floor(popVals.length / 2);
