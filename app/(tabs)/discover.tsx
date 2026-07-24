@@ -23,11 +23,14 @@ import { getMarket, parseSpotifyUrlOrId, spotifyLookup, spotifySearch, type Spot
 import { artistAlbums, artistTopTracks, fetchArtistDetails } from '../../lib/spotifyArtist';
 import {
   DISCOVER_RELEASE_WINDOW_DAYS,
+  compareDiscoverReleaseFreshness,
   discoverReleaseDateTimestamp,
+  discoverLocalDateKey,
   discoverWindowCutoff,
   filterDiscoverEligibleReleases,
   isDiscoverReleaseDateEligible,
   normalizeDiscoverReleaseDate,
+  sortDiscoverReleasesByFreshness,
 } from '../../lib/discoverFreshness';
 import { supabase } from '../../lib/supabase';
 import { useOffline } from '../../components/useOffline';
@@ -68,11 +71,17 @@ const DISCOVER_HEADER_HEIGHT = 76;
 const UPDATES_DEEP_REFRESH_TTL_MS = 15 * 60 * 1000;
 const UPDATES_SCAN_BATCH_SIZE = 3;
 const DISCOVER_REFRESH_TTL_MS = 30 * 60 * 1000;
+const DISCOVER_FRIDAY_REFRESH_TTL_MS = 10 * 60 * 1000;
 
 type DiscoverCachedSectionFeed = {
   topPicks: Awaited<ReturnType<typeof getTopPicks>>;
   genreRows: { genre: CanonicalGenre; items: Awaited<ReturnType<typeof getWesternNewReleases>> }[];
   candidates: Awaited<ReturnType<typeof getWesternNewReleases>>;
+};
+
+type DiscoverRefreshSuccessState = {
+  ts: number;
+  localDate: string;
 };
 
 function spotifyKey(id?: string | null, spotifyUrl?: string | null) {
@@ -97,6 +106,40 @@ function discoverDateTimestamp(value?: string | null, precision?: string | null)
 
 function isWithinDiscoverWindow(value: string | null | undefined, cutoffTs: number, precision?: string | null): boolean {
   return isDiscoverReleaseDateEligible(value, { cutoffTs, precision });
+}
+
+function sortDiscoverAlbums<T extends { releaseDate?: string | null; releaseDatePrecision?: string | null; release_date?: string | null; release_date_precision?: string | null }>(
+  items: T[],
+  compareWithinBand?: (a: T, b: T) => number
+): T[] {
+  return sortDiscoverReleasesByFreshness(items, { compareWithinBand });
+}
+
+function sortDiscoverArtistUpdates<T extends { latestDate?: string | null }>(items: T[]): T[] {
+  return sortDiscoverReleasesByFreshness(items, {
+    getDate: (item) => item.latestDate ?? null,
+  });
+}
+
+function parseDiscoverRefreshSuccessState(raw: string | null): DiscoverRefreshSuccessState | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    const ts = Number(parsed?.ts);
+    const localDate = typeof parsed?.localDate === 'string' ? parsed.localDate : null;
+    if (Number.isFinite(ts) && ts > 0) {
+      return { ts, localDate: localDate || discoverLocalDateKey(new Date(ts)) };
+    }
+  } catch {}
+  const ts = Number(raw);
+  if (Number.isFinite(ts) && ts > 0) {
+    return { ts, localDate: discoverLocalDateKey(new Date(ts)) };
+  }
+  return null;
+}
+
+function discoverRefreshTtlMs(now = new Date()): number {
+  return now.getDay() === 5 ? DISCOVER_FRIDAY_REFRESH_TTL_MS : DISCOVER_REFRESH_TTL_MS;
 }
 
 function normalizeArtistIdentity(value?: string | null): string | null {
@@ -314,6 +357,7 @@ export default function DiscoverTab() {
   const [menuRow, setMenuRow] = useState<any | null>(null);
   const lastFetchRef = useRef<number>(0);
   const lastSuccessfulRefreshRef = useRef<number>(0);
+  const lastSuccessfulRefreshLocalDateRef = useRef<string | null>(null);
   const loadInFlightRef = useRef(false);
   const initialDiscoverLoadStartedRef = useRef(false);
   const discoverStartupReadyRef = useRef(false);
@@ -325,7 +369,7 @@ export default function DiscoverTab() {
   const { offline } = useOffline();
   const debugSetNewReleases = useCallback(
     (source: string, items: Awaited<ReturnType<typeof getWesternNewReleases>>) => {
-      const eligible = filterDiscoverEligibleReleases(items);
+      const eligible = sortDiscoverAlbums(filterDiscoverEligibleReleases(items));
       if (__DEV__) {
         const first3 = (eligible ?? []).slice(0, 3).map((it) => ({
           id: it?.id ?? null,
@@ -525,6 +569,7 @@ export default function DiscoverTab() {
       if (effective.size) {
         top = await filterReleasesByGenres(top, effective);
       }
+      top = sortDiscoverAlbums(top);
       top.forEach((it) => {
         const key = spotifyKey(it.id, it.spotifyUrl);
         if (key) taken.add(key);
@@ -553,7 +598,9 @@ export default function DiscoverTab() {
   const yourUpdatesLoading = pickedLoading || forYouLoading || !followedArtistsLoaded;
   const freshYourUpdatesReleases = useMemo(() => {
     const cutoffTs = discoverWindowCutoff(UPDATES_DAYS);
-    return yourUpdatesReleases.filter((item) => isWithinDiscoverWindow(item.releaseDate ?? null, cutoffTs));
+    return sortDiscoverAlbums(
+      yourUpdatesReleases.filter((item) => isWithinDiscoverWindow(item.releaseDate ?? null, cutoffTs))
+    );
   }, [yourUpdatesReleases]);
   const followedArtists = useMemo<FollowedUpdateArtist[]>(() => {
     const cutoffTs = discoverWindowCutoff(UPDATES_DAYS);
@@ -588,7 +635,7 @@ export default function DiscoverTab() {
         latestDate: item.releaseDate ?? null,
       });
     });
-    return Array.from(uniq.values());
+    return sortDiscoverArtistUpdates(Array.from(uniq.values()));
   }, [followedArtistRows, followedDetails, forYouItems, freshYourUpdatesReleases]);
   const yourUpdatesVisible = useMemo(
     () => freshYourUpdatesReleases.slice(0, YOUR_UPDATES_CAP),
@@ -977,10 +1024,9 @@ export default function DiscoverTab() {
         });
       }
       scored.sort((a, b) => {
-        if (b.score !== a.score) return b.score - a.score;
-        const ad = a.releaseDate ? Date.parse(a.releaseDate) : 0;
-        const bd = b.releaseDate ? Date.parse(b.releaseDate) : 0;
-        return bd - ad;
+        return compareDiscoverReleaseFreshness(a, b, {
+          compareWithinBand: (left, right) => (right.score ?? 0) - (left.score ?? 0),
+        });
       });
 
       let finalList = scored.slice(0, 12);
@@ -1005,13 +1051,13 @@ export default function DiscoverTab() {
           return null;
         }));
         const clean = fallback.filter(Boolean) as any[];
-        if (clean.length) finalList = clean.slice(0, 12);
+        if (clean.length) finalList = sortDiscoverAlbums(clean).slice(0, 12);
       }
       if (!finalList.length && newReleases.length) {
-        const altPool = newReleases.filter((it) => {
+        const altPool = sortDiscoverAlbums(newReleases.filter((it) => {
           const key = spotifyKey(it.id, it.spotifyUrl);
           return !(key && (listenedKeys.has(key) || takenTopPicks.has(key)));
-        });
+        }));
         finalList = altPool.slice(0, 8).map((it) => ({
           ...it,
           reason: 'Picked based on your listening.',
@@ -1022,7 +1068,10 @@ export default function DiscoverTab() {
           sourceGenre: undefined,
         }));
       }
-      setYouMightLike(finalList.slice(0, 12));
+      setYouMightLike(sortDiscoverAlbums(
+        finalList,
+        (left, right) => (right.score ?? 0) - (left.score ?? 0)
+      ).slice(0, 12));
     } catch (e) {
       setYouMightLike([]);
     }
@@ -1157,46 +1206,61 @@ export default function DiscoverTab() {
 
   const cacheNewReleases = async (items: Awaited<ReturnType<typeof getWesternNewReleases>>) => {
     try {
-      const eligible = filterDiscoverEligibleReleases(items);
+      const eligible = sortDiscoverAlbums(filterDiscoverEligibleReleases(items));
       await AsyncStorage.setItem(NEW_RELEASES_CACHE_KEY, JSON.stringify({ items: eligible, ts: Date.now() }));
     } catch {}
   };
   const cacheForYou = async (items: Array<{ id: string; name: string; imageUrl?: string | null; latestId?: string; latestDate?: string | null }>, key: string = FOR_YOU_CACHE_KEY) => {
     try {
       const cutoffTs = discoverWindowCutoff(UPDATES_DAYS);
-      const eligible = items.filter((item) => isWithinDiscoverWindow(item.latestDate ?? null, cutoffTs));
+      const eligible = sortDiscoverArtistUpdates(items.filter((item) => isWithinDiscoverWindow(item.latestDate ?? null, cutoffTs)));
       await AsyncStorage.setItem(key, JSON.stringify({ items: eligible, ts: Date.now() }));
     } catch {}
   };
   const markDiscoverRefreshSuccessful = useCallback((timestamp = Date.now()) => {
+    const state = { ts: timestamp, localDate: discoverLocalDateKey(new Date(timestamp)) };
     lastSuccessfulRefreshRef.current = timestamp;
-    AsyncStorage.setItem(DISCOVER_LAST_SUCCESS_KEY, String(timestamp)).catch(() => {});
+    lastSuccessfulRefreshLocalDateRef.current = state.localDate;
+    AsyncStorage.setItem(DISCOVER_LAST_SUCCESS_KEY, JSON.stringify(state)).catch(() => {});
   }, [DISCOVER_LAST_SUCCESS_KEY]);
 
   const cacheDiscoverFeed = useCallback(async (feed: DiscoverCachedSectionFeed) => {
     try {
       const raw = await AsyncStorage.getItem(DISCOVER_FEED_CACHE_KEY);
+      let existingTopPicks: Awaited<ReturnType<typeof getWesternNewReleases>> = [];
+      let existingCandidates: Awaited<ReturnType<typeof getWesternNewReleases>> = [];
       let existingRows: { genre: CanonicalGenre; items: Awaited<ReturnType<typeof getWesternNewReleases>> }[] = [];
       if (raw) {
         try {
           const parsed = JSON.parse(raw);
+          existingTopPicks = sortDiscoverAlbums(filterDiscoverEligibleReleases(Array.isArray(parsed?.topPicks) ? parsed.topPicks : [])) as Awaited<ReturnType<typeof getWesternNewReleases>>;
+          existingCandidates = sortDiscoverAlbums(filterDiscoverEligibleReleases(Array.isArray(parsed?.candidates) ? parsed.candidates : [])) as Awaited<ReturnType<typeof getWesternNewReleases>>;
           existingRows = (Array.isArray(parsed?.genreRows) ? parsed.genreRows : [])
             .map((row: any) => ({
               genre: row?.genre as CanonicalGenre,
-              items: filterDiscoverEligibleReleases(Array.isArray(row?.items) ? row.items : []) as Awaited<ReturnType<typeof getWesternNewReleases>>,
+              items: sortDiscoverAlbums(filterDiscoverEligibleReleases(Array.isArray(row?.items) ? row.items : [])) as Awaited<ReturnType<typeof getWesternNewReleases>>,
             }))
             .filter((row: any) => row.genre && row.items.length > 0);
         } catch {}
       }
       const existingByGenre = new Map(existingRows.map((row) => [row.genre, row.items]));
+      const topPicks = sortDiscoverAlbums(filterDiscoverEligibleReleases(feed.topPicks || [])) as Awaited<ReturnType<typeof getWesternNewReleases>>;
+      const candidates = sortDiscoverAlbums(filterDiscoverEligibleReleases(feed.candidates || [])) as Awaited<ReturnType<typeof getWesternNewReleases>>;
       const genreRows = feed.genreRows.map((row) => {
-        const eligible = filterDiscoverEligibleReleases(row.items || []) as Awaited<ReturnType<typeof getWesternNewReleases>>;
+        const eligible = sortDiscoverAlbums(filterDiscoverEligibleReleases(row.items || [])) as Awaited<ReturnType<typeof getWesternNewReleases>>;
         return {
           genre: row.genre,
           items: eligible.length ? eligible : (existingByGenre.get(row.genre) ?? eligible),
         };
       });
-      await AsyncStorage.setItem(DISCOVER_FEED_CACHE_KEY, JSON.stringify({ ...feed, genreRows, ts: Date.now() }));
+      await AsyncStorage.setItem(DISCOVER_FEED_CACHE_KEY, JSON.stringify({
+        ...feed,
+        topPicks: topPicks.length ? topPicks : existingTopPicks,
+        genreRows,
+        candidates: candidates.length ? candidates : existingCandidates,
+        ts: Date.now(),
+        localDate: discoverLocalDateKey(),
+      }));
     } catch {}
   }, [DISCOVER_FEED_CACHE_KEY]);
 
@@ -1205,14 +1269,14 @@ export default function DiscoverTab() {
       const raw = await AsyncStorage.getItem(DISCOVER_FEED_CACHE_KEY);
       if (!raw) return false;
       const parsed = JSON.parse(raw);
-      const topPicks = filterDiscoverEligibleReleases(Array.isArray(parsed?.topPicks) ? parsed.topPicks : []) as Awaited<ReturnType<typeof getWesternNewReleases>>;
+      const topPicks = sortDiscoverAlbums(filterDiscoverEligibleReleases(Array.isArray(parsed?.topPicks) ? parsed.topPicks : [])) as Awaited<ReturnType<typeof getWesternNewReleases>>;
       const genreRows = (Array.isArray(parsed?.genreRows) ? parsed.genreRows : [])
         .map((row: any) => ({
           genre: row?.genre as CanonicalGenre,
-          items: filterDiscoverEligibleReleases(Array.isArray(row?.items) ? row.items : []) as Awaited<ReturnType<typeof getWesternNewReleases>>,
+          items: sortDiscoverAlbums(filterDiscoverEligibleReleases(Array.isArray(row?.items) ? row.items : [])) as Awaited<ReturnType<typeof getWesternNewReleases>>,
         }))
         .filter((row: any) => row.genre);
-      const candidates = filterDiscoverEligibleReleases(Array.isArray(parsed?.candidates) ? parsed.candidates : []) as Awaited<ReturnType<typeof getWesternNewReleases>>;
+      const candidates = sortDiscoverAlbums(filterDiscoverEligibleReleases(Array.isArray(parsed?.candidates) ? parsed.candidates : [])) as Awaited<ReturnType<typeof getWesternNewReleases>>;
       const hasEligibleContent = topPicks.length > 0 || genreRows.some((row: any) => row.items.length > 0) || candidates.length > 0;
       if (!hasEligibleContent) {
         await AsyncStorage.removeItem(DISCOVER_FEED_CACHE_KEY);
@@ -1221,11 +1285,7 @@ export default function DiscoverTab() {
       setTopPicksRaw(topPicks);
       setGenreRows(genreRows);
       debugSetNewReleases('from section cache', candidates.length ? candidates : topPicks);
-      const parsedRows = Array.isArray(parsed?.genreRows) ? parsed.genreRows : [];
-      const genreItemsChanged = genreRows.some((row: any, index: number) => row.items.length !== (Array.isArray(parsedRows[index]?.items) ? parsedRows[index].items.length : 0));
-      if (topPicks.length !== parsed.topPicks?.length || genreItemsChanged || candidates.length !== parsed.candidates?.length) {
-        await AsyncStorage.setItem(DISCOVER_FEED_CACHE_KEY, JSON.stringify({ ...parsed, topPicks, genreRows, candidates }));
-      }
+      await AsyncStorage.setItem(DISCOVER_FEED_CACHE_KEY, JSON.stringify({ ...parsed, topPicks, genreRows, candidates, localDate: discoverLocalDateKey() }));
       return true;
     } catch {
       return false;
@@ -1300,7 +1360,7 @@ export default function DiscoverTab() {
       const [nrResult, genresResult, topPicksResult, genreResult] = await Promise.allSettled([
         getWesternNewReleases(NEW_RELEASE_DAYS, 220, DISCOVER_MARKETS),
         loadIncludedGenres(),
-        getTopPicks(DISCOVER_TOP_PICKS_DAYS),
+        getTopPicks(DISCOVER_TOP_PICKS_DAYS, { refresh: true }),
         getNewReleasesByGenre({
           genres: visibleSectionTargets,
           days: DISCOVER_GENRE_DAYS,
@@ -1312,7 +1372,7 @@ export default function DiscoverTab() {
       let discoverDataRefreshSucceeded = false;
       let nr: Awaited<ReturnType<typeof getWesternNewReleases>> = [];
       if (nrResult.status === 'fulfilled') {
-        nr = filterDiscoverEligibleReleases(nrResult.value || []);
+        nr = sortDiscoverAlbums(filterDiscoverEligibleReleases(nrResult.value || []));
         if (__DEV__) {
           const sample = nr?.[0];
           const railsPoolNow = nr.filter((it) => !!it.spotifyUrl && !!it.artistId);
@@ -1364,7 +1424,7 @@ export default function DiscoverTab() {
 
       let topPicks: Awaited<ReturnType<typeof getTopPicks>> = [];
       if (topPicksResult.status === 'fulfilled') {
-        topPicks = filterDiscoverEligibleReleases(topPicksResult.value || []) as Awaited<ReturnType<typeof getTopPicks>>;
+        topPicks = sortDiscoverAlbums(filterDiscoverEligibleReleases(topPicksResult.value || [])) as Awaited<ReturnType<typeof getTopPicks>>;
         setTopPicksRaw(topPicks);
       } else {
         if (!preserveExisting) {
@@ -1379,7 +1439,7 @@ export default function DiscoverTab() {
         const buckets = genreResult.value;
         directGenreRows = visibleSectionTargets.map((genre) => ({
           genre,
-          items: filterDiscoverEligibleReleases(Array.isArray((buckets as any)?.[genre]) ? (buckets as any)[genre] : []) as Awaited<ReturnType<typeof getWesternNewReleases>>,
+          items: sortDiscoverAlbums(filterDiscoverEligibleReleases(Array.isArray((buckets as any)?.[genre]) ? (buckets as any)[genre] : [])) as Awaited<ReturnType<typeof getWesternNewReleases>>,
         }));
         setGenreRows(directGenreRows);
       } else {
@@ -1401,6 +1461,7 @@ export default function DiscoverTab() {
           genreRows: directGenreRows,
           candidates: nr.length ? nr : filterDiscoverEligibleReleases([...topPicks, ...genreItems]) as Awaited<ReturnType<typeof getWesternNewReleases>>,
         });
+        markDiscoverRefreshSuccessful();
       }
 
       if (genresResult.status === 'fulfilled') {
@@ -1780,7 +1841,7 @@ export default function DiscoverTab() {
           });
           const useGlobalNewReleaseFallbackForUpdates = false;
 	          if (useGlobalNewReleaseFallbackForUpdates && fallbackFromNr.length) {
-	            const releases = fallbackFromNr.slice(0, 60).map((r: any) => {
+	            const releases = sortDiscoverAlbums(fallbackFromNr).slice(0, 60).map((r: any) => {
 	              const { name: aname } = primaryArtist(r);
                 const artistId = followedArtistIdForRelease(r);
                 const matchedArtist = artistId ? { id: artistId, name: followedNameById.get(artistId) || r.artist || r.artist_name || 'Unknown' } : null;
@@ -2044,9 +2105,6 @@ export default function DiscoverTab() {
       }
       finally { setPickedLoading(false); setForYouLoading(false); }
       await refreshListenStatus();
-      if (discoverDataRefreshSucceeded) {
-        markDiscoverRefreshSuccessful();
-      }
     } catch (err) {
       setTopPicksError((prev: any | null) => prev ?? err);
       if (__DEV__) console.warn('[discover] load failed', err);
@@ -2062,8 +2120,13 @@ export default function DiscoverTab() {
     loadRef.current = load;
   }, [debugSetNewReleases, load]);
 
-  const shouldRefreshDiscover = useCallback(() => {
-    return Date.now() - lastSuccessfulRefreshRef.current > DISCOVER_REFRESH_TTL_MS;
+  const shouldRefreshDiscover = useCallback((now = new Date()) => {
+    const lastTs = lastSuccessfulRefreshRef.current;
+    if (!lastTs) return true;
+    const todayKey = discoverLocalDateKey(now);
+    const lastDateKey = lastSuccessfulRefreshLocalDateRef.current || discoverLocalDateKey(new Date(lastTs));
+    if (lastDateKey !== todayKey) return true;
+    return now.getTime() - lastTs > discoverRefreshTtlMs(now);
   }, []);
 
   const refreshDiscoverIfDue = useCallback(() => {
@@ -2088,10 +2151,10 @@ export default function DiscoverTab() {
     (async () => {
       let hasValidRecentFeed = false;
       try {
-        const successRaw = await AsyncStorage.getItem(DISCOVER_LAST_SUCCESS_KEY);
-        const successTs = Number(successRaw);
-        if (Number.isFinite(successTs) && successTs > 0) {
-          lastSuccessfulRefreshRef.current = successTs;
+        const successState = parseDiscoverRefreshSuccessState(await AsyncStorage.getItem(DISCOVER_LAST_SUCCESS_KEY));
+        if (successState) {
+          lastSuccessfulRefreshRef.current = successState.ts;
+          lastSuccessfulRefreshLocalDateRef.current = successState.localDate;
         }
         const hydratedSectionFeed = await hydrateDiscoverFeedFromCache();
         hasValidRecentFeed = hydratedSectionFeed;
@@ -2100,7 +2163,7 @@ export default function DiscoverTab() {
         if (raw && mounted) {
           const parsed = JSON.parse(raw);
           if (Array.isArray(parsed?.items)) {
-            const eligible = filterDiscoverEligibleReleases(parsed.items) as Awaited<ReturnType<typeof getWesternNewReleases>>;
+            const eligible = sortDiscoverAlbums(filterDiscoverEligibleReleases(parsed.items)) as Awaited<ReturnType<typeof getWesternNewReleases>>;
             hasValidRecentFeed = hasValidRecentFeed || eligible.length > 0;
             if (eligible.length !== parsed.items.length) {
               await AsyncStorage.setItem(NEW_RELEASES_CACHE_KEY, JSON.stringify({ ...parsed, items: eligible }));
@@ -2127,7 +2190,7 @@ export default function DiscoverTab() {
     if (!offline) refreshDiscoverIfDue();
   }, [offline, refreshDiscoverIfDue]);
 
-  // Refresh on focus when the last successful refresh is older than 30 minutes.
+  // Refresh on focus when the last successful refresh is stale for the current local day.
   useFocusEffect(
     useCallback(() => {
       refreshDiscoverIfDue();
@@ -2996,7 +3059,7 @@ export default function DiscoverTab() {
         };
 
         const renderHeroRow = (data: any[], key: string) => {
-          const eligible = filterDiscoverEligibleReleases(data);
+          const eligible = sortDiscoverAlbums(filterDiscoverEligibleReleases(data));
           if (!eligible.length) return null;
           return (
             <FlatList
@@ -3017,7 +3080,7 @@ export default function DiscoverTab() {
         const getHeroCount = (len: number) => Math.min(3, Math.max(0, len));
 
         const renderSection = (data: any[], title: string, key: string) => {
-          const eligible = filterDiscoverEligibleReleases(data);
+          const eligible = sortDiscoverAlbums(filterDiscoverEligibleReleases(data));
           if (!eligible.length) return null;
           if (viewMode === 'pills') {
             return (
@@ -3044,7 +3107,10 @@ export default function DiscoverTab() {
           data: Array<{ item: typeof yourUpdatesVisible[number]; artistKey: string; moreCount?: number; hideArtist?: boolean; expandOnPress?: boolean }>,
           key: string
         ) => {
-          const eligible = data.filter((entry) => isDiscoverReleaseDateEligible(entry.item.releaseDate ?? null));
+          const eligible = sortDiscoverReleasesByFreshness(
+            data.filter((entry) => isDiscoverReleaseDateEligible(entry.item.releaseDate ?? null)),
+            { getDate: (entry) => entry.item.releaseDate ?? null }
+          );
           if (!eligible.length) return null;
           if (viewMode === 'pills') {
             return (

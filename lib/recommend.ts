@@ -3,7 +3,10 @@ import { FN_BASE as FN, fetchFn } from './fnBase';
 import { getMarket } from './spotify';
 import { getArtistGenresCached } from './styleFilters';
 import {
+  compareDiscoverReleaseFreshness,
   filterDiscoverEligibleReleases,
+  isDiscoverReleaseDateEligible,
+  sortDiscoverReleasesByFreshness,
 } from './discoverFreshness';
 
 export type SimpleAlbum = {
@@ -76,14 +79,7 @@ export function mapArtistGenresToKeys(artistGenres: string[], limit = 3): string
 
 function isRecent(date?: string | null, days = 21) {
   if (!date) return false;
-  // Normalize precision: YYYY -> YYYY-07-01, YYYY-MM -> YYYY-MM-15
-  let s = String(date);
-  if (/^\d{4}$/.test(s)) s = `${s}-07-01`;
-  else if (/^\d{4}-\d{2}$/.test(s)) s = `${s}-15`;
-  const t = Date.parse(s);
-  if (Number.isNaN(t)) return false;
-  const diffDays = (Date.now() - t) / (24 * 60 * 60 * 1000);
-  return diffDays <= days;
+  return isDiscoverReleaseDateEligible(date, { days });
 }
 
 export async function getNewReleases(days = 21, marketIn?: string): Promise<SimpleAlbum[]> {
@@ -264,8 +260,10 @@ export async function getWesternNewReleases(days = 42, target = 200, marketsIn?:
   });
 
   scored.sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score;
-    return releaseDateSort(a.item, b.item);
+    return compareDiscoverReleaseFreshness(a, b, {
+      getDate: (entry) => entry.item.releaseDate ?? null,
+      compareWithinBand: (left, right) => right.score - left.score,
+    });
   });
 
   const MIN_POP = 35;
@@ -306,10 +304,10 @@ export async function getWesternNewReleases(days = 42, target = 200, marketsIn?:
   if (!out.length) {
     return await getNewReleases(days, markets[0]);
   }
-  return out;
+  return sortDiscoverReleasesByFreshness(out);
 }
 
-export async function getTopPicks(days = 30): Promise<SimpleAlbum[]> {
+export async function getTopPicks(days = 30, opts?: { refresh?: boolean }): Promise<SimpleAlbum[]> {
   const mapTopPicks = (items: any[]) => {
     const mapped: SimpleAlbum[] = (items || []).map((a: any) => ({
       id: a?.id ?? '',
@@ -329,7 +327,7 @@ export async function getTopPicks(days = 30): Promise<SimpleAlbum[]> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       const params = new URLSearchParams({ days: String(days) });
-      if (attempt > 0) params.set('refresh', '1');
+      if (opts?.refresh || attempt > 0) params.set('refresh', '1');
       const r = await fetchFn(`${FN}/spotify-search/top-picks?` + params);
       if (!r.ok) continue;
       const data: any = await r.json();
@@ -337,7 +335,11 @@ export async function getTopPicks(days = 30): Promise<SimpleAlbum[]> {
         ? data.items
         : (Array.isArray(data?.albums?.items) ? data.albums.items : []);
       const mapped = mapTopPicks(items);
-      if (mapped.length > 0) return mapped;
+      if (mapped.length > 0) {
+        return sortDiscoverReleasesByFreshness(mapped, {
+          compareWithinBand: (a, b) => (b.artistPopularity ?? 0) - (a.artistPopularity ?? 0),
+        });
+      }
     } catch {}
   }
   throw new Error('top-picks failed');
@@ -430,8 +432,8 @@ export async function getNewReleasesWide(days = 28, target = 250, marketIn?: str
       return out;
     };
   const filtered = mapped.filter((m) => isRecent(m.releaseDate, days));
-  // Preserve server ordering (already popularity-first with recency lift); only dedupe + cap
-  return dedupe(filtered).slice(0, Math.max(10, Math.min(500, target)));
+  // Keep the server payload bounded, then apply Discover's date-band ordering.
+  return sortDiscoverReleasesByFreshness(dedupe(filtered)).slice(0, Math.max(10, Math.min(500, target)));
   } catch {
     if (devLog) console.log('[new-releases-wide][path]', 'fallback to browse');
     // Fallback: use curated if wide fails
@@ -499,6 +501,11 @@ export async function getNewReleasesByGenre(opts?: { genres?: string[]; days?: n
     }
     const serverBuckets = cloneBucketMap(buckets);
     const clientBuckets = mapToClientBuckets(serverBuckets);
+    for (const key of Object.keys(clientBuckets)) {
+      clientBuckets[key] = sortDiscoverReleasesByFreshness(clientBuckets[key], {
+        compareWithinBand: (a, b) => (b.artistPopularity ?? 0) - (a.artistPopularity ?? 0),
+      });
+    }
     logBuckets('final', clientBuckets);
     const anyFinal = clientKeys.some((k) => (clientBuckets[k]?.length ?? 0) > 0);
     if (anyFinal) {

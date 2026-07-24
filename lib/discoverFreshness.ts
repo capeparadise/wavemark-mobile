@@ -52,8 +52,12 @@ export function normalizeDiscoverReleaseDate(value: DateValue, precision?: strin
 export function discoverWindowCutoff(days = DISCOVER_RELEASE_WINDOW_DAYS, now = new Date()): number {
   const date = new Date(now);
   date.setHours(0, 0, 0, 0);
-  date.setDate(date.getDate() - days);
+  date.setDate(date.getDate() - Math.max(0, days - 1));
   return date.getTime();
+}
+
+export function discoverLocalDateKey(now = new Date()): string {
+  return `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`;
 }
 
 function discoverWindowEnd(now = new Date()): number {
@@ -99,4 +103,61 @@ export function filterDiscoverEligibleReleases<T>(
       precision: getPrecision(item),
     })
   ));
+}
+
+export function discoverFreshnessBand(
+  value: DateValue,
+  opts?: { precision?: string | null; now?: Date; days?: number }
+): number {
+  const normalized = normalizeDiscoverReleaseDate(value, opts?.precision);
+  if (!normalized) return Number.POSITIVE_INFINITY;
+  const [year, month, day] = normalized.split('-').map(Number);
+  const release = new Date(year, month - 1, day);
+  release.setHours(0, 0, 0, 0);
+  const today = new Date(opts?.now ?? new Date());
+  today.setHours(0, 0, 0, 0);
+  const ageDays = Math.floor((today.getTime() - release.getTime()) / (24 * 60 * 60 * 1000));
+  const days = opts?.days ?? DISCOVER_RELEASE_WINDOW_DAYS;
+  if (ageDays < 0 || ageDays >= days) return Number.POSITIVE_INFINITY;
+  if (ageDays === 0) return 0;
+  if (ageDays <= 3) return 1;
+  if (ageDays <= 7) return 2;
+  return 3;
+}
+
+export function compareDiscoverReleaseFreshness<T>(
+  a: T,
+  b: T,
+  opts?: {
+    now?: Date;
+    getDate?: (item: T) => DateValue;
+    getPrecision?: (item: T) => string | null | undefined;
+    compareWithinBand?: (a: T, b: T) => number;
+  }
+): number {
+  const getDate = opts?.getDate ?? ((item: any) => item?.releaseDate ?? item?.release_date ?? null);
+  const getPrecision = opts?.getPrecision ?? ((item: any) => item?.releaseDatePrecision ?? item?.release_date_precision ?? null);
+  const now = opts?.now ?? new Date();
+  const aBand = discoverFreshnessBand(getDate(a), { precision: getPrecision(a), now });
+  const bBand = discoverFreshnessBand(getDate(b), { precision: getPrecision(b), now });
+  if (aBand !== bBand) return aBand - bBand;
+  const withinBand = opts?.compareWithinBand?.(a, b) ?? 0;
+  if (withinBand) return withinBand;
+  const dateDiff = discoverReleaseDateTimestamp(getDate(b), getPrecision(b)) - discoverReleaseDateTimestamp(getDate(a), getPrecision(a));
+  if (dateDiff) return dateDiff;
+  return 0;
+}
+
+export function sortDiscoverReleasesByFreshness<T>(
+  items: T[],
+  opts?: Parameters<typeof compareDiscoverReleaseFreshness<T>>[2]
+): T[] {
+  return (items || [])
+    .map((item, index) => ({ item, index }))
+    .sort((a, b) => {
+      const freshness = compareDiscoverReleaseFreshness(a.item, b.item, opts);
+      if (freshness) return freshness;
+      return a.index - b.index;
+    })
+    .map(({ item }) => item);
 }
