@@ -1,4 +1,4 @@
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Ionicons } from '@expo/vector-icons';
 import { PlatformPressable } from '@react-navigation/elements';
 import { BlurView } from 'expo-blur';
 import { Tabs } from 'expo-router';
@@ -10,8 +10,7 @@ import TabBarBackground, { TAB_BAR_HEIGHT } from '../../components/ui/TabBarBack
 import { themeByName } from '../../theme/themes';
 
 const TAB_ITEM_SIZE = TAB_BAR_HEIGHT;
-const ICON_SIZE = 28;
-const LISTEN_ICON_SIZE = 32;
+const ICON_SIZE = 24;
 const TAB_BAR_HORIZONTAL_PADDING = 58;
 const YOUR_WAVE_ICON = require('../../assets/icons/your-wave.png');
 
@@ -28,12 +27,13 @@ export default function TabsLayout() {
         headerShown: false,
         tabBarActiveTintColor: colors.accent.primary,
         tabBarInactiveTintColor: isDark ? '#a8afbd' : '#64748b',
-        tabBarShowLabel: false,
+        tabBarShowLabel: true,
         tabBarButton: (props) => (
           <PlatformPressable {...props} style={[props.style, styles.tabBarButton]} />
         ),
         tabBarIconStyle: styles.tabBarIconStyle,
         tabBarItemStyle: styles.tabBarItemStyle,
+        tabBarLabelStyle: styles.tabBarLabelStyle,
         tabBarBackground: () => (TabBarBackground ? <TabBarBackground /> : null),
         tabBarStyle: {
           position: 'absolute',
@@ -59,6 +59,7 @@ export default function TabsLayout() {
         name="discover"
         options={{
           title: 'Discover',
+          tabBarLabel: 'Discover',
           tabBarIcon: ({ color }) => (
             renderTabIcon(<Ionicons name="compass-outline" color={color} size={ICON_SIZE} />)
           ),
@@ -68,15 +69,17 @@ export default function TabsLayout() {
         name="listen"
         options={{
           title: 'Listen',
+          tabBarLabel: 'List',
           tabBarIcon: ({ color }) => (
-            renderTabIcon(<MaterialCommunityIcons name="waves" color={color} size={LISTEN_ICON_SIZE} />)
+            renderTabIcon(<Ionicons name="list-outline" color={color} size={ICON_SIZE} />)
           ),
         }}
       />
       <Tabs.Screen
         name="feed"
         options={{
-          title: 'Your Wave',
+          title: 'Feed',
+          tabBarLabel: 'Feed',
           tabBarIcon: ({ color }) => (
             renderTabIcon(
               <Image
@@ -91,6 +94,7 @@ export default function TabsLayout() {
         name="profile"
         options={{
           title: 'Profile',
+          tabBarLabel: 'Profile',
           headerShown: true,
           headerTransparent: true,
           headerShadowVisible: false,
@@ -142,30 +146,38 @@ const styles = StyleSheet.create({
   },
   tabBarIconStyle: {
     width: TAB_ITEM_SIZE,
-    height: TAB_ITEM_SIZE,
+    height: 29,
     marginTop: 0,
-    marginBottom: 0,
+    marginBottom: -2,
     alignItems: 'center',
     justifyContent: 'center',
   },
   tabBarItemStyle: {
     height: TAB_BAR_HEIGHT,
-    paddingTop: 0,
-    paddingBottom: 0,
+    paddingTop: 5,
+    paddingBottom: 5,
     paddingHorizontal: 4,
     borderRadius: 999,
     alignItems: 'center',
     justifyContent: 'center',
   },
+  tabBarLabelStyle: {
+    fontSize: 10,
+    lineHeight: 12,
+    fontWeight: '700',
+    letterSpacing: 0,
+    marginTop: 0,
+    marginBottom: 3,
+  },
   tabIconSlot: {
     width: TAB_ITEM_SIZE,
-    height: TAB_ITEM_SIZE,
+    height: 29,
     alignItems: 'center',
     justifyContent: 'center',
   },
   yourWaveIcon: {
-    width: 40,
-    height: 40,
+    width: 34,
+    height: 34,
     resizeMode: 'contain',
   },
 });
