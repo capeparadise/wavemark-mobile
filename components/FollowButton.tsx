@@ -15,14 +15,17 @@ export default function FollowButton({ artistId, artistName, spotifyUrl }: { art
   const onToggle = async () => {
     if (busy) return;
     setBusy(true);
-    if (!following) {
-      const r = await followArtist({ artistId, artistName, spotifyUrl });
-  if (r.ok) { setFollowing(true); H.success(); } else Alert.alert(r.message || 'Failed to follow');
-    } else {
-      const r = await unfollowArtist(artistId);
-  if (r.ok) { setFollowing(false); H.tap(); } else Alert.alert(r.message || 'Failed to unfollow');
+    try {
+      if (!following) {
+        const r = await followArtist({ artistId, artistName, spotifyUrl });
+        if (r.ok) { setFollowing(true); H.success(); } else Alert.alert(r.message || 'Failed to follow');
+      } else {
+        const r = await unfollowArtist(artistId);
+        if (r.ok) { setFollowing(false); H.tap(); } else Alert.alert(r.message || 'Failed to unfollow');
+      }
+    } finally {
+      setBusy(false);
     }
-    setBusy(false);
   };
 
   return (

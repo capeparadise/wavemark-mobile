@@ -12,7 +12,7 @@ import GlassCard from '../../components/GlassCard';
 import Chip from '../../components/Chip';
 import HeroReleaseCard from '../../components/discover/HeroReleaseCard';
 import { formatDate } from '../../lib/date';
-import { fetchFeed, fetchFeedForArtists, listFollowedArtists, type FeedItem } from '../../lib/follow';
+import { fetchFeed, fetchFeedForArtists, listFollowedArtists, type FeedItem, type FollowChangedEvent } from '../../lib/follow';
 import { off, on } from '../../lib/events';
 import { addToListFromSearch, markDoneByProvider } from '../../lib/listen';
 import { goToRelease } from '../../lib/navigation';
@@ -38,26 +38,22 @@ import { useTheme } from '../../theme/useTheme';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { filterReleasesByGenres, loadIncludedGenres, saveIncludedGenres, mapToCanonicalGenres, getArtistGenresCached, type CanonicalGenre } from '../../lib/styleFilters';
 import { RELEASE_LONG_PRESS_MS } from '../../hooks/useReleaseActions';
+import {
+  buildYourUpdatesFromCatalogs,
+  finalizeYourUpdates,
+  isReleaseStillFollowed,
+  type UpdateArtist as UpdateAttributionArtist,
+  type YourUpdatesRelease,
+} from '../../lib/yourUpdates';
 
 type Row = { kind: 'section-title'; title: string }
   | { kind: 'new'; id: string; title: string; artist: string; releaseDate?: string | null; spotifyUrl?: string | null; imageUrl?: string | null; type?: 'album' | 'single' | 'ep' }
   | { kind: 'search'; r: SpotifyResult };
 type DebugFetchResult = { url: string; status: number; build: string | null; body: string; ok: boolean };
 type SectionStatus = 'loading' | 'success' | 'empty' | 'error';
+type YourUpdatesStatus = 'idle' | 'loading' | 'populated' | 'no-followed-artists' | 'no-recent-updates' | 'partial-success' | 'error';
 type FollowedUpdateArtist = { id: string; name: string; imageUrl?: string | null; latestId?: string; latestDate?: string | null };
 type FollowedArtistDetails = Record<string, { name: string; imageUrl?: string | null }>;
-type UpdateAttributionArtist = { id: string; name: string };
-type YourUpdatesRelease = {
-  id: string;
-  title: string;
-  artist: string;
-  artistId?: string | null;
-  releaseDate?: string | null;
-  spotifyUrl?: string | null;
-  imageUrl?: string | null;
-  type?: 'album' | 'single' | 'ep';
-  followedBecauseArtists?: UpdateAttributionArtist[];
-};
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 type DiscoverViewMode = 'mixed' | 'pills';
@@ -70,6 +66,12 @@ const YOUR_UPDATES_CAP = 20;
 const DISCOVER_HEADER_HEIGHT = 76;
 const UPDATES_DEEP_REFRESH_TTL_MS = 15 * 60 * 1000;
 const UPDATES_SCAN_BATCH_SIZE = 3;
+const UPDATES_REQUEST_TIMEOUT_MS = 8000;
+const UPDATES_CATALOG_CONCURRENCY = 8;
+const UPDATES_RELEASE_CACHE_TTL_MS = 10 * 60 * 1000;
+// Oldest-first selection keeps each refresh bounded while rotating through larger follow lists.
+const UPDATES_MAX_CATALOG_REQUESTS_PER_REFRESH = 40;
+const USE_SERVER_FEED_ONLY_FOR_UPDATES = true;
 const DISCOVER_REFRESH_TTL_MS = 30 * 60 * 1000;
 const DISCOVER_FRIDAY_REFRESH_TTL_MS = 10 * 60 * 1000;
 
@@ -281,7 +283,60 @@ const toVisibleGenreSet = (genres: Iterable<CanonicalGenre>) => (
   new Set(Array.from(genres).filter((g) => VISIBLE_GENRE_KEYS.has(g)))
 );
 
-type DiscoverLoad = (opts?: { preserveExisting?: boolean }) => Promise<void>;
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out`)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
+}
+
+const isValidSpotifyArtistId = (id?: string | null) => (
+  typeof id === 'string' && /^[A-Za-z0-9]{22}$/.test(id)
+);
+
+const isYourUpdatesReleaseForFollowedArtists = (release: YourUpdatesRelease, followedIds: Set<string>) => {
+  if (!followedIds.size) return false;
+  if (isReleaseStillFollowed(release, followedIds)) return true;
+  if (release.artistId && followedIds.has(release.artistId)) return true;
+  return (release.followedBecauseArtists || []).some((artist) => followedIds.has(artist.id));
+};
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T) => Promise<R>
+): Promise<PromiseSettledResult<R>[]> {
+  const results: PromiseSettledResult<R>[] = new Array(items.length);
+  let nextIndex = 0;
+  const worker = async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex++;
+      try {
+        results[index] = { status: 'fulfilled', value: await mapper(items[index]) };
+      } catch (reason) {
+        results[index] = { status: 'rejected', reason };
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+  return results;
+}
+
+type DiscoverLoad = (opts?: {
+  preserveExisting?: boolean;
+  forceUpdatesRefresh?: boolean;
+  updatesOnly?: boolean;
+  refreshArtistIds?: string[];
+}) => Promise<void>;
 
 export default function DiscoverTab() {
   const { colors } = useTheme();
@@ -323,6 +378,8 @@ export default function DiscoverTab() {
   const [followedArtistRows, setFollowedArtistRows] = useState<FollowedUpdateArtist[]>([]);
   const [followedArtistsLoaded, setFollowedArtistsLoaded] = useState(false);
   const [yourUpdatesReleases, setYourUpdatesReleases] = useState<YourUpdatesRelease[]>([]);
+  const [yourUpdatesStatus, setYourUpdatesStatus] = useState<YourUpdatesStatus>('idle');
+  const [followedArtistCount, setFollowedArtistCount] = useState<number | null>(null);
   const [expandedUpdateArtists, setExpandedUpdateArtists] = useState<Set<string>>(new Set());
   const [topPicksLoading, setTopPicksLoading] = useState<boolean>(true);
   const [topPicksError, setTopPicksError] = useState<any | null>(null);
@@ -359,12 +416,16 @@ export default function DiscoverTab() {
   const lastSuccessfulRefreshRef = useRef<number>(0);
   const lastSuccessfulRefreshLocalDateRef = useRef<string | null>(null);
   const loadInFlightRef = useRef(false);
+  const loadWaitersRef = useRef<(() => void)[]>([]);
+  const queuedLoadRef = useRef<Promise<void>>(Promise.resolve());
   const initialDiscoverLoadStartedRef = useRef(false);
   const discoverStartupReadyRef = useRef(false);
   const artistImageMapRef = useRef<Record<string, string>>({});
   const updatesLastDeepScanAtRef = useRef<number>(0);
   const forYouItemsRef = useRef<typeof forYouItems>([]);
   const yourUpdatesReleasesRef = useRef<typeof yourUpdatesReleases>([]);
+  const currentFollowedIdsRef = useRef<Set<string>>(new Set());
+  const catalogCheckedAtRef = useRef<Record<string, number>>({});
   const loggedLoadCycleRef = useRef<number>(0);
   const { offline } = useOffline();
   const debugSetNewReleases = useCallback(
@@ -400,6 +461,7 @@ export default function DiscoverTab() {
   const PICKED_CACHE_KEY = 'pickedCacheV1';
   const FOR_YOU_CACHE_KEY = 'discover_for_you_v1';
   const FOR_YOU_UPDATES_CACHE_KEY = 'discover_for_you_updates_v1';
+  const YOUR_UPDATES_RELEASE_CACHE_KEY = 'discover_your_updates_releases_v2';
   const [pickedDebug, setPickedDebug] = useState<{ followed: number; feedRecents: number; albumRecents: number; trackRecents: number; final: number; missing: number } | null>(null);
   const NEW_RELEASES_CACHE_KEY = 'discover_new_releases_v3';
   const DISCOVER_FEED_CACHE_KEY = 'discover_feed_sections_v1';
@@ -426,6 +488,45 @@ export default function DiscoverTab() {
   useEffect(() => {
     yourUpdatesReleasesRef.current = yourUpdatesReleases;
   }, [yourUpdatesReleases]);
+
+  const pruneYourUpdatesForFollowedIds = useCallback((followedIds: Set<string>) => {
+    currentFollowedIdsRef.current = new Set(followedIds);
+    const nextCatalogCheckedAt = Object.fromEntries(
+      Object.entries(catalogCheckedAtRef.current).filter(([artistId]) => followedIds.has(artistId))
+    );
+    catalogCheckedAtRef.current = nextCatalogCheckedAt;
+    setFollowedArtistRows((prev) => prev.filter((artist) => followedIds.has(artist.id)));
+    setForYouItems((prev) => prev.filter((artist) => followedIds.has(artist.id)));
+    setYourUpdatesReleases((prev) => {
+      const next = prev.filter((release) => isYourUpdatesReleaseForFollowedArtists(release, followedIds));
+      setYourUpdatesStatus(
+        next.length
+          ? 'populated'
+          : followedIds.size
+            ? 'no-recent-updates'
+            : 'no-followed-artists'
+      );
+      AsyncStorage.setItem(
+        YOUR_UPDATES_RELEASE_CACHE_KEY,
+        JSON.stringify({ items: next, ts: Date.now(), catalogCheckedAt: nextCatalogCheckedAt })
+      ).catch(() => {});
+      return next;
+    });
+    setFollowedDetails((prev) => {
+      const next: FollowedArtistDetails = {};
+      Object.entries(prev).forEach(([artistId, detail]) => {
+        if (followedIds.has(artistId)) next[artistId] = detail;
+      });
+      return next;
+    });
+    setRecentByArtist((prev) => {
+      const next: Record<string, { latestId?: string; latestDate?: string | null }> = {};
+      Object.entries(prev).forEach(([artistId, recent]) => {
+        if (followedIds.has(artistId)) next[artistId] = recent;
+      });
+      return next;
+    });
+  }, [YOUR_UPDATES_RELEASE_CACHE_KEY]);
 
   useEffect(() => {
     let mounted = true;
@@ -595,7 +696,6 @@ export default function DiscoverTab() {
     setDraftGenres(visibleGenres.size ? new Set(visibleGenres) : new Set(['all']));
   }, [selectedGenres]);
 
-  const yourUpdatesLoading = pickedLoading || forYouLoading || !followedArtistsLoaded;
   const freshYourUpdatesReleases = useMemo(() => {
     const cutoffTs = discoverWindowCutoff(UPDATES_DAYS);
     return sortDiscoverAlbums(
@@ -702,12 +802,22 @@ export default function DiscoverTab() {
     return entries;
   }, [expandedUpdateArtists, yourUpdatesGroups]);
 
-  const yourUpdatesState = useMemo<{ items: typeof yourUpdatesReleases; status: SectionStatus; error?: any }>(() => {
+  const legacyYourUpdatesLoading = pickedLoading || forYouLoading || !followedArtistsLoaded;
+  const yourUpdatesLoading = yourUpdatesStatus === 'loading' && !freshYourUpdatesReleases.length;
+  const yourUpdatesState = useMemo<{ items: typeof yourUpdatesReleases; status: YourUpdatesStatus; error?: any }>(() => {
     if (yourUpdatesLoading) return { items: [], status: 'loading' };
-    if (yourUpdatesError) return { items: [], status: 'error', error: yourUpdatesError };
-    if (!freshYourUpdatesReleases.length) return { items: [], status: 'empty' };
-    return { items: freshYourUpdatesReleases, status: 'success' };
-  }, [freshYourUpdatesReleases, yourUpdatesError, yourUpdatesLoading]);
+    if (yourUpdatesError && !freshYourUpdatesReleases.length) return { items: [], status: 'error', error: yourUpdatesError };
+    if (freshYourUpdatesReleases.length) {
+      return {
+        items: freshYourUpdatesReleases,
+        status: yourUpdatesStatus === 'partial-success' ? 'partial-success' : 'populated',
+      };
+    }
+    if (followedArtistCount === 0) return { items: [], status: 'no-followed-artists' };
+    if (yourUpdatesStatus === 'error') return { items: [], status: 'error', error: yourUpdatesError };
+    if (yourUpdatesStatus === 'idle' && !followedArtistsLoaded) return { items: [], status: 'loading' };
+    return { items: [], status: 'no-recent-updates' };
+  }, [followedArtistCount, followedArtistsLoaded, freshYourUpdatesReleases, yourUpdatesError, yourUpdatesLoading, yourUpdatesStatus]);
 
   const topPicksState = useMemo<{ items: typeof filteredTopPicks; status: SectionStatus; error?: any }>(() => {
     if (topPicksLoading && !filteredTopPicks.length) return { items: [], status: 'loading' };
@@ -788,6 +898,7 @@ export default function DiscoverTab() {
       },
       loading: {
         yourUpdates: yourUpdatesLoading,
+        legacyYourUpdates: legacyYourUpdatesLoading,
         topPicks: topPicksLoading,
       },
       error: {
@@ -803,6 +914,7 @@ export default function DiscoverTab() {
     topPicksLoading,
     topPicksState.status,
     yourUpdatesError,
+    legacyYourUpdatesLoading,
     yourUpdatesLoading,
     freshYourUpdatesReleases.length,
     yourUpdatesState.status,
@@ -1338,14 +1450,18 @@ export default function DiscoverTab() {
     if (loadInFlightRef.current) return;
     loadInFlightRef.current = true;
     const preserveExisting = !!opts?.preserveExisting;
+    const updatesOnly = !!opts?.updatesOnly;
+    const forceUpdatesRefresh = !!opts?.forceUpdatesRefresh;
     const NEW_RELEASE_DAYS = DISCOVER_GENRE_DAYS;
     const cycleId = Date.now();
     lastFetchRef.current = cycleId;
     setLoadCycleId(cycleId);
-    if (!preserveExisting) setTopPicksLoading(true);
-    setTopPicksError(null);
+    if (!preserveExisting && !updatesOnly) setTopPicksLoading(true);
+    if (!updatesOnly) setTopPicksError(null);
     setYourUpdatesError(null);
     try {
+      let nr: Awaited<ReturnType<typeof getWesternNewReleases>> = [];
+      if (!updatesOnly) {
       if (__DEV__) {
         console.log('[discover rails][req]', {
           topPicksUrl: `${FN}/spotify-search/top-picks?days=${DISCOVER_TOP_PICKS_DAYS}`,
@@ -1370,7 +1486,6 @@ export default function DiscoverTab() {
         }),
       ]);
       let discoverDataRefreshSucceeded = false;
-      let nr: Awaited<ReturnType<typeof getWesternNewReleases>> = [];
       if (nrResult.status === 'fulfilled') {
         nr = sortDiscoverAlbums(filterDiscoverEligibleReleases(nrResult.value || []));
         if (__DEV__) {
@@ -1485,22 +1600,35 @@ export default function DiscoverTab() {
       } else {
         setFallbackFeed([]);
       }
+      }
 
       // Build clean bubbles from followed artists only
       try {
+        const hadVisibleUpdates = yourUpdatesReleasesRef.current.length > 0 || forYouItemsRef.current.length > 0;
+        if (!hadVisibleUpdates) setYourUpdatesStatus('loading');
         if (!preserveExisting) {
           setPickedLoading(true);
           setForYouLoading(true);
           setFollowedArtistsLoaded(false);
         }
-        const followed = await listFollowedArtists();
+        const followed = await withTimeout(
+          listFollowedArtists(),
+          UPDATES_REQUEST_TIMEOUT_MS,
+          'followed artists'
+        );
         setFollowedArtistsLoaded(true);
+        setFollowedArtistCount(followed.length);
         if (!followed || followed.length === 0) {
+          currentFollowedIdsRef.current = new Set();
+          catalogCheckedAtRef.current = {};
           setFollowedDetails({});
           setRecentByArtist({});
           setForYouItems([]);
           setFollowedArtistRows([]);
           setYourUpdatesReleases([]);
+          setYourUpdatesStatus('no-followed-artists');
+          AsyncStorage.removeItem(FOR_YOU_UPDATES_CACHE_KEY).catch(() => {});
+          AsyncStorage.removeItem(YOUR_UPDATES_RELEASE_CACHE_KEY).catch(() => {});
         } else {
           setFollowedArtistRows(followed.map((artist) => ({
             id: artist.id,
@@ -1517,6 +1645,203 @@ export default function DiscoverTab() {
           if (__DEV__) {
             const sample = followed.slice(0, 3).map((f) => ({ id: f.id, name: f.name }));
             console.log('[updates] followed loaded', { count: followed.length, sample, cutoff: new Date(cutoffTs).toISOString().slice(0, 10) });
+          }
+          if (USE_SERVER_FEED_ONLY_FOR_UPDATES) {
+            const followedRefs = followed
+              .filter((artist) => isValidSpotifyArtistId(artist.id))
+              .map((artist) => ({ id: artist.id, name: artist.name || 'Unknown' }));
+            const followedIds = new Set(followedRefs.map((artist) => artist.id));
+            currentFollowedIdsRef.current = followedIds;
+
+            let catalogCheckedAt: Record<string, number> = {};
+            let cachedReleases: YourUpdatesRelease[] = [];
+            try {
+              const raw = await AsyncStorage.getItem(YOUR_UPDATES_RELEASE_CACHE_KEY);
+              const parsed = raw ? JSON.parse(raw) : null;
+              if (parsed?.catalogCheckedAt && typeof parsed.catalogCheckedAt === 'object') {
+                catalogCheckedAt = Object.entries(parsed.catalogCheckedAt)
+                  .reduce<Record<string, number>>((valid, [artistId, checkedAt]) => {
+                    if (
+                      isValidSpotifyArtistId(artistId) &&
+                      typeof checkedAt === 'number' &&
+                      Number.isFinite(checkedAt) &&
+                      checkedAt > 0
+                    ) valid[artistId] = checkedAt;
+                    return valid;
+                  }, {});
+              }
+              cachedReleases = finalizeYourUpdates(
+                Array.isArray(parsed?.items) ? parsed.items : [],
+                followedRefs,
+                cutoffTs
+              );
+            } catch {}
+            catalogCheckedAt = Object.fromEntries(
+              Object.entries(catalogCheckedAt).filter(([artistId]) => followedIds.has(artistId))
+            );
+            catalogCheckedAtRef.current = catalogCheckedAt;
+
+            const currentReleases = finalizeYourUpdates(
+              [...cachedReleases, ...yourUpdatesReleasesRef.current],
+              followedRefs,
+              cutoffTs
+            );
+            if (currentReleases.length) {
+              setYourUpdatesReleases(currentReleases);
+              setYourUpdatesStatus('populated');
+            }
+
+            const now = Date.now();
+            const explicitRefreshIds = opts?.refreshArtistIds?.length
+              ? new Set(opts.refreshArtistIds.filter((artistId) => followedIds.has(artistId)))
+              : null;
+            const catalogCandidates = followedRefs
+              .filter((artist) => (
+                explicitRefreshIds
+                  ? explicitRefreshIds.has(artist.id)
+                  : forceUpdatesRefresh || now - (catalogCheckedAt[artist.id] || 0) >= UPDATES_RELEASE_CACHE_TTL_MS
+              ))
+              .sort((a, b) => {
+                const checkedAtDelta = (catalogCheckedAt[a.id] || 0) - (catalogCheckedAt[b.id] || 0);
+                if (checkedAtDelta) return checkedAtDelta;
+                return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+              });
+            const refreshArtists = catalogCandidates.slice(0, UPDATES_MAX_CATALOG_REQUESTS_PER_REFRESH);
+            const shouldScanCatalog = refreshArtists.length > 0;
+
+            let finalReleases = currentReleases;
+            let providerFailureCount = 0;
+
+            if (shouldScanCatalog) {
+              const feedPromise = withTimeout(
+                fetchFeedForArtists({ artistIds: Array.from(followedIds), limit: 250 }),
+                UPDATES_REQUEST_TIMEOUT_MS,
+                'updates feed'
+              );
+
+              const catalogResults = await mapWithConcurrency(
+                refreshArtists,
+                UPDATES_CATALOG_CONCURRENCY,
+                async (followedArtist) => {
+                  const releases = await withTimeout(
+                    artistAlbums(followedArtist.id, market, 'album,single'),
+                    UPDATES_REQUEST_TIMEOUT_MS,
+                    `updates catalog ${followedArtist.id}`
+                  );
+                  return { followedArtist, releases };
+                }
+              );
+              const successfulCatalogs = catalogResults
+                .filter((result): result is PromiseFulfilledResult<{
+                  followedArtist: UpdateAttributionArtist;
+                  releases: Awaited<ReturnType<typeof artistAlbums>>;
+                }> => result.status === 'fulfilled')
+                .map((result) => result.value);
+              providerFailureCount = catalogResults.length - successfulCatalogs.length;
+              const checkedAt = Date.now();
+              catalogCheckedAt = {
+                ...catalogCheckedAt,
+                ...Object.fromEntries(refreshArtists.map((artist) => [artist.id, checkedAt])),
+              };
+              catalogCheckedAtRef.current = catalogCheckedAt;
+              const successfulArtistIds = new Set(successfulCatalogs.map((result) => result.followedArtist.id));
+              const freshCatalogReleases = buildYourUpdatesFromCatalogs(
+                successfulCatalogs,
+                followedRefs,
+                cutoffTs
+              );
+              const preservedReleases = currentReleases
+                .map((release) => ({
+                  ...release,
+                  responsibleArtistIds: (release.responsibleArtistIds || [])
+                    .filter((artistId) => !successfulArtistIds.has(artistId)),
+                }))
+                .filter((release) => (release.responsibleArtistIds || []).length > 0);
+              finalReleases = finalizeYourUpdates(
+                [...freshCatalogReleases, ...preservedReleases],
+                followedRefs,
+                cutoffTs
+              );
+
+              if (!finalReleases.length) {
+                const feed = await feedPromise.catch(() => [] as FeedItem[]);
+                const feedFallback = (feed || [])
+                  .filter((item) => isAllowedUpdateFeedRow(item, followedIds) && isWithinDiscoverWindow(item.release_date, cutoffTs))
+                  .map((item): YourUpdatesRelease | null => {
+                    const id = spotifyKey(null, item.spotify_url ?? null);
+                    if (!id) return null;
+                    const followedArtist = followedRefs.find((artist) => artist.id === item.artist_id);
+                    if (!followedArtist) return null;
+                    return {
+                      id,
+                      title: item.title,
+                      artist: item.artist_name || followedArtist.name,
+                      artistId: item.artist_id,
+                      releaseDate: item.release_date ?? null,
+                      spotifyUrl: item.spotify_url ?? null,
+                      imageUrl: item.image_url ?? item.artwork_url ?? null,
+                      type: String(item.release_type || item.item_type).toLowerCase() === 'single' ? 'single' : 'album',
+                      creditedArtists: [{ id: item.artist_id, name: item.artist_name || followedArtist.name }],
+                      responsibleArtistIds: [item.artist_id],
+                      followedBecauseArtists: [],
+                    };
+                  })
+                  .filter((release): release is YourUpdatesRelease => !!release);
+                finalReleases = finalizeYourUpdates(feedFallback, followedRefs, cutoffTs);
+              } else {
+                await feedPromise.catch(() => []);
+              }
+              updatesLastDeepScanAtRef.current = Date.now();
+            }
+
+            const byArtist = new Map<string, FollowedUpdateArtist>();
+            finalReleases.forEach((release) => {
+              (release.responsibleArtistIds || []).forEach((artistId) => {
+                if (!followedIds.has(artistId)) return;
+                const artist = followedRefs.find((candidate) => candidate.id === artistId);
+                if (!artist) return;
+                const existing = byArtist.get(artistId);
+                if (existing && discoverDateTimestamp(existing.latestDate) >= discoverDateTimestamp(release.releaseDate)) return;
+                byArtist.set(artistId, {
+                  id: artistId,
+                  name: artist.name,
+                  imageUrl: artistImageMapRef.current[artistId] ?? null,
+                  latestId: release.id,
+                  latestDate: release.releaseDate ?? null,
+                });
+              });
+            });
+            const items = sortDiscoverArtistUpdates(Array.from(byArtist.values()));
+            const itemById = new Map(items.map((item) => [item.id, item]));
+            const detObj: FollowedArtistDetails = {};
+            const recObj: Record<string, { latestId?: string; latestDate?: string | null }> = {};
+            followedRefs.forEach((artist) => {
+              const item = itemById.get(artist.id);
+              detObj[artist.id] = {
+                name: artist.name,
+                imageUrl: item?.imageUrl ?? artistImageMapRef.current[artist.id] ?? null,
+              };
+              if (item) recObj[artist.id] = { latestId: item.latestId, latestDate: item.latestDate ?? null };
+            });
+
+            setFollowedDetails(detObj);
+            setRecentByArtist(recObj);
+            setForYouItems(items);
+            setYourUpdatesReleases(finalReleases);
+            setFollowedArtistRows(followedRefs.map((artist) => ({ ...artist, ...itemById.get(artist.id) })));
+            await AsyncStorage.setItem(
+              YOUR_UPDATES_RELEASE_CACHE_KEY,
+              JSON.stringify({ items: finalReleases, ts: Date.now(), catalogCheckedAt })
+            ).catch(() => {});
+            if (items.length) await cacheForYou(items, FOR_YOU_UPDATES_CACHE_KEY);
+            else await AsyncStorage.removeItem(FOR_YOU_UPDATES_CACHE_KEY).catch(() => {});
+
+            const nextStatus: YourUpdatesStatus = providerFailureCount > 0
+              ? (finalReleases.length ? 'partial-success' : 'error')
+              : (finalReleases.length ? 'populated' : 'no-recent-updates');
+            setYourUpdatesStatus(nextStatus);
+            await refreshListenStatus();
+            return;
           }
           const details: Record<string, { name: string; imageUrl?: string | null }> = {};
           const recents: Record<string, { latestId?: string; latestDate?: string | null }> = {};
@@ -2100,6 +2425,11 @@ export default function DiscoverTab() {
         }
       } catch (err) {
         setYourUpdatesError(err);
+        setYourUpdatesStatus(
+          yourUpdatesReleasesRef.current.length || forYouItemsRef.current.length
+            ? 'partial-success'
+            : 'error'
+        );
         setFollowedArtistsLoaded(true);
         if (__DEV__) console.warn('[updates] load failed', err);
       }
@@ -2113,12 +2443,27 @@ export default function DiscoverTab() {
       setTopPicksLoading(false);
       setInitialLoading(false);
       loadInFlightRef.current = false;
+      const waiters = loadWaitersRef.current.splice(0);
+      waiters.forEach((resolve) => resolve());
     }
   }, [cacheArtistImagesV2, cacheDiscoverFeed, debugSetNewReleases, hydrateFollowedArtistImages, markDiscoverRefreshSuccessful, refreshListenStatus]);
 
   useEffect(() => {
     loadRef.current = load;
   }, [debugSetNewReleases, load]);
+
+  const runLoadAfterCurrent = useCallback((opts: Parameters<DiscoverLoad>[0]) => {
+    const task = queuedLoadRef.current
+      .catch(() => {})
+      .then(async () => {
+        if (loadInFlightRef.current) {
+          await new Promise<void>((resolve) => loadWaitersRef.current.push(resolve));
+        }
+        await load(opts);
+      });
+    queuedLoadRef.current = task;
+    return task;
+  }, [load]);
 
   const shouldRefreshDiscover = useCallback((now = new Date()) => {
     const lastTs = lastSuccessfulRefreshRef.current;
@@ -2138,10 +2483,47 @@ export default function DiscoverTab() {
   }, [load, offline, shouldRefreshDiscover]);
 
   useEffect(() => {
-    const handler = () => { load(); };
-    on('feed:refresh', handler);
-    return () => off('feed:refresh', handler);
-  }, [debugSetNewReleases, load]);
+    const handler = (payload?: FollowChangedEvent) => {
+      if (payload?.artistId) return;
+      void runLoadAfterCurrent({ preserveExisting: true, forceUpdatesRefresh: true, updatesOnly: true });
+    };
+    on<FollowChangedEvent>('feed:refresh', handler);
+    return () => off<FollowChangedEvent>('feed:refresh', handler);
+  }, [runLoadAfterCurrent]);
+
+  useEffect(() => {
+    const handler = (payload?: FollowChangedEvent) => {
+      if (!payload?.artistId) return;
+      const nextFollowedIds = new Set(currentFollowedIdsRef.current);
+      if (payload.type === 'unfollow') {
+        nextFollowedIds.delete(payload.artistId);
+        pruneYourUpdatesForFollowedIds(nextFollowedIds);
+        setFollowedArtistCount(nextFollowedIds.size);
+        AsyncStorage.removeItem(FOR_YOU_UPDATES_CACHE_KEY).catch(() => {});
+        return;
+      } else {
+        nextFollowedIds.add(payload.artistId);
+        currentFollowedIdsRef.current = nextFollowedIds;
+        setFollowedArtistCount(nextFollowedIds.size);
+        setFollowedArtistRows((prev) => {
+          if (prev.some((artist) => artist.id === payload.artistId)) return prev;
+          return [{
+            id: payload.artistId,
+            name: payload.artistName || 'Unknown',
+            imageUrl: null,
+          }, ...prev];
+        });
+      }
+      void runLoadAfterCurrent({
+        preserveExisting: true,
+        forceUpdatesRefresh: true,
+        updatesOnly: true,
+        refreshArtistIds: [payload.artistId],
+      });
+    };
+    on<FollowChangedEvent>('follow:changed', handler);
+    return () => off<FollowChangedEvent>('follow:changed', handler);
+  }, [pruneYourUpdatesForFollowedIds, runLoadAfterCurrent]);
 
   // Initial load with cache hydration
   useEffect(() => {
@@ -2173,11 +2555,14 @@ export default function DiscoverTab() {
           }
         }
       } catch {}
-      // Your updates is intentionally not hydrated from cache; stale artist rows are more misleading than a short loading state.
+      // Your updates is intentionally loaded live from followed artists; stale artist rows are more misleading than a short loading state.
       const needsRefresh = mounted && !offline && (!hasValidRecentFeed || shouldRefreshDiscover());
       discoverStartupReadyRef.current = true;
       if (needsRefresh) await loadRef.current?.();
-      else if (mounted) setInitialLoading(false);
+      else if (mounted) {
+        setInitialLoading(false);
+        await loadRef.current?.({ preserveExisting: true, updatesOnly: true });
+      }
     })();
     return () => {
       mounted = false;
@@ -2232,9 +2617,12 @@ export default function DiscoverTab() {
       Keyboard.dismiss();
     }
     setRefreshing(true);
-    await load({ preserveExisting: true });
-    setRefreshing(false);
-  }, [artist, artistAlbumsRows.length, artistTracksRows.length, load, offline, q, resetSearchState, searchRows.length]);
+    try {
+      await runLoadAfterCurrent({ preserveExisting: true, forceUpdatesRefresh: true, updatesOnly: true });
+    } finally {
+      setRefreshing(false);
+    }
+  }, [artist, artistAlbumsRows.length, artistTracksRows.length, offline, q, resetSearchState, runLoadAfterCurrent, searchRows.length]);
 
   const runSearch = useCallback(async (term: string) => {
     if (!term) { setSearchRows([]); setArtist(null); setArtistAlbumsRows([]); setArtistTracksRows([]); return; }
@@ -3013,8 +3401,8 @@ export default function DiscoverTab() {
               ItemSeparatorComponent={() => <View style={{ width: gap }} />}
               renderItem={({ item: page }) => (
                 <View style={{ width: cardWidth, rowGap: columnGap }}>
-                  {page.map((it: any) => (
-                    <React.Fragment key={it?.id ?? it?.spotifyUrl ?? it?.title}>
+                  {page.map((it: any, index: number) => (
+                    <React.Fragment key={`${it?.id ?? it?.spotifyUrl ?? it?.title}-${index}`}>
                       {renderReleaseCard(it)}
                     </React.Fragment>
                   ))}
@@ -3158,8 +3546,13 @@ export default function DiscoverTab() {
           </View>
         );
 
-        const renderInlineState = (message: string, tone: 'muted' | 'error' = 'muted', detail?: string) => (
-          <View style={{ paddingHorizontal: horizontalPad, marginBottom: 8, gap: detail ? 4 : 0 }}>
+        const renderInlineState = (
+          message: string,
+          tone: 'muted' | 'error' = 'muted',
+          detail?: string,
+          action?: { label: string; onPress: () => void }
+        ) => (
+          <View style={{ paddingHorizontal: horizontalPad, marginBottom: 8, gap: detail || action ? 8 : 0 }}>
             <Text
               style={{
                 color: tone === 'error' ? colors.accent.primary : colors.text.muted,
@@ -3179,6 +3572,26 @@ export default function DiscoverTab() {
                 {detail}
               </Text>
             ) : null}
+            {action ? (
+              <Pressable
+                onPress={action.onPress}
+                hitSlop={8}
+                style={({ pressed }) => ({
+                  alignSelf: 'flex-start',
+                  paddingHorizontal: 12,
+                  paddingVertical: 8,
+                  borderRadius: 10,
+                  borderWidth: 1,
+                  borderColor: colors.border.subtle,
+                  backgroundColor: colors.bg.muted,
+                  opacity: pressed ? 0.82 : 1,
+                })}
+              >
+                <Text style={{ color: colors.text.secondary, fontSize: 13, fontWeight: '800' }}>
+                  {action.label}
+                </Text>
+              </Pressable>
+            ) : null}
           </View>
         );
 
@@ -3189,7 +3602,7 @@ export default function DiscoverTab() {
                 Follow artists for updates
               </Text>
               <Text style={{ color: colors.text.muted, fontSize: 13, lineHeight: 18 }}>
-                Search for artists you follow to see their new releases from the last 14 days.
+                Follow artists to see their latest releases here.
               </Text>
             </View>
             <Pressable
@@ -3229,11 +3642,16 @@ export default function DiscoverTab() {
               {yourUpdatesState.status === 'loading'
                 ? renderSectionSkeleton('your-updates-loading')
                 : yourUpdatesState.status === 'error'
-                  ? renderInlineState('Could not load updates right now.', 'error')
-                : yourUpdatesState.status === 'empty'
-                    ? followedArtistRows.length > 0
-                      ? renderInlineState('No new releases from your artists in the last 14 days.', 'muted')
-                      : renderZeroFollowedArtistsState()
+                  ? renderInlineState('We couldn’t load your updates.', 'error', undefined, {
+                    label: 'Retry',
+                    onPress: () => {
+                      load({ preserveExisting: true, forceUpdatesRefresh: true, updatesOnly: true });
+                    },
+                  })
+                : yourUpdatesState.status === 'no-followed-artists'
+                    ? renderZeroFollowedArtistsState()
+                : yourUpdatesState.status === 'no-recent-updates'
+                    ? renderInlineState('No new releases from artists you follow in the last 14 days.', 'muted')
                     : renderUpdatesSection(yourUpdatesDisplayItems, 'your-updates')}
             </View>
             <View key="top-picks" style={{ marginBottom: 16 }}>

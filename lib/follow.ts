@@ -1,6 +1,12 @@
 import { emit } from './events';
-import { FN_BASE, fetchFn } from './fnBase';
 import { supabase } from './supabase';
+
+export type FollowChangedEvent = {
+  type: 'follow' | 'unfollow';
+  artistId: string;
+  artistName?: string;
+  spotifyUrl?: string | null;
+};
 
 export async function isFollowing(artistId: string) {
   const { data: { user } } = await supabase.auth.getUser();
@@ -22,10 +28,15 @@ export async function followArtist(input: { artistId: string; artistName: string
     spotify_url: input.spotifyUrl ?? null
   });
   if (error) return { ok: false, message: error.message };
-  // Fire-and-forget: trigger a feed refresh for this artist on the server
-  try { fetchFn(`${FN_BASE}/check-new-releases?` + new URLSearchParams({ artistId: input.artistId })).catch(() => {}); } catch {}
-  // Notify UI to refresh feed
-  emit('feed:refresh');
+  // Discover performs the single bounded provider refresh after canonical follow state changes.
+  const payload: FollowChangedEvent = {
+    type: 'follow',
+    artistId: input.artistId,
+    artistName: input.artistName,
+    spotifyUrl: input.spotifyUrl ?? null,
+  };
+  emit('follow:changed', payload);
+  emit('feed:refresh', payload);
   return { ok: true };
 }
 
@@ -38,6 +49,9 @@ export async function unfollowArtist(artistId: string) {
     .eq('user_id', user.id)
     .eq('artist_id', artistId);
   if (error) return { ok: false, message: error.message };
+  const payload: FollowChangedEvent = { type: 'unfollow', artistId };
+  emit('follow:changed', payload);
+  emit('feed:refresh', payload);
   return { ok: true };
 }
 
@@ -86,7 +100,7 @@ export async function fetchFeed(): Promise<FeedItem[]> {
     .select('*')
     .order('release_date', { ascending: false, nullsFirst: false })
     .order('created_at', { ascending: false });
-  if (error) return [];
+  if (error) throw error;
   return (Array.isArray(data) ? data : []).map(normalizeFeedItem).filter(Boolean) as FeedItem[];
 }
 
@@ -101,7 +115,7 @@ export async function fetchFeedForArtists(input: { artistIds: string[]; limit?: 
     .order('release_date', { ascending: false, nullsFirst: false })
     .order('created_at', { ascending: false })
     .limit(limit);
-  if (error) return [];
+  if (error) throw error;
   return (Array.isArray(data) ? data : []).map(normalizeFeedItem).filter(Boolean) as FeedItem[];
 }
 
@@ -113,6 +127,7 @@ export async function listFollowedArtists(): Promise<FollowedArtist[]> {
     .from('followed_artists')
     .select('artist_id, artist_name')
     .eq('user_id', user.id);
-  if (error || !Array.isArray(data)) return [];
+  if (error) throw error;
+  if (!Array.isArray(data)) return [];
   return (data as any[]).map((r) => ({ id: r.artist_id as string, name: (r.artist_name as string) || '' }));
 }
