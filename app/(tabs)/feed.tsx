@@ -14,6 +14,7 @@ import StatusMenu from '../../components/StatusMenu';
 import FeedHeader, { type FeedMode } from '../../components/feed/FeedHeader';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { formatDate } from '../../lib/date';
+import { discoverReleaseDateTimestamp } from '../../lib/discoverFreshness';
 import { off, on } from '../../lib/events';
 import { FN_BASE, fetchFn } from '../../lib/fnBase';
 import { fetchFeedForArtists, listFollowedArtists, type FeedItem } from '../../lib/follow';
@@ -65,6 +66,35 @@ const hashString = (s: string) => {
 };
 
 const FEED_MODE_KEY = (uid: string) => `wavemark:feed-mode:${uid}`;
+
+const spotifyAlbumIdForFeedItem = (item: Item): string | null => {
+  const match = item.spotify_url?.match(/open\.spotify\.com\/album\/([A-Za-z0-9]{22})/i);
+  if (match?.[1]) return match[1];
+  const candidate = item.spotify_id ?? item.provider_id ?? null;
+  return typeof candidate === 'string' && /^[A-Za-z0-9]{22}$/.test(candidate) ? candidate : null;
+};
+
+const feedReleaseTimestamp = (item: Item): number => (
+  discoverReleaseDateTimestamp(
+    item.release_date ?? null,
+    (item as any).release_date_precision ?? null
+  )
+);
+
+const prepareFeedRows = (items: Item[]): Item[] => {
+  const byRelease = new Map<string, Item>();
+  (items || []).forEach((item) => {
+    const spotifyAlbumId = spotifyAlbumIdForFeedItem(item);
+    const key = spotifyAlbumId ? `spotify:${spotifyAlbumId}` : `row:${item.id}`;
+    const existing = byRelease.get(key);
+    if (!existing || feedReleaseTimestamp(item) > feedReleaseTimestamp(existing)) {
+      byRelease.set(key, item);
+    }
+  });
+  return Array.from(byRelease.values()).sort((a, b) => (
+    feedReleaseTimestamp(b) - feedReleaseTimestamp(a)
+  ));
+};
 
 export default function FeedTab() {
   const { colors } = useTheme();
@@ -209,7 +239,7 @@ export default function FeedTab() {
       });
       setDoneKeys(Array.from(done));
       setInListKeys(Array.from(inList));
-      setRows(data);
+      setRows(prepareFeedRows(data));
     } finally {
       if (showLoading) setLoading(false);
     }
@@ -265,8 +295,8 @@ export default function FeedTab() {
   const yesterdayStr = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const isNew = (d?: string | null) => {
     if (!d) return false;
-    const ts = Date.parse(d);
-    if (Number.isNaN(ts)) return false;
+    const ts = discoverReleaseDateTimestamp(d);
+    if (!ts) return false;
     const ms = Date.now() - ts;
     const days = ms / (24 * 60 * 60 * 1000);
     return days >= 0 && days < 7;
@@ -308,9 +338,7 @@ export default function FeedTab() {
     keys.sort((a, b) => {
       if (a === 'Unknown date') return 1;
       if (b === 'Unknown date') return -1;
-      const ta = Date.parse(a);
-      const tb = Date.parse(b);
-      return (Number.isNaN(tb) ? 0 : tb) - (Number.isNaN(ta) ? 0 : ta);
+      return discoverReleaseDateTimestamp(b) - discoverReleaseDateTimestamp(a);
     });
     return keys.map(k => ({ title: labelForDate(k === 'Unknown date' ? null : k), data: byDay.get(k)! }));
   }, [filteredRows]);

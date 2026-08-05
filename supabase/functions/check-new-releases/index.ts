@@ -99,7 +99,7 @@ serve(async (req) => {
       processed++;
       const r = await fetch(
         `${API}/artists/${artistId}/albums?` +
-          new URLSearchParams({ include_groups: "album,single", market, limit: "20" }),
+          new URLSearchParams({ include_groups: "album,single", market, limit: "50" }),
         { headers: hdrs }
       );
       if (!r.ok) continue;
