@@ -262,12 +262,14 @@ export async function spotifyLookup(id: string, lookupType: 'album' | 'track'): 
       artist: data.artists?.[0]?.name ?? '',
       releaseDate: data.album?.release_date ?? null,
       spotifyUrl: data.external_urls?.spotify ?? null,
-  imageUrl: data.album?.images?.[0]?.url ?? null,
-  albumId: data.album?.id ?? null,
-  artistId: data.artists?.[0]?.id ?? null,
-  isrc: data.external_ids?.isrc ?? null,
-  upc: data.album?.external_ids?.upc ?? null,
-  totalTracks: 1,
+      imageUrl: data.album?.images?.[0]?.url ?? null,
+      albumId: data.album?.id ?? null,
+      artistId: data.artists?.[0]?.id ?? null,
+      artistIds: spotifyArtistIds(data.artists),
+      artistNames: spotifyArtistNames(data.artists),
+      isrc: data.external_ids?.isrc ?? null,
+      upc: data.album?.external_ids?.upc ?? null,
+      totalTracks: 1,
     }];
   }
 }

@@ -1734,6 +1734,10 @@ serve(async (req) => {
     // NEW: artist albums (recent first)
     if (pathname.endsWith("/artist-albums")) {
       if (!artistId) return new Response("artistId required", { status: 400, headers: addBuildHeader() });
+      const requestedLimit = Number(url.searchParams.get("limit") ?? "50");
+      const requestedOffset = Number(url.searchParams.get("offset") ?? "0");
+      const artistAlbumsLimit = Math.max(1, Math.min(50, Number.isFinite(requestedLimit) ? Math.floor(requestedLimit) : 50));
+      const artistAlbumsOffset = Math.max(0, Number.isFinite(requestedOffset) ? Math.floor(requestedOffset) : 0);
       const includeGroups = (url.searchParams.get("include_groups") ?? "album,single,appears_on")
         .split(",")
         .map((group) => group.trim())
@@ -1742,7 +1746,7 @@ serve(async (req) => {
       // Default includes appears_on for artist pages; Discover can request release-only groups.
       const r = await fetchWithTimeout(
         `https://api.spotify.com/v1/artists/${artistId}/albums?` +
-          new URLSearchParams({ include_groups: includeGroups, market, limit: "50" }),
+          new URLSearchParams({ include_groups: includeGroups, market, limit: String(artistAlbumsLimit), offset: String(artistAlbumsOffset) }),
         { headers: hdrs },
         8000,
         "artist-albums"

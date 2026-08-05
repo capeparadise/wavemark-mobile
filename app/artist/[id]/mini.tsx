@@ -13,28 +13,22 @@ import { formatDate } from '../../../lib/date';
 import { goToRelease } from '../../../lib/navigation';
 import { normalizeReleasePresentationType, releasePresentationLabel, type ReleasePresentationType } from '../../../lib/releaseModel';
 import { getMarket, spotifyLookup, spotifySearch } from '../../../lib/spotify';
-import { artistAlbums, artistSearch, fetchArtistDetails } from '../../../lib/spotifyArtist';
+import { artistPageReleases, artistSearch, fetchArtistDetails } from '../../../lib/spotifyArtist';
 import { supabase } from '../../../lib/supabase';
 import { useTheme } from '../../../theme/useTheme';
 
 export default function ArtistMiniScreen() {
   const { colors } = useTheme();
-  const { id, name, highlight, highlightTitle, highlightArtist, highlightDate, highlightImageUrl, highlightSpotifyUrl, highlightType } = useLocalSearchParams<{
+  const { id, name, highlight } = useLocalSearchParams<{
     id: string;
     name?: string;
     highlight?: string;
-    highlightTitle?: string;
-    highlightArtist?: string;
-    highlightDate?: string;
-    highlightImageUrl?: string;
-    highlightSpotifyUrl?: string;
-    highlightType?: string;
   }>();
   let artistId = (id as string) || '';
   const displayName = (name || '').toString();
   const highlightId = (highlight || '').toString();
   const [loading, setLoading] = useState(true);
-  const [albums, setAlbums] = useState<Awaited<ReturnType<typeof artistAlbums>>>([]);
+  const [albums, setAlbums] = useState<Awaited<ReturnType<typeof artistPageReleases>>>([]);
   // no separate tracks list now; focusing on latest releases
   const [heroUrl, setHeroUrl] = useState<string | null>(null);
   const [resolvedName, setResolvedName] = useState<string>('');
@@ -189,10 +183,10 @@ export default function ArtistMiniScreen() {
         } catch {}
         // Fetch albums with market fallbacks (device, GB, US)
         const mkList = Array.from(new Set([getMarket(), 'GB', 'US'].filter(Boolean)));
-        let albs: Awaited<ReturnType<typeof artistAlbums>> = [];
+        let albs: Awaited<ReturnType<typeof artistPageReleases>> = [];
         for (const mk of mkList) {
           try {
-            const res = await artistAlbums(artistId, mk);
+            const res = await artistPageReleases(artistId, mk);
             albs = res;
             if (albs.length > 0) break;
           } catch {}
@@ -203,7 +197,11 @@ export default function ArtistMiniScreen() {
             const q = displayName || '';
             if (q) {
               const results = await spotifySearch(`artist:"${q}"`);
-              const onlyAlbums = results.filter((x) => x.type === 'album' && (x.artistId ? x.artistId === artistId : true));
+              const onlyAlbums = results.filter((x) =>
+                x.type === 'album' &&
+                x.albumType !== 'compilation' &&
+                (x.artistIds?.includes(artistId) || x.artistId === artistId)
+              );
               const seen = new Set<string>();
               albs = onlyAlbums
                 .filter((a) => (a.albumType !== 'compilation'))
@@ -240,8 +238,9 @@ export default function ArtistMiniScreen() {
         try {
           const hid = highlightIdLocal;
           if (hid && !albs.some(a => a.id === hid)) {
-            const addAlbumHit = (a: any, fallbackType: 'album' | 'single') => {
-              if (!a || !a.id || (a.artistId && a.artistId !== artistId)) return false;
+            const addAlbumHit = (a: any, fallbackType: 'album' | 'single', featured = false) => {
+              const credited = Array.isArray(a?.artistIds) && a.artistIds.includes(artistId);
+              if (!a || a.type !== 'album' || !a.id || a.albumType === 'compilation' || !credited) return false;
               albs.push({
                 id: a.albumId ?? a.id,
                 title: a.type === 'track' ? (a.title ?? '') : a.title,
@@ -250,25 +249,9 @@ export default function ArtistMiniScreen() {
                 spotifyUrl: a.spotifyUrl ?? null,
                 imageUrl: a.imageUrl ?? null,
                 type: fallbackType,
-                albumGroup: fallbackType,
+                albumGroup: featured ? 'appears_on' : fallbackType,
                 totalTracks: a.totalTracks ?? null,
-              } as any);
-              return true;
-            };
-            const addRouteHighlight = () => {
-              const title = String(highlightTitle || '').trim();
-              if (!title) return false;
-              const type = String(highlightType || '').toLowerCase() === 'album' ? 'album' : 'single';
-              albs.push({
-                id: hid,
-                title,
-                artist: String(highlightArtist || det?.name || displayName || ''),
-                releaseDate: highlightDate ? String(highlightDate) : null,
-                spotifyUrl: highlightSpotifyUrl ? String(highlightSpotifyUrl) : null,
-                imageUrl: highlightImageUrl ? String(highlightImageUrl) : null,
-                type,
-                albumGroup: type,
-                totalTracks: null,
+                spotifyItemType: 'album',
               } as any);
               return true;
             };
@@ -280,10 +263,17 @@ export default function ArtistMiniScreen() {
             if (!addedHighlight) {
               try {
                 const lookedTrack = await spotifyLookup(hid, 'track');
-                addedHighlight = addAlbumHit(lookedTrack?.[0], 'single');
+                const track = lookedTrack?.[0];
+                const credited = Array.isArray(track?.artistIds) && track.artistIds.includes(artistId);
+                const albumId = track?.albumId ?? null;
+                if (credited && albumId && !albs.some((album) => album.id === albumId)) {
+                  const lookedParentAlbum = await spotifyLookup(albumId, 'album');
+                  addedHighlight = addAlbumHit(lookedParentAlbum?.[0], 'album', true);
+                } else if (credited && albumId) {
+                  addedHighlight = true;
+                }
               } catch {}
             }
-            if (!addedHighlight) addRouteHighlight();
           }
         } catch {}
 
@@ -300,7 +290,7 @@ export default function ArtistMiniScreen() {
           const tb = Date.parse(normalizeDate(b.releaseDate) ?? '1970-01-01');
           return tb - ta;
         });
-        setAlbums(albs.slice(0, 24));
+        setAlbums(albs);
         const finalImg = preciseSearchImg || det?.imageUrl || null;
         if (finalImg) {
           setHeroUrl(finalImg);
@@ -372,14 +362,7 @@ export default function ArtistMiniScreen() {
     else if (/^\d{4}-\d{2}$/.test(x)) x = `${x}-15`;
     return x;
   };
-  const normTitle = (s?: string | null) => String(s ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-  const pickWeight = (badge?: string) => {
-    if (badge === 'project') return 30;
-    if (badge === 'single') return 10;
-    if (badge === 'feature') return 5;
-    return 0;
-  };
-  const bestByKey = new Map<string, any>();
+  const bestById = new Map<string, any>();
   for (const a of albums) {
     const albumGroup = (a as any)?.albumGroup ?? null;
     const type = (a as any)?.type ?? null;
@@ -389,14 +372,11 @@ export default function ArtistMiniScreen() {
     const badge = isFeature ? 'feature' : presentationType;
     const kind: 'album' | 'track' = presentationType === 'single' ? 'track' : 'album';
     const item = { kind, id: a.id, title: a.title, artist: a.artist, imageUrl: a.imageUrl, releaseDate: a.releaseDate, spotifyUrl: a.spotifyUrl, albumGroup, badge, presentationType, totalTracks };
-    const gk = `${normTitle(item.title)}__${normDate(item.releaseDate)}`;
-    const score = Date.parse(normDate(item.releaseDate)) + pickWeight(item.badge);
-    const prev = bestByKey.get(gk);
-    if (!prev || score > prev._score) bestByKey.set(gk, { ...item, _score: score });
+    if (!bestById.has(item.id)) bestById.set(item.id, item);
   }
-  const deduped = Array.from(bestByKey.values());
+  const deduped = Array.from(bestById.values());
   deduped.sort((a, b) => Date.parse(normDate(b.releaseDate)) - Date.parse(normDate(a.releaseDate)));
-  deduped.slice(0, 24).forEach((it) => merged.push(it));
+  deduped.forEach((it) => merged.push(it));
   merged.sort((a,b) => Date.parse(normDate(b.releaseDate)) - Date.parse(normDate(a.releaseDate)));
 
   const tagLabel = (stat: { done?: boolean; rating?: number | null } | undefined, isAdded: boolean) => {

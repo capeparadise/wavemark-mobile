@@ -28,6 +28,11 @@ export type ArtistAlbum = {
   albumType?: 'album' | 'single' | 'compilation' | string | null;
   albumGroup?: 'album' | 'single' | 'appears_on' | 'compilation' | string;
   totalTracks?: number | null;
+  spotifyItemType?: string | null;
+};
+
+type ArtistAlbumsOptions = {
+  fetchAll?: boolean;
 };
 
 const FN_ENV = process.env.EXPO_PUBLIC_FN_BASE ?? '';
@@ -82,9 +87,14 @@ export async function spotifyMe(): Promise<any | null> {
   }
 }
 
-export async function artistAlbums(artistId: string, market = 'GB', includeGroups = 'album,single,appears_on'): Promise<ArtistAlbum[]> {
+export async function artistAlbums(
+  artistId: string,
+  market = 'GB',
+  includeGroups = 'album,single,appears_on',
+  options: ArtistAlbumsOptions = {}
+): Promise<ArtistAlbum[]> {
   const hasToken = !!process.env.EXPO_PUBLIC_SPOTIFY_TOKEN;
-  const fetchWithInspect = async (url: string, allowRetry = true): Promise<{ items: any[]; total?: number | null }> => {
+  const fetchWithInspect = async (url: string, allowRetry = true): Promise<{ items: any[]; total?: number | null; next?: string | null }> => {
     const res = await fetch(url, {
       headers: process.env.EXPO_PUBLIC_SPOTIFY_TOKEN
         ? { Authorization: `Bearer ${process.env.EXPO_PUBLIC_SPOTIFY_TOKEN}` }
@@ -116,7 +126,8 @@ export async function artistAlbums(artistId: string, market = 'GB', includeGroup
       const parsed = JSON.parse(raw);
       const items = parsed?.items ?? parsed?.data?.items ?? parsed?.albums?.items ?? [];
       const total = parsed?.total ?? parsed?.data?.total ?? parsed?.albums?.total ?? null;
-      return { items, total };
+      const next = parsed?.next ?? parsed?.data?.next ?? parsed?.albums?.next ?? null;
+      return { items, total, next };
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn('[artistAlbums] JSON parse error', { message: String(err), head: raw.slice(0, 120) });
@@ -146,6 +157,7 @@ export async function artistAlbums(artistId: string, market = 'GB', includeGroup
       albumType: a?.album_type ?? null,
       albumGroup: group as any,
       totalTracks: totalTracks || null,
+      spotifyItemType: a?.type ?? null,
     };
   });
 
@@ -159,7 +171,17 @@ export async function artistAlbums(artistId: string, market = 'GB', includeGroup
 
   if (hasToken) {
     try {
-      const { items, total } = await fetchWithInspect(directUrl);
+      const items: any[] = [];
+      const visited = new Set<string>();
+      let nextUrl: string | null = directUrl;
+      let total: number | null | undefined = null;
+      while (nextUrl && !visited.has(nextUrl)) {
+        visited.add(nextUrl);
+        const page = await fetchWithInspect(nextUrl);
+        items.push(...page.items);
+        total = page.total ?? total;
+        nextUrl = options.fetchAll ? (page.next ?? null) : null;
+      }
       const mapped = mapItems(items);
       (mapped as any)._total = total;
       return mapped;
@@ -170,30 +192,51 @@ export async function artistAlbums(artistId: string, market = 'GB', includeGroup
   }
 
   try {
-    const fnUrl = `${FN}/spotify-search/artist-albums?` + new URLSearchParams({ artistId, market: effectiveMarket, include_groups: includeGroups }).toString();
-    const r = await fetchFn(fnUrl);
-    const raw = await r.text().catch(() => '');
-    const ctype = r.headers.get('content-type') || '';
-    // Always log the head for visibility
-    // eslint-disable-next-line no-console
-    console.warn('[artistAlbums:fn] raw', { url: fnUrl, status: r.status, contentType: ctype, head: raw.slice(0, 140) });
-    const isRateLimited = raw.trim().toLowerCase().startsWith('too many requests') || r.status === 429;
-    if (!r.ok) {
+    const items: any[] = [];
+    let offset = 0;
+    let total: number | null = null;
+    let hasNextPage = true;
+    const seenPages = new Set<string>();
+    while (hasNextPage) {
+      const fnUrl = `${FN}/spotify-search/artist-albums?` + new URLSearchParams({
+        artistId,
+        market: effectiveMarket,
+        include_groups: includeGroups,
+        limit: '50',
+        offset: String(offset),
+      }).toString();
+      const r = await fetchFn(fnUrl);
+      const raw = await r.text().catch(() => '');
+      const ctype = r.headers.get('content-type') || '';
       // eslint-disable-next-line no-console
-      console.warn('[artistAlbums] fn fetch failed', { artistId, market, status: r.status, contentType: ctype, head: raw.slice(0, 120) });
-      throw new Error(`fn artist-albums failed (${r.status})`);
+      console.warn('[artistAlbums:fn] raw', { url: fnUrl, status: r.status, contentType: ctype, head: raw.slice(0, 140) });
+      const isRateLimited = raw.trim().toLowerCase().startsWith('too many requests') || r.status === 429;
+      if (!r.ok) {
+        // eslint-disable-next-line no-console
+        console.warn('[artistAlbums] fn fetch failed', { artistId, market, status: r.status, contentType: ctype, head: raw.slice(0, 120) });
+        throw new Error(`fn artist-albums failed (${r.status})`);
+      }
+      if (isRateLimited) throw new Error('Spotify rate limited');
+      if (!ctype.includes('application/json')) {
+        // eslint-disable-next-line no-console
+        console.warn('[artistAlbums] fn non-JSON response', { artistId, market, status: r.status, contentType: ctype, head: raw.slice(0, 120) });
+        throw new Error('fn artist-albums invalid content');
+      }
+      const data: any = JSON.parse(raw);
+      const pageItems = data?.items ?? data?.data?.items ?? data?.albums?.items ?? [];
+      const pageSignature = pageItems.map((item: any) => item?.id).filter(Boolean).join(',');
+      if (pageItems.length > 0 && seenPages.has(pageSignature)) {
+        throw new Error('fn artist-albums pagination did not advance');
+      }
+      if (pageItems.length > 0) seenPages.add(pageSignature);
+      total = data?.total ?? data?.data?.total ?? data?.albums?.total ?? total;
+      items.push(...pageItems);
+      offset += pageItems.length;
+      hasNextPage = !!options.fetchAll && pageItems.length > 0 && (
+        !!(data?.next ?? data?.data?.next ?? data?.albums?.next) ||
+        (typeof total === 'number' && offset < total)
+      );
     }
-    if (isRateLimited) {
-      throw new Error('Spotify rate limited');
-    }
-    if (!ctype.includes('application/json')) {
-      // eslint-disable-next-line no-console
-      console.warn('[artistAlbums] fn non-JSON response', { artistId, market, status: r.status, contentType: ctype, head: raw.slice(0, 120) });
-      throw new Error('fn artist-albums invalid content');
-    }
-    const data: any = JSON.parse(raw);
-    const items = data?.items ?? data?.data?.items ?? data?.albums?.items ?? [];
-    const total = data?.total ?? data?.data?.total ?? data?.albums?.total ?? null;
     const mapped = mapItems(items);
     (mapped as any)._total = total;
     if (__DEV__ && !items.length) {
@@ -206,6 +249,28 @@ export async function artistAlbums(artistId: string, market = 'GB', includeGroup
     console.warn('[artistAlbums] unexpected error', { artistId, market, message: String(err) });
     throw err;
   }
+}
+
+export async function artistPageReleases(artistId: string, market = 'GB'): Promise<ArtistAlbum[]> {
+  const releases = await artistAlbums(artistId, market, 'album,single,appears_on', { fetchAll: true });
+  const eligible = releases.filter((release) => {
+    const itemType = String(release.spotifyItemType || '').toLowerCase();
+    const albumType = String(release.albumType || '').toLowerCase();
+    const group = String(release.albumGroup || '').toLowerCase();
+    const artistIds = Array.isArray(release.artistIds) ? release.artistIds : [];
+
+    if (!release.id || itemType !== 'album') return false;
+    if (albumType !== 'album' && albumType !== 'single') return false;
+    if (group === 'appears_on') return true;
+    return (group === 'album' || group === 'single') && artistIds.includes(artistId);
+  });
+
+  const unique = new Map<string, ArtistAlbum>();
+  eligible.forEach((release) => {
+    const previous = unique.get(release.id);
+    if (!previous || previous.albumGroup === 'appears_on') unique.set(release.id, release);
+  });
+  return Array.from(unique.values());
 }
 
 export async function artistTopTracks(artistId: string, market = 'GB'): Promise<{
