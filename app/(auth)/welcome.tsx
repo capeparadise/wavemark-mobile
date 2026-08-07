@@ -130,7 +130,7 @@ export default function WelcomeScreen() {
   const continueWithGoogle = async () => {
     try {
       setBusy(true);
-      const returnUrl = AuthSession.makeRedirectUri({ path: 'session' });
+      const returnUrl = AuthSession.makeRedirectUri({ scheme: 'rppl', path: 'session' });
       const proxyRedirectTo = getExpoAuthProxyRedirectUrl();
       const redirectTo = Constants.appOwnership === 'expo' && proxyRedirectTo
         ? proxyRedirectTo
