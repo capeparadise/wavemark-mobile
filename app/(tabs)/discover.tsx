@@ -2582,12 +2582,6 @@ export default function DiscoverTab() {
     }, [refreshDiscoverIfDue])
   );
 
-  // Also refresh when the tab icon is tapped (even if already focused)
-  useEffect(() => {
-    const unsub = (navigation as any).addListener('tabPress', () => { refreshDiscoverIfDue(); });
-    return unsub;
-  }, [navigation, refreshDiscoverIfDue]);
-
   // No genre management in simplified view
 
   // Also refresh when app returns to foreground
@@ -2605,6 +2599,26 @@ export default function DiscoverTab() {
     setArtistAlbumsRows([]);
     setArtistTracksRows([]);
   }, []);
+
+  // Reset active search on a Discover re-selection; otherwise preserve the existing refresh behavior.
+  useEffect(() => {
+    const unsub = (navigation as any).addListener('tabPress', () => {
+      const hasActiveSearch = !!(
+        q.trim()
+        || searchRows.length
+        || artist
+        || artistAlbumsRows.length
+        || artistTracksRows.length
+      );
+      if ((navigation as any).isFocused() && hasActiveSearch) {
+        resetSearchState();
+        Keyboard.dismiss();
+        return;
+      }
+      refreshDiscoverIfDue();
+    });
+    return unsub;
+  }, [artist, artistAlbumsRows.length, artistTracksRows.length, navigation, q, refreshDiscoverIfDue, resetSearchState, searchRows.length]);
 
   const onRefresh = useCallback(async () => {
     if (offline) {
