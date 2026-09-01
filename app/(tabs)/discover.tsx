@@ -1483,6 +1483,7 @@ export default function DiscoverTab() {
           market: DISCOVER_MARKETS[0],
           strict: false,
           mode: 'full',
+          throwOnError: true,
         }),
       ]);
       let discoverDataRefreshSucceeded = false;
@@ -1557,12 +1558,7 @@ export default function DiscoverTab() {
           items: sortDiscoverAlbums(filterDiscoverEligibleReleases(Array.isArray((buckets as any)?.[genre]) ? (buckets as any)[genre] : [])) as Awaited<ReturnType<typeof getWesternNewReleases>>,
         }));
         setGenreRows(directGenreRows);
-      } else {
-        if (!preserveExisting) {
-          setGenreRows([]);
-        }
-        setTopPicksError((prev: any | null) => prev ?? genreResult.reason);
-      }
+      } else if (__DEV__) console.warn('[discover genres][failed]', genreResult.reason);
 
       discoverDataRefreshSucceeded = (
         topPicksResult.status === 'fulfilled' &&
@@ -2632,7 +2628,7 @@ export default function DiscoverTab() {
     }
     setRefreshing(true);
     try {
-      await runLoadAfterCurrent({ preserveExisting: true, forceUpdatesRefresh: true, updatesOnly: true });
+      await runLoadAfterCurrent({ preserveExisting: true, forceUpdatesRefresh: true });
     } finally {
       setRefreshing(false);
     }

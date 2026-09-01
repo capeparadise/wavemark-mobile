@@ -441,7 +441,14 @@ export async function getNewReleasesWide(days = 28, target = 250, marketIn?: str
   }
 }
 
-export async function getNewReleasesByGenre(opts?: { genres?: string[]; days?: number; market?: string; strict?: boolean; mode?: 'light' | 'full' }): Promise<Record<string, SimpleAlbum[]>> {
+export async function getNewReleasesByGenre(opts?: {
+  genres?: string[];
+  days?: number;
+  market?: string;
+  strict?: boolean;
+  mode?: 'light' | 'full';
+  throwOnError?: boolean;
+}): Promise<Record<string, SimpleAlbum[]>> {
   const allKeys = ['rap','rnb','pop','rock','latin','edm','country','kpop','afrobeats','jazz','dancehall','reggae','indie','metal','punk','folk','blues','classical','soundtrack','ambient','jpop','desi'];
   const normalizeGenreKey = (k: string) => {
     const raw = (k || '').toString();
@@ -487,33 +494,51 @@ export async function getNewReleasesByGenre(opts?: { genres?: string[]; days?: n
   };
   const cachedBuckets = lastGenreBuckets ? mapToClientBuckets(lastGenreBuckets) : null;
   const hasCached = !!cachedBuckets && Object.values(cachedBuckets).some((arr) => Array.isArray(arr) && arr.length > 0);
-  const r = await fetchFn(url).catch(() => null as any);
+  let r: Response | null = null;
+  let requestError: unknown = null;
+  try {
+    r = await fetchFn(url);
+    if (!r.ok) requestError = new Error(`new-releases-genre failed (${r.status})`);
+  } catch (error) {
+    requestError = error;
+  }
   let data: any = null;
   if (r && r.ok) {
-    try { data = await r.json(); } catch {}
+    try { data = await r.json(); } catch (error) { requestError = error; }
   }
   if (data && data.buckets && typeof data.buckets === 'object') {
     const buckets = data.buckets as Record<string, SimpleAlbum[]>;
-    if (__DEV__) {
-      try {
-        console.log("NRG buckets keys:", Object.keys(data.buckets || {}), "counts:", Object.fromEntries(Object.entries(data.buckets || {}).map(([k, v]) => [k, Array.isArray(v) ? v.length : 0])));
-      } catch {}
-    }
-    const serverBuckets = cloneBucketMap(buckets);
-    const clientBuckets = mapToClientBuckets(serverBuckets);
-    for (const key of Object.keys(clientBuckets)) {
-      clientBuckets[key] = sortDiscoverReleasesByFreshness(clientBuckets[key], {
-        compareWithinBand: (a, b) => (b.artistPopularity ?? 0) - (a.artistPopularity ?? 0),
-      });
-    }
-    logBuckets('final', clientBuckets);
-    const anyFinal = clientKeys.some((k) => (clientBuckets[k]?.length ?? 0) > 0);
-    if (anyFinal) {
-      lastGenreBuckets = cloneBucketMap(serverBuckets);
+    const hasValidRequestedBuckets = serverKeys.every((key) => Array.isArray(buckets[key]));
+    if (!hasValidRequestedBuckets) {
+      requestError = new Error('new-releases-genre returned invalid buckets');
+    } else {
+      if (__DEV__) {
+        try {
+          console.log("NRG buckets keys:", Object.keys(data.buckets || {}), "counts:", Object.fromEntries(Object.entries(data.buckets || {}).map(([k, v]) => [k, Array.isArray(v) ? v.length : 0])));
+        } catch {}
+      }
+      const serverBuckets = cloneBucketMap(buckets);
+      const clientBuckets = mapToClientBuckets(serverBuckets);
+      for (const key of Object.keys(clientBuckets)) {
+        clientBuckets[key] = sortDiscoverReleasesByFreshness(clientBuckets[key], {
+          compareWithinBand: (a, b) => (b.artistPopularity ?? 0) - (a.artistPopularity ?? 0),
+        });
+      }
+      logBuckets('final', clientBuckets);
+      const anyFinal = clientKeys.some((k) => (clientBuckets[k]?.length ?? 0) > 0);
+      if (anyFinal) {
+        lastGenreBuckets = cloneBucketMap(serverBuckets);
+        return clientBuckets as any;
+      }
+      if (opts?.throwOnError) return clientBuckets as any;
+      if (hasCached) return cachedBuckets as any;
       return clientBuckets as any;
     }
-    if (hasCached) return cachedBuckets as any;
-    return clientBuckets as any;
+  }
+  if (opts?.throwOnError) {
+    throw requestError instanceof Error
+      ? requestError
+      : new Error('new-releases-genre returned an invalid response');
   }
   if (hasCached) return cachedBuckets as any;
   return Object.fromEntries(clientKeys.map(k => [k, []])) as any;
