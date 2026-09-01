@@ -742,6 +742,10 @@ export default function ListenTab() {
         row={menuRow}
         visible={!!menuRow}
         onClose={() => setMenuRow(null)}
+        onRate={(row) => {
+          setMenuRow(null);
+          setTimeout(() => openRating(row), 350);
+        }}
         onChanged={(update) => {
           if (!update) return load();
           if (update.type === 'remove') {

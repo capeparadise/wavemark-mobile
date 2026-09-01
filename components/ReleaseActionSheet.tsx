@@ -26,6 +26,7 @@ export type ReleaseActionSheetProps = {
   row: ReleaseActionSheetRow | null;
   visible: boolean;
   onClose: () => void;
+  onRate?: (row: ListenRow) => void;
   onChanged?: (update?: { type: 'mark' | 'remove' | 'rate'; row: ListenRow; done?: boolean }) => void;
 };
 
@@ -45,7 +46,7 @@ function spotifyKey(id?: string | null, spotifyUrl?: string | null) {
   return parse(id) || parse(spotifyUrl) || id || null;
 }
 
-export default function ReleaseActionSheet({ row, visible, onClose, onChanged }: ReleaseActionSheetProps) {
+export default function ReleaseActionSheet({ row, visible, onClose, onRate, onChanged }: ReleaseActionSheetProps) {
   const { colors } = useTheme();
   const [busy, setBusy] = useState(false);
   const [ratingVisible, setRatingVisible] = useState(false);
@@ -285,6 +286,10 @@ export default function ReleaseActionSheet({ row, visible, onClose, onChanged }:
       label: (typeof (row as any).rating === 'number' && !Number.isNaN((row as any).rating)) ? 'Change rating' : 'Rate',
       onPress: async () => {
         const r = await ensureRow();
+        if (onRate) {
+          onRate(r);
+          return;
+        }
         setRatingRow(r);
         setRatingVisible(true);
       },
