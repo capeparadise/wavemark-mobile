@@ -796,7 +796,8 @@ serve(async (req) => {
     const topPicksDaysUsed = Math.max(1, Math.min(365, Number.isFinite(topPicksDaysParam) ? topPicksDaysParam : 30));
 
     const computeTopPicksPayload = async () => {
-      const marketFixed = "US";
+      type TopPickLane = "core" | "international";
+      const marketFixed = "GB";
       const nowMs = topPicksNowMs;
       const currentYear = new Date(nowMs).getUTCFullYear();
       const daysUsed = topPicksDaysUsed;
@@ -809,18 +810,24 @@ serve(async (req) => {
       const popularityFloor = Math.max(0, Math.min(100, Number.isFinite(popularityFloorParam) ? popularityFloorParam : 50));
       const maxPerArtistParam = Number(url.searchParams.get("max_per_artist") ?? "2");
       const maxPerArtist = Math.max(1, Math.min(5, Number.isFinite(maxPerArtistParam) ? maxPerArtistParam : 2));
-      const pagesPerQueryParam = Number(url.searchParams.get("pages") ?? "2");
+      const pagesPerQueryParam = Number(url.searchParams.get("pages") ?? "1");
       const pagesPerQuery = Math.max(1, Math.min(4, Number.isFinite(pagesPerQueryParam) ? pagesPerQueryParam : 2));
       const pageLimit = 50;
       const returnLimit = 30;
       const { cutoffMs, endMs, cutoffIso } = discoverCalendarWindow(daysUsed, nowMs);
-      const queriesUsed = [
-        `year:${currentYear}`,
-        `year:${currentYear} genre:"pop"`,
-        `year:${currentYear} genre:"hiphop"`,
-        `year:${currentYear} genre:"latin"`,
-        `year:${currentYear} genre:"dance"`,
+      const queryPlan: Array<{ query: string; lane: TopPickLane }> = [
+        { query: `year:${currentYear} genre:"pop"`, lane: "core" },
+        { query: `year:${currentYear} genre:"hiphop"`, lane: "core" },
+        { query: `year:${currentYear} genre:"r&b"`, lane: "core" },
+        { query: `year:${currentYear} genre:"rock"`, lane: "core" },
+        { query: `year:${currentYear} genre:"indie"`, lane: "core" },
+        { query: `year:${currentYear} genre:"electronic"`, lane: "core" },
+        { query: `year:${currentYear} genre:"latin"`, lane: "international" },
+        { query: `year:${currentYear} genre:"afrobeats"`, lane: "international" },
+        { query: `year:${currentYear} genre:"k-pop"`, lane: "international" },
+        { query: `year:${currentYear} genre:"bollywood"`, lane: "international" },
       ];
+      const queriesUsed = queryPlan.map(({ query }) => query);
 
       const normalizeReleaseDate = (releaseDate?: string | null, precision?: string | null): string | null => {
         if (!releaseDate) return null;
@@ -875,17 +882,41 @@ serve(async (req) => {
       };
 
       const dedupedById = new Map<string, any>();
+      const sourceLanesByKey = new Map<string, Set<TopPickLane>>();
+      const sourceKeysFor = (item: any): string[] => {
+        const keys: string[] = [];
+        const id = String(item?.id ?? "");
+        const albumId = String(item?.albumId ?? "");
+        if (id) keys.push(`item:${isTrackItem(item) ? "track" : "album"}:${id}`);
+        if (albumId) keys.push(`album:${albumId}`);
+        return Array.from(new Set(keys));
+      };
+      const recordSourceLane = (item: any, lane: TopPickLane) => {
+        for (const key of sourceKeysFor(item)) {
+          const lanes = sourceLanesByKey.get(key) ?? new Set<TopPickLane>();
+          lanes.add(lane);
+          sourceLanesByKey.set(key, lanes);
+        }
+      };
+      const sourceLanesFor = (item: any): Set<TopPickLane> => {
+        const lanes = new Set<TopPickLane>();
+        for (const key of sourceKeysFor(item)) {
+          for (const lane of sourceLanesByKey.get(key) ?? []) lanes.add(lane);
+        }
+        return lanes;
+      };
       let rawCountTotal = 0;
       let pagesScannedTotal = 0;
 
-      for (const query of queriesUsed) {
+      for (let queryIndex = 0; queryIndex < queryPlan.length; queryIndex++) {
+        const { query, lane } = queryPlan[queryIndex];
         for (let page = 0; page < pagesPerQuery; page++) {
           pagesScannedTotal += 1;
           const offset = page * pageLimit;
-          stage = `top_picks_search_${page}`;
+          stage = `top_picks_search_${lane}_${queryIndex}_${page}`;
           const searchUrl = `${API}/search?` + new URLSearchParams({
             q: query,
-            type: "album,track",
+            type: "track",
             market: marketFixed,
             limit: String(pageLimit),
             offset: String(offset),
@@ -908,12 +939,14 @@ serve(async (req) => {
             const normalized = normalizeItem(a, "album");
             const key = String(normalized?.id ?? "");
             if (!key) continue;
+            recordSourceLane(normalized, lane);
             if (!dedupedById.has(key)) dedupedById.set(key, normalized);
           }
           for (const t of trackItems) {
             const normalized = normalizeItem(t, "track");
             const key = String(normalized?.id ?? "");
             if (!key) continue;
+            recordSourceLane(normalized, lane);
             if (!dedupedById.has(key)) dedupedById.set(key, normalized);
           }
         }
@@ -978,9 +1011,89 @@ serve(async (req) => {
         toReleaseTs,
       });
       const qualityDeduped = dedupeResult.items;
-      qualityDeduped.sort((a: any, b: any) => compareServerDiscoverFreshness(a, b, nowMs));
-      const artistCappedResult = capPerArtist(qualityDeduped, maxPerArtist);
-      const items = artistCappedResult.items.slice(0, returnLimit).map((item: any) => ({
+      const variationSeed = String(nowMs);
+      const stableTopPickHash = (value: string) => {
+        let hash = 2166136261;
+        for (let i = 0; i < value.length; i++) {
+          hash ^= value.charCodeAt(i);
+          hash = Math.imul(hash, 16777619);
+        }
+        return hash >>> 0;
+      };
+      const compareTopPickCandidates = (a: any, b: any) => {
+        const bandDiff = discoverServerFreshnessBand(a?.releaseTs, nowMs) - discoverServerFreshnessBand(b?.releaseTs, nowMs);
+        if (bandDiff) return bandDiff;
+        const aPopularityTier = Math.floor(Number(a?.artistPopularity ?? a?.artist_popularity ?? 0) / 5);
+        const bPopularityTier = Math.floor(Number(b?.artistPopularity ?? b?.artist_popularity ?? 0) / 5);
+        if (aPopularityTier !== bPopularityTier) return bPopularityTier - aPopularityTier;
+        const variationDiff = stableTopPickHash(`${variationSeed}:${sourceKeysFor(a)[0] ?? ""}`)
+          - stableTopPickHash(`${variationSeed}:${sourceKeysFor(b)[0] ?? ""}`);
+        if (variationDiff) return variationDiff;
+        return compareServerDiscoverFreshness(a, b, nowMs);
+      };
+      const coreCandidates = qualityDeduped
+        .filter((item: any) => sourceLanesFor(item).has("core"))
+        .sort(compareTopPickCandidates);
+      const internationalCandidates = qualityDeduped
+        .filter((item: any) => sourceLanesFor(item).has("international"))
+        .sort(compareTopPickCandidates);
+      const selectedCandidates: any[] = [];
+      const selectedCandidateKeys = new Set<string>();
+      const selectionLaneByKey = new Map<string, TopPickLane>();
+      const selectedArtistCounts = new Map<string, number>();
+      const selectionKeyFor = (item: any) => sourceKeysFor(item)[0] ?? `unknown:${String(item?.id ?? selectedCandidates.length)}`;
+      const artistKeyFor = (item: any) => {
+        const primaryArtistId = String(item?.artists?.[0]?.id ?? item?.artistId ?? "");
+        const primaryArtistName = String(item?.artists?.[0]?.name ?? item?.artist ?? "")
+          .trim()
+          .toLowerCase()
+          .replace(/\s+/g, " ");
+        return primaryArtistId || (primaryArtistName ? `name:${primaryArtistName}` : `unknown:${selectionKeyFor(item)}`);
+      };
+      let droppedDueToArtistCap = 0;
+      const appendFromLane = (
+        candidates: any[],
+        lane: TopPickLane,
+        limit: number,
+        startIndex = 0,
+      ) => {
+        let added = 0;
+        let index = startIndex;
+        while (index < candidates.length) {
+          if (selectedCandidates.length >= returnLimit || added >= limit) break;
+          const candidate = candidates[index];
+          index += 1;
+          const key = selectionKeyFor(candidate);
+          if (selectedCandidateKeys.has(key)) continue;
+          const artistKey = artistKeyFor(candidate);
+          const artistCount = selectedArtistCounts.get(artistKey) ?? 0;
+          if (artistCount >= maxPerArtist) {
+            droppedDueToArtistCap += 1;
+            continue;
+          }
+          selectedCandidateKeys.add(key);
+          selectedArtistCounts.set(artistKey, artistCount + 1);
+          selectionLaneByKey.set(key, lane);
+          selectedCandidates.push(candidate);
+          added += 1;
+        }
+        return index;
+      };
+
+      const internationalTarget = Math.floor(returnLimit / 5);
+      const coreTarget = returnLimit - internationalTarget;
+      const remainingCoreIndex = appendFromLane(coreCandidates, "core", coreTarget);
+      appendFromLane(internationalCandidates, "international", internationalTarget);
+      appendFromLane(coreCandidates, "core", returnLimit - selectedCandidates.length, remainingCoreIndex);
+
+      const selectedItems = selectedCandidates
+        .sort((a: any, b: any) => compareServerDiscoverFreshness(a, b, nowMs));
+      const selectedLaneCounts = selectedItems.reduce((counts: Record<string, number>, item: any) => {
+        const lane = selectionLaneByKey.get(selectionKeyFor(item)) ?? "fallback";
+        counts[lane] = (counts[lane] ?? 0) + 1;
+        return counts;
+      }, { core: 0, international: 0, fallback: 0 });
+      const items = selectedItems.map((item: any) => ({
         id: item?.id,
         title: item?.title ?? item?.name ?? "",
         artist: item?.artists?.[0]?.name ?? "",
@@ -1010,12 +1123,17 @@ serve(async (req) => {
           dropped_variants_bracket_count: dedupeResult.stats.dropped_variants_bracket_count,
           dropped_same_cover_count: dedupeResult.stats.dropped_same_cover_count,
           max_per_artist: maxPerArtist,
-          dropped_due_to_artist_cap: artistCappedResult.dropped_due_to_artist_cap,
+          dropped_due_to_artist_cap: droppedDueToArtistCap,
           returned_count: items.length,
           cutoff_iso: cutoffIso,
           pages_scanned_total: pagesScannedTotal,
           market: marketFixed,
           popularity_floor: popularityFloor,
+          query_plan: queryPlan,
+          core_candidate_count: coreCandidates.length,
+          international_candidate_count: internationalCandidates.length,
+          selected_lane_counts: selectedLaneCounts,
+          variation_seed: variationSeed,
         };
       }
       return payload;
@@ -1773,7 +1891,7 @@ serve(async (req) => {
       return new Response(await r.text(), { headers: addBuildHeader({ "Content-Type": "application/json" }) });
     }
 
-    // Top picks (search-based global trending)
+    // Top picks (GB-available, lane-weighted discovery)
     if (pathname.endsWith("/top-picks")) {
       const payload = await loadTopPicksPayload({ forceRefresh: refresh });
       return buildTopPicksResponse(payload);
