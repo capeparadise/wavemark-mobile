@@ -1202,7 +1202,7 @@ function normalizeRating(r: number): RatingValue {
   return clamped as RatingValue;
 }
 
-export async function setRating(id: string, rating: number, review?: string) {
+export async function setRating(id: string, rating: number, review?: string, options?: { doneAt: string }) {
   try {
     const { data: auth } = await supabase.auth.getUser();
     const user = auth?.user;
@@ -1216,6 +1216,7 @@ export async function setRating(id: string, rating: number, review?: string) {
         rating: value,
         review: review ?? null,
         rated_at: new Date().toISOString(),
+        ...(options ? { done_at: options.doneAt } : {}),
       };
       if (withDetails) payload.rating_details = { overall: value };
       debug('rate:set:payload', payload);
@@ -1260,7 +1261,8 @@ export async function setRatingDetailed(
   id: string,
   rating: number,
   details: { production?: number; vocals?: number; lyrics?: number; replay?: number; [k: string]: number | undefined },
-  review?: string
+  review?: string,
+  options?: { doneAt: string }
 ) {
   try {
     const { data: auth } = await supabase.auth.getUser();
@@ -1286,6 +1288,7 @@ export async function setRatingDetailed(
       rating: r,
       review: review ?? null,
       rated_at: new Date().toISOString(),
+      ...(options ? { done_at: options.doneAt } : {}),
     };
     const payload = { ...basePayload, rating_details: { ...det, overall: r } };
 
@@ -1312,7 +1315,7 @@ export async function setRatingDetailed(
         error = fallback.error;
       } else if (isConstraint) {
         // Fall back to the simpler rating path (which already handles constraints/legacy columns)
-        const simple = await setRating(id, r, review);
+        const simple = await setRating(id, r, review, options);
         if (simple.ok) return simple;
         error = (simple as any).error || error;
       }

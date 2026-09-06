@@ -5,7 +5,7 @@ import { H } from './haptics';
 import { ui } from '../constants/ui';
 import { useTheme } from '../theme/useTheme';
 
-export default function FollowButton({ artistId, artistName, spotifyUrl }: { artistId: string; artistName: string; spotifyUrl?: string | null }) {
+export default function FollowButton({ artistId, artistName, spotifyUrl, followingLabel = 'Following' }: { artistId: string; artistName: string; spotifyUrl?: string | null; followingLabel?: string }) {
   const { colors } = useTheme();
   const [following, setFollowing] = useState<boolean>(false);
   const [busy, setBusy] = useState(false);
@@ -36,7 +36,7 @@ export default function FollowButton({ artistId, artistName, spotifyUrl }: { art
         paddingHorizontal: 12, paddingVertical: 8, borderRadius: ui.radius.lg
       }}>
       <Text style={{ color: following ? colors.text.inverted : colors.text.secondary, fontWeight: '700' }}>
-        {following ? 'Following' : 'Follow'}
+        {following ? followingLabel : 'Follow'}
       </Text>
     </Pressable>
   );

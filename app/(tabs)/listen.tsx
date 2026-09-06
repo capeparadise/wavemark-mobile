@@ -87,7 +87,7 @@ export default function ListenTab() {
 
   const [filterKey, setFilterKey] = useState<FilterKey>('all');
   const [sortKey, setSortKey] = useState<SortKey>('newest');
-  const [snack, setSnack] = useState<{ visible: boolean; row?: ListenRow }>({ visible: false });
+  const [snack, setSnack] = useState<{ visible: boolean; row?: ListenRow; message?: string }>({ visible: false });
   const [menuRow, setMenuRow] = useState<ListenRow | null>(null);
   // Artwork cache (persisted)
   const [artMap, setArtMap] = useState<Record<string, string>>({});
@@ -719,23 +719,24 @@ export default function ListenTab() {
         }}
         onSubmit={async (stars, details) => {
           if (!ratingTarget) return closeRating();
-          if (advancedRatings && details) {
-            const { setRatingDetailed } = await import('../../lib/listen');
-            const res = await setRatingDetailed(ratingTarget.id, stars, details);
-            closeRating();
-            await load();
-            if (!res.ok) {
-              Alert.alert('Could not save rating', res.message || 'Try again.');
-            }
-            return;
-          }
-          const { setRating } = await import('../../lib/listen');
-          const res = await setRating(ratingTarget.id, stars);
-          closeRating();
-          await load();
+          const target = ratingTarget;
+          const options = { doneAt: ratingTarget.done_at || new Date().toISOString() };
+          const { setRating, setRatingDetailed } = await import('../../lib/listen');
+          const res = advancedRatings && details
+            ? await setRatingDetailed(target.id, stars, details, undefined, options)
+            : await setRating(target.id, stars, undefined, options);
           if (!res.ok) {
             Alert.alert('Could not save rating', res.message || 'Try again.');
+            return;
           }
+          // Apply the confirmed write immediately; load() normally has a 15s throttle.
+          setRows(curr => curr.map(row => row.id === target.id
+            ? { ...row, ...res.row, done_at: options.doneAt }
+            : row));
+          closeRating();
+          H.success();
+          setSnack({ visible: true, message: 'Rated and marked as listened' });
+          void load({ force: true });
         }}
       />
       <StatusMenu
@@ -765,9 +766,9 @@ export default function ListenTab() {
       />
           <Snackbar
             visible={snack.visible}
-            message="Marked listened"
+            message={snack.message || 'Marked listened'}
             actionLabel="Undo"
-            onAction={async () => {
+            onAction={snack.row ? async () => {
               const r = snack.row;
               setSnack({ visible: false });
               if (!r) return;
@@ -784,7 +785,7 @@ export default function ListenTab() {
                 return;
               }
               H.success();
-            }}
+            } : undefined}
             onTimeout={() => setSnack({ visible: false })}
           />
         </>

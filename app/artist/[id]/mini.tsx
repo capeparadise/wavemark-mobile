@@ -6,6 +6,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Animated, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import GlassCard from '../../../components/GlassCard';
+import FollowButton from '../../../components/FollowButton';
 import Screen from '../../../components/Screen';
 import { H } from '../../../components/haptics';
 import { addToListFromSearch } from '../../../lib/listen';
@@ -44,17 +45,6 @@ export default function ArtistMiniScreen() {
   const scrollY = useRef(new Animated.Value(0)).current;
 
   const nameShown = useMemo(() => (displayName || resolvedName || 'Artist').toString(), [displayName, resolvedName]);
-
-  const followersLabel = (n?: number) => {
-    if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) return null;
-    const fmt = (v: number) => {
-      if (v >= 1_000_000_000) return `${(v / 1_000_000_000).toFixed(1).replace(/\.0$/, '')}B`;
-      if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
-      if (v >= 1_000) return `${(v / 1_000).toFixed(1).replace(/\.0$/, '')}K`;
-      return String(Math.round(v));
-    };
-    return `${fmt(n)} followers`;
-  };
 
   // Simple shimmer for hero while image resolves
   const Shimmer = () => {
@@ -395,7 +385,6 @@ export default function ArtistMiniScreen() {
 
   const latestReleaseDate = merged.find((m) => !!m.releaseDate)?.releaseDate ?? null;
   const genreLabel = (artistMeta?.genres || []).find(Boolean) || 'Artist';
-  const followersText = followersLabel(artistMeta?.followers);
 
   const filtered = merged.filter((m) => {
     if (filter === 'single') return m.presentationType === 'single';
@@ -475,9 +464,7 @@ export default function ArtistMiniScreen() {
         <Animated.View style={{ opacity: fadeIn }}>
           <GlassCard style={{ marginTop: 12, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 18 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', rowGap: 8, columnGap: 10 }}>
-              {followersText ? (
-                <Text style={{ color: colors.text.secondary, fontWeight: '700', fontSize: 12 }}>{followersText}</Text>
-              ) : null}
+              {artistId ? <FollowButton artistId={artistId} artistName={nameShown} followingLabel="Unfollow" /> : null}
               <View style={{ paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999, backgroundColor: `${colors.accent.primary}22`, borderWidth: 1, borderColor: `${colors.accent.primary}33` }}>
                 <Text style={{ color: colors.accent.primary, fontWeight: '800', fontSize: 11, letterSpacing: 0.4 }}>
                   {String(genreLabel).toUpperCase().slice(0, 18)}
