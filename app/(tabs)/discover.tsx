@@ -5,6 +5,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ActivityIndicator, Alert, Animated, AppState, Dimensions, FlatList, Image, Keyboard, Pressable, ScrollView, SectionList, Text, TextInput, View, Modal } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import FollowButton from '../../components/FollowButton';
+import { ui } from '../../constants/ui';
 import { H } from '../../components/haptics';
 import Screen from '../../components/Screen';
 import StatusMenu from '../../components/StatusMenu';
@@ -351,6 +352,7 @@ export default function DiscoverTab() {
   const lastScrollYRef = useRef(0);
   const searchInputRef = useRef<TextInput>(null);
   const [q, setQ] = useState('');
+  const [searchFilter, setSearchFilter] = useState<'all' | 'artists' | 'music'>('all');
   const [busy, setBusy] = useState(false);
   const [searchRows, setSearchRows] = useState<SpotifyResult[]>([]);
   // Upcoming removed
@@ -569,6 +571,10 @@ export default function DiscoverTab() {
   }, [headerAnim]);
 
   const handleDiscoverScroll = useCallback((event: any) => {
+    if (q.trim()) {
+      setHeaderVisible(true);
+      return;
+    }
     const y = Math.max(0, event?.nativeEvent?.contentOffset?.y ?? 0);
     const lastY = lastScrollYRef.current;
     const delta = y - lastY;
@@ -580,7 +586,7 @@ export default function DiscoverTab() {
     }
     if (delta > 4) setHeaderVisible(false);
     else if (delta < -3) setHeaderVisible(true);
-  }, [setHeaderVisible]);
+  }, [q, setHeaderVisible]);
 
   const formatDebugBody = useCallback((text: string) => {
     try {
@@ -2590,6 +2596,7 @@ export default function DiscoverTab() {
 
   const resetSearchState = useCallback(() => {
     setQ('');
+    setSearchFilter('all');
     setSearchRows([]);
     setArtist(null);
     setArtistAlbumsRows([]);
@@ -2801,23 +2808,18 @@ export default function DiscoverTab() {
         nameScore: matchScore(r.title || r.artist || '', q),
         intentScore: artistIntentScore(r, q),
       }))
-      .sort((a, b) => (b.intentScore - a.intentScore) || ((b.r.popularity || 0) - (a.r.popularity || 0)));
+      .sort((a, b) => (b.nameScore - a.nameScore)
+        || ((b.r.popularity || 0) - (a.r.popularity || 0))
+        || ((b.r.followers || 0) - (a.r.followers || 0)));
     const topMusicScore = music.reduce((max, r) => Math.max(max, matchScore(r.title || r.artist || '', q)), 0);
     const topArtistScore = artistScores[0]?.nameScore ?? 0;
     const topArtistIntentScore = artistScores[0]?.intentScore ?? 0;
     const hasStrongArtist = !!artistScores[0] && topArtistScore >= 85 && (topArtistScore >= topMusicScore - 10 || topArtistIntentScore >= 115);
-    const strongArtists = hasStrongArtist
-      ? artistScores
-        .filter((s, index) => index === 0 || (s.intentScore >= topArtistIntentScore - 60 && (
-          (s.nameScore >= 85 && ((s.r.popularity || 0) >= 45 || (s.r.followers || 0) >= 100_000))
-          || (s.nameScore >= 70 && (s.r.popularity || 0) >= 65)
-        )))
-        .slice(0, 5)
-        .map(s => s.r)
-      : [];
-    const artists = strongArtists.length
-      ? []
-      : artistScores.filter(s => s.intentScore >= 85 && (s.nameScore >= 60 || (s.nameScore >= 55 && (s.r.popularity || 0) >= 50))).map(s => s.r).slice(0, 5);
+    // Popularity orders equally relevant names; it must not hide smaller artists.
+    // Keep all relevant matches from the bounded API response available to scroll.
+    const matchingArtists = artistScores.filter(s => s.nameScore >= 55).map(s => s.r);
+    const strongArtists = hasStrongArtist ? matchingArtists : [];
+    const artists = hasStrongArtist ? [] : matchingArtists;
     return { music, strongArtists, artists };
   }, [searchRows, q]);
 
@@ -2841,11 +2843,13 @@ export default function DiscoverTab() {
   const groupedSections = useMemo<SearchSection[]>(() => {
     if (!hasGrouped) return [];
     const out: SearchSection[] = [];
-    if (groupedSearch.strongArtists.length) out.push({ title: groupedSearch.strongArtists.length === 1 ? 'Artist' : 'Artists', key: 'artist', data: groupedSearch.strongArtists });
-    if (groupedSearch.music.length) out.push({ title: 'Music', key: 'music', data: groupedSearch.music });
-    if (groupedSearch.artists.length) out.push({ title: 'Artists', key: 'artists', data: groupedSearch.artists });
+    const artists = [...groupedSearch.strongArtists, ...groupedSearch.artists];
+    if (searchFilter !== 'music' && artists.length) {
+      out.push({ title: 'Artists', key: 'artists', data: searchFilter === 'all' ? artists.slice(0, 3) : artists });
+    }
+    if (searchFilter !== 'artists' && groupedSearch.music.length) out.push({ title: 'Music', key: 'music', data: groupedSearch.music });
     return out;
-  }, [groupedSearch, hasGrouped]);
+  }, [groupedSearch, hasGrouped, searchFilter]);
 
   // Build rows for FlatList (fallback view when there is no grouped search)
   const rows: Row[] = [];
@@ -3714,12 +3718,14 @@ export default function DiscoverTab() {
     </View>
   );
 
+  const searching = q.trim().length > 0;
+  const searchHeaderHeight = DISCOVER_HEADER_HEIGHT + (searching ? 44 : 0);
   const headerTranslateY = headerAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: [-(DISCOVER_HEADER_HEIGHT + insets.top), 0],
+    outputRange: [-(searchHeaderHeight + insets.top), 0],
   });
   const headerTop = Math.max(insets.top + 6, 12);
-  const listTopPadding = headerTop + DISCOVER_HEADER_HEIGHT;
+  const listTopPadding = headerTop + searchHeaderHeight;
 
   const DiscoverHeader = (
     <Animated.View
@@ -3778,6 +3784,22 @@ export default function DiscoverTab() {
               <Ionicons name="options-outline" size={19} color={colors.text.secondary} />
             </Pressable>
           </View>
+          {searching && (
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+              {(['all', 'artists', 'music'] as const).map(filter => (
+                <Pressable
+                  key={filter}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: searchFilter === filter }}
+                  hitSlop={{ top: 4, bottom: 4 }}
+                  onPress={() => { setSearchFilter(filter); Keyboard.dismiss(); }}
+                  style={{ paddingHorizontal: 12, paddingVertical: 8, justifyContent: 'center', borderRadius: ui.radius.lg, borderWidth: 1, borderColor: searchFilter === filter ? colors.accent.primary : colors.border.subtle, backgroundColor: searchFilter === filter ? accentSoft : colors.bg.muted }}
+                >
+                  <Text style={{ color: searchFilter === filter ? colors.accent.primary : colors.text.secondary, fontWeight: '700' }}>{filter === 'all' ? 'All' : filter === 'artists' ? 'Artists' : 'Music'}</Text>
+                </Pressable>
+              ))}
+            </View>
+          )}
         </BlurView>
       </View>
     </Animated.View>
@@ -3795,8 +3817,9 @@ export default function DiscoverTab() {
         </View>
       )}
   {/* artistHeader removed when showing grouped search results */}
-      {hasGrouped ? (
+      {searching ? (
         <SectionList
+          key={searchFilter}
           sections={groupedSections}
           keyExtractor={(item, index) => `sec-${item.type}-${item.id}-${index}`}
           contentContainerStyle={{ paddingTop: listTopPadding, paddingBottom: 112 }}
@@ -3804,13 +3827,19 @@ export default function DiscoverTab() {
             <Text style={{ fontSize: 18, fontWeight: '600', marginTop: 16, marginBottom: 8, marginHorizontal: 16, color: colors.text.secondary }}>{section.title}</Text>
           )}
           renderItem={({ item }) => renderSearchRow(item)}
+          renderSectionFooter={({ section }) => searchFilter === 'all' && section.key === 'artists' && (groupedSearch.strongArtists.length + groupedSearch.artists.length) > 3 ? (
+            <Pressable accessibilityRole="button" onPress={() => { setSearchFilter('artists'); Keyboard.dismiss(); }} style={{ minHeight: 44, justifyContent: 'center', marginHorizontal: 16 }}>
+              <Text style={{ color: colors.accent.primary, fontWeight: '700' }}>See all artists</Text>
+            </Pressable>
+          ) : null}
+          stickySectionHeadersEnabled={false}
           onScroll={handleDiscoverScroll}
           scrollEventThrottle={16}
           keyboardDismissMode="on-drag"
           keyboardShouldPersistTaps="handled"
           refreshing={refreshing}
           onRefresh={onRefresh}
-          ListEmptyComponent={renderEmpty}
+          ListEmptyComponent={<Text style={{ margin: 16, color: colors.text.muted }}>{busy ? 'Searching…' : searchFilter === 'artists' ? 'No matching artists. Try another name or switch to All.' : searchFilter === 'music' ? 'No matching music. Try another title or switch to All.' : 'No matches. Try another artist or title.'}</Text>}
         />
       ) : (
         <FlatList
