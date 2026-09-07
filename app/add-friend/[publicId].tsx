@@ -83,15 +83,15 @@ export default function AddFriendScreen() {
   const title = (() => {
     if (state.kind === 'not_found') return 'Invite no longer available';
     if (state.kind === 'needs_auth') return 'Sign in required';
-    if (state.kind === 'friends') return 'Ripples merged';
-    return 'Merge Ripples';
+    if (state.kind === 'friends') return 'You’re connected';
+    return 'Follow each other';
   })();
 
   const body = (() => {
     if (state.kind === 'not_found') return 'Invite no longer available.';
-    if (state.kind === 'needs_auth') return 'Sign in to confirm this merge.';
-    if (state.kind === 'friends') return 'Ripples merged.';
-    return 'Preview their profile card, then merge ripples.';
+    if (state.kind === 'needs_auth') return 'Sign in to confirm this connection.';
+    if (state.kind === 'friends') return 'You now follow each other.';
+    return 'Preview their profile, then follow each other on Ripple.';
   })();
 
   const inviterDisplay = state.kind === 'ready'
@@ -119,7 +119,7 @@ export default function AddFriendScreen() {
       }
       if (res.status === 'connected' || res.status === 'merged') {
         setState({ kind: 'friends' });
-        setSnack({ visible: true, message: 'Ripples merged' });
+        setSnack({ visible: true, message: 'You now follow each other' });
         return;
       }
     } finally {
@@ -224,7 +224,7 @@ export default function AddFriendScreen() {
                       })}
                     >
                       <Text style={{ color: colors.text.inverted, fontWeight: '900', fontSize: 16 }}>
-                        {busy ? 'Merging…' : 'Merge Ripples'}
+                        {busy ? 'Connecting…' : 'Follow each other'}
                       </Text>
                     </Pressable>
                   </View>
@@ -246,7 +246,7 @@ export default function AddFriendScreen() {
                         alignItems: 'center',
                       })}
                     >
-                      <Text style={{ color: colors.text.secondary, fontWeight: '900' }}>Ripples merged</Text>
+                      <Text style={{ color: colors.text.secondary, fontWeight: '900' }}>You’re connected</Text>
                     </Pressable>
                   </View>
                 )}

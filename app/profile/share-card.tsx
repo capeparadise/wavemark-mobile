@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Image, Pressable, Share, Text, View } from 'react-native';
 import * as ExpoLinking from 'expo-linking';
+import { router } from 'expo-router';
 import Avatar from '../../components/Avatar';
 import Snackbar from '../../components/Snackbar';
 import Screen from '../../components/StackScreen';
 import { fetchProfileSnapshot, loadCachedProfileSnapshot, type ProfileSnapshot } from '../../lib/stats';
-import { createConnectionInvite, ensureMyProfile, type PublicProfile } from '../../lib/profileSocial';
+import { ensureMyProfile, type PublicProfile } from '../../lib/profileSocial';
 import { useTheme } from '../../theme/useTheme';
 
 export const options = { title: 'Share Card' };
@@ -25,10 +26,9 @@ export default function ShareCardScreen() {
     setProfileLoading(true);
     setInviteError(false);
     try {
-      let p = await ensureMyProfile();
-      if (p && !p.public_id) p = await ensureMyProfile();
+      const p = await ensureMyProfile();
       setProfile(p);
-      setInviteError(!p?.public_id);
+      setInviteError(!p?.username);
     } finally {
       setProfileLoading(false);
     }
@@ -56,12 +56,10 @@ export default function ShareCardScreen() {
     loadStats().catch(() => {});
   }, [loadProfile, loadStats]);
 
-  const inviteUrlForToken = useCallback((token: string) => {
-    if (!token) return null;
-    // Dev-only: use an Expo link so this can be tested between devices without TestFlight.
-    // Production builds will use the `rppl://` scheme.
-    if (__DEV__) return ExpoLinking.createURL(`add-friend/${token}`);
-    return `rppl://add-friend/${token}`;
+  const profileUrlForUsername = useCallback((username: string) => {
+    if (!username) return null;
+    if (__DEV__) return ExpoLinking.createURL(`profile/listener/${username}`);
+    return `rppl://profile/listener/${username}`;
   }, []);
 
   const level = useMemo(() => {
@@ -104,21 +102,21 @@ export default function ShareCardScreen() {
 
   const onShare = async () => {
     if (busy) return;
-    if (!profile?.user_id) {
+    if (!profile?.username) {
       setInviteError(true);
+      router.push('/profile/setup');
       return;
     }
     try {
       setBusy(true);
-      const created = await createConnectionInvite();
-      const inviteUrl = created.ok && created.token ? inviteUrlForToken(created.token) : null;
-      if (!inviteUrl) {
+      const profileUrl = profileUrlForUsername(profile.username);
+      if (!profileUrl) {
         setInviteError(true);
-        setSnack({ visible: true, message: created.message || 'Ripple invite unavailable. Try again.' });
+        setSnack({ visible: true, message: 'Profile sharing is unavailable. Try again.' });
         return;
       }
       try {
-        await Share.share({ message: `Merge Ripples with me on RPPL: ${inviteUrl}` });
+        await Share.share({ message: `Follow @${profile.username} on Ripple: ${profileUrl}` });
       } catch {
         await (async () => {
           try {
@@ -126,19 +124,19 @@ export default function ShareCardScreen() {
             // eslint-disable-next-line @typescript-eslint/no-require-imports
             const Clipboard = require('expo-clipboard');
             if (Clipboard?.setStringAsync) {
-              await Clipboard.setStringAsync(inviteUrl);
+              await Clipboard.setStringAsync(profileUrl);
               return;
             }
           } catch {}
           try {
             const nav = (globalThis as any)?.navigator;
             if (nav?.clipboard?.writeText) {
-              await nav.clipboard.writeText(inviteUrl);
+              await nav.clipboard.writeText(profileUrl);
               return;
             }
           } catch {}
         })();
-        setSnack({ visible: true, message: 'Ripple invite link copied' });
+        setSnack({ visible: true, message: 'Profile link copied' });
       }
     } finally {
       setBusy(false);
@@ -164,7 +162,9 @@ export default function ShareCardScreen() {
                 <Text style={{ color: colors.text.inverted, fontSize: 22, fontWeight: '800' }} numberOfLines={1}>
                   {profile?.display_name || 'Listener'}
                 </Text>
-                <Text style={{ color: colors.text.subtle, marginTop: 4 }}>{level.current.name} · {level.total} listened</Text>
+                <Text style={{ color: colors.text.subtle, marginTop: 4 }}>
+                  {profile?.username ? `@${profile.username} · ` : ''}{level.current.name} · {level.total} listened
+                </Text>
               </View>
             </View>
 
@@ -201,12 +201,12 @@ export default function ShareCardScreen() {
               alignItems: 'center',
             })}
           >
-            <Text style={{ color: colors.text.inverted, fontWeight: '800' }}>{busy ? 'Sharing…' : 'Share Ripple'}</Text>
+            <Text style={{ color: colors.text.inverted, fontWeight: '800' }}>{busy ? 'Sharing…' : profile?.username ? 'Share profile' : 'Set up profile'}</Text>
           </Pressable>
 
           {inviteError && !profileLoading && (
             <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 2 }}>
-              <Text style={{ color: colors.text.muted, fontSize: 12 }}>Ripple invite unavailable. Try again.</Text>
+              <Text style={{ color: colors.text.muted, fontSize: 12 }}>Choose a username before sharing your profile.</Text>
               <Pressable
                 onPress={() => loadProfile().catch(() => {})}
                 style={({ pressed }) => ({
@@ -226,7 +226,7 @@ export default function ShareCardScreen() {
 
           <View style={{ paddingHorizontal: 2 }}>
             <Text style={{ color: colors.text.muted, fontSize: 12, lineHeight: 16 }}>
-              Ripple invites are single-use. Opening the link previews your profile; the connection happens only after they tap Merge Ripples.
+              Your profile link can be shared anywhere. Private profiles approve follow requests before their listening activity is visible.
             </Text>
           </View>
         </View>

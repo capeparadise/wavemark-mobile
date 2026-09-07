@@ -44,7 +44,7 @@ export default function FeedHeader({
                 <View style={{ flex: 1, flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: colors.border.subtle }}>
                     {([
                       { key: 'artist', label: 'Releases' },
-                      { key: 'social', label: 'Friends' },
+                      { key: 'social', label: 'Following' },
                     ] as const).map(({ key, label }) => {
                     const selected = mode === key;
                     return (

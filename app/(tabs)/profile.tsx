@@ -24,6 +24,9 @@ export default function ProfileTab() {
   const [loading, setLoading] = useState(true);
   const [stats, setStats] = useState({ total: 0, avgRating: 0, week: 0, month: 0, streak: 0 });
   const [displayName, setDisplayName] = useState<string>('Listener');
+  const [username, setUsername] = useState<string | null>(null);
+  const [profileSetupCompleted, setProfileSetupCompleted] = useState(false);
+  const [profileIsPrivate, setProfileIsPrivate] = useState(true);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [avatarBusy, setAvatarBusy] = useState(false);
   const [achievements, setAchievements] = useState<{ id: string; title: string; unlocked: boolean }[]>([]);
@@ -34,6 +37,9 @@ export default function ProfileTab() {
   const load = useCallback(async () => {
       const profile = await ensureMyProfile();
       setDisplayName(profile?.display_name || 'Listener');
+      setUsername(profile?.username ?? null);
+      setProfileSetupCompleted(profile?.profile_setup_completed === true);
+      setProfileIsPrivate(profile?.is_private !== false);
       setAvatarUrl(profile?.avatar_url ?? null);
 
       const cached = await loadCachedProfileSnapshot();
@@ -111,7 +117,6 @@ export default function ProfileTab() {
   const uiColors = useMemo(() => getUiColors(colors), [colors]);
 
   const goSettings = () => { try { router.push('/profile/settings'); } catch {} };
-  const goFriendRequests = () => { try { router.push('/profile/friend-requests'); } catch {} };
 
   const changeAvatar = async () => {
     try {
@@ -241,9 +246,14 @@ export default function ProfileTab() {
               <Pressable onPress={changeAvatar} disabled={avatarBusy} style={({ pressed }) => ({ opacity: avatarBusy ? 0.6 : pressed ? 0.85 : 1 })}>
                 <Avatar uri={avatarUrl} size={52} borderColor={colors.border.muted} backgroundColor={colors.bg.muted} />
               </Pressable>
-              <View>
+              <View style={{ flex: 1, minWidth: 0 }}>
                 <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text.secondary }}>{displayName}</Text>
-                <Text style={{ color: colors.text.muted, marginTop: 2 }}>{avatarBusy ? 'Updating photo…' : 'Your life in music'}</Text>
+                <View style={{ marginTop: 2, flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                  <Text style={{ color: colors.text.muted }} numberOfLines={1}>
+                    {avatarBusy ? 'Updating photo…' : username ? `@${username}` : 'Your life in music'}
+                  </Text>
+                  {username && profileIsPrivate ? <Ionicons name="lock-closed" size={11} color={colors.text.muted} /> : null}
+                </View>
               </View>
             </View>
             <Pressable onPress={goSettings} hitSlop={8} style={{ width: icon.button, height: icon.button, borderRadius: ui.radius.lg, backgroundColor: colors.bg.muted, alignItems: 'center', justifyContent: 'center' }}>
@@ -251,6 +261,33 @@ export default function ProfileTab() {
             </Pressable>
           </View>
         </GlassCard>
+
+        {!profileSetupCompleted || !username ? (
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => router.push('/profile/setup')}
+            style={({ pressed }) => ({
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 12,
+              padding: 15,
+              borderRadius: 16,
+              borderWidth: 1,
+              borderColor: colors.accent.primary,
+              backgroundColor: colors.accent.primary + '12',
+              opacity: pressed ? 0.84 : 1,
+            })}
+          >
+            <View style={{ width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.accent.primary + '22' }}>
+              <Ionicons name="at" size={20} color={colors.accent.primary} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ color: colors.text.secondary, fontSize: 15, fontWeight: '900' }}>Choose your @username</Text>
+              <Text style={{ marginTop: 3, color: colors.text.muted }}>Let other music fans find and follow you.</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.text.muted} />
+          </Pressable>
+        ) : null}
 
         {loading ? (
           <View style={{ gap: 14, paddingVertical: 4 }}>
@@ -319,10 +356,10 @@ export default function ProfileTab() {
                 <QuickButton label="Reviews" icon="chatbubble-ellipses-outline" onPress={() => Alert.alert('Reviews', 'Coming soon')} />
                 <QuickButton label="Insights" icon="stats-chart-outline" onPress={() => router.push('/profile/insights')} />
                 <QuickButton
-                  label="Social"
-                  icon="person-add-outline"
+                  label="People"
+                  icon="people-outline"
                   dot={requestsHasDot}
-                  onPress={goFriendRequests}
+                  onPress={() => router.push('/profile/people')}
                 />
                 <QuickButton label="Share" icon="share-outline" onPress={() => router.push('/profile/share-card')} />
               </View>

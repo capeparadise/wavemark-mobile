@@ -125,6 +125,24 @@ export default function ProfileSettingsPage() {
         <Text style={{ fontSize: 22, fontWeight: '700', marginBottom: 8, color: colors.text.secondary }}>Settings</Text>
         <Text style={{ color: colors.text.muted, marginBottom: 18 }}>Manage your app preferences.</Text>
 
+        <View style={{ marginBottom: 24 }}>
+          <Text style={{ fontWeight: '700', marginBottom: 6, color: colors.text.secondary }}>Listener profile</Text>
+          <Text style={{ color: colors.text.muted, marginBottom: 8 }}>Manage your display name, @username and privacy.</Text>
+          <Pressable
+            onPress={() => router.push('/profile/setup')}
+            style={({ pressed }) => ({
+              padding: 12,
+              borderRadius: 14,
+              backgroundColor: colors.bg.secondary,
+              borderWidth: 1,
+              borderColor: colors.border.subtle,
+              opacity: pressed ? 0.85 : 1,
+            })}
+          >
+            <Text style={{ color: colors.text.secondary, fontSize: 16, fontWeight: '700' }}>Edit listener profile</Text>
+          </Pressable>
+        </View>
+
       {APPLE_ENABLED ? (
         <View style={{ marginBottom: 24 }}>
           <Text style={{ fontWeight: '700', marginBottom: 6, color: colors.text.secondary }}>Default player</Text>

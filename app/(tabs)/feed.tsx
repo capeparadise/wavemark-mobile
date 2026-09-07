@@ -32,6 +32,7 @@ type SocialActivityItem = {
   kind: SocialActivityKind;
   actorId: string;
   actorName: string;
+  actorUsername: string | null;
   actorAvatarUrl: string | null;
   createdAt: string;
   title: string;
@@ -41,6 +42,11 @@ type SocialActivityItem = {
   appleUrl?: string | null;
   artworkUrl?: string | null;
   itemType?: 'album' | 'track' | null;
+  provider?: 'spotify' | 'apple' | null;
+  providerId?: string | null;
+  spotifyId?: string | null;
+  appleId?: string | null;
+  releaseDate?: string | null;
 };
 
 const extractAppleId = (value?: string | null) => {
@@ -241,6 +247,7 @@ export default function FeedTab() {
         kind: it.kind,
         actorId: it.actorId,
         actorName: it.actorName,
+        actorUsername: it.actorUsername ?? null,
         actorAvatarUrl: it.actorAvatarUrl ?? null,
         createdAt: it.createdAt,
         title: it.title,
@@ -420,6 +427,7 @@ export default function FeedTab() {
     id: string;
     friendId: string;
     friendName: string;
+    friendUsername: string | null;
     friendAvatarUrl: string | null;
     dateKey: string;
     dateLabel: string;
@@ -450,6 +458,7 @@ export default function FeedTab() {
           id: groupKey,
           friendId,
           friendName: it.actorName || 'Listener',
+          friendUsername: it.actorUsername ?? null,
           friendAvatarUrl: it.actorAvatarUrl ?? null,
           dateKey,
           dateLabel: labelForSocialDateKey(dateKey),
@@ -582,14 +591,22 @@ export default function FeedTab() {
   }, [setMenuRow]);
 
   const openSocialItem = useCallback((item: SocialActivityItem) => {
-    const releaseId =
-      item.id ||
-      parseSpotifyUrlOrId(item.spotifyUrl || '')?.id ||
-      extractAppleId(item.appleUrl) ||
-      item.spotifyUrl ||
-      item.appleUrl ||
-      null;
-    if (releaseId) goToRelease(releaseId);
+    const spotifyId = item.spotifyId || parseSpotifyUrlOrId(item.spotifyUrl || '')?.id || (item.provider === 'spotify' ? item.providerId : null);
+    const appleId = item.appleId || extractAppleId(item.appleUrl) || (item.provider === 'apple' ? item.providerId : null);
+    const provider = item.provider || (appleId && !spotifyId ? 'apple' : 'spotify');
+    const releaseId = (provider === 'apple' ? appleId : spotifyId) || item.id;
+    goToRelease(releaseId, {
+      provider,
+      spotifyId,
+      spotifyUrl: item.spotifyUrl,
+      appleId,
+      appleUrl: item.appleUrl,
+      title: item.title,
+      artistName: item.artistName,
+      imageUrl: item.artworkUrl,
+      releaseDate: item.releaseDate,
+      type: item.itemType,
+    });
   }, []);
 
   const toggleExpandedGroup = (id: string) => {
@@ -645,30 +662,40 @@ export default function FeedTab() {
     return (
       <View style={{ marginHorizontal: 2, borderBottomWidth: 1, borderBottomColor: colors.border.subtle }}>
         <View style={{ paddingVertical: 15 }}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityState={{ expanded }}
-            accessibilityLabel={`${group.friendName}: ${summaryLineForGroup(group)}`}
-            onPress={() => toggleExpandedGroup(group.id)}
-            style={({ pressed }) => ({
-              transform: [{ scale: pressed ? 0.996 : 1 }],
-            })}
-          >
-            <View style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}>
+          <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={group.friendUsername ? `Open @${group.friendUsername}'s profile` : `${group.friendName}: ${summaryLineForGroup(group)}`}
+              onPress={() => {
+                if (group.friendUsername) {
+                  router.push({ pathname: '/profile/listener/[username]', params: { username: group.friendUsername } });
+                } else {
+                  toggleExpandedGroup(group.id);
+                }
+              }}
+              style={({ pressed }) => ({ flex: 1, flexDirection: 'row', gap: 12, alignItems: 'center', opacity: pressed ? 0.84 : 1 })}
+            >
               <Avatar uri={group.friendAvatarUrl} size={42} borderColor={colors.border.subtle} backgroundColor={colors.bg.muted} />
               <View style={{ flex: 1, minWidth: 0 }}>
                 <Text style={{ color: colors.text.secondary, fontWeight: '900', fontSize: 16 }} numberOfLines={1}>
                   {group.friendName}
                 </Text>
-                <Text style={{ marginTop: 4, color: colors.text.muted, fontWeight: '700' }} numberOfLines={1}>
-                  {summaryLineForGroup(group)}
+                <Text style={{ marginTop: 3, color: colors.text.muted, fontWeight: '700' }} numberOfLines={1}>
+                  {group.friendUsername ? `@${group.friendUsername} · ` : ''}{summaryLineForGroup(group)}
                 </Text>
               </View>
-              <View style={{ alignItems: 'flex-end', justifyContent: 'center' }}>
-                <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={18} color={colors.text.muted as any} />
-              </View>
-            </View>
-          </Pressable>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ expanded }}
+              accessibilityLabel={`${expanded ? 'Collapse' : 'Expand'} ${group.friendName}'s activity`}
+              onPress={() => toggleExpandedGroup(group.id)}
+              hitSlop={8}
+              style={({ pressed }) => ({ width: 38, height: 38, alignItems: 'center', justifyContent: 'center', opacity: pressed ? 0.7 : 1 })}
+            >
+              <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={18} color={colors.text.muted as any} />
+            </Pressable>
+          </View>
 
           <Animated.View style={{ opacity, height: expanded ? undefined : 0, overflow: 'hidden' }}>
             <View style={{ marginTop: 10, gap: 16 }}>
@@ -866,7 +893,7 @@ export default function FeedTab() {
     }}>
       {([
         { key: 'artist', label: 'Releases' },
-        { key: 'social', label: 'Friends' },
+        { key: 'social', label: 'Following' },
       ] as const).map(({ key, label }) => {
         const selected = mode === key;
         return (
@@ -959,7 +986,7 @@ export default function FeedTab() {
   const renderWaveHeader = () => (
     <View style={{ paddingTop: insets.top + 8 }}>
       <FeedHeader
-        subtitle={mode === 'artist' ? 'Fresh music from artists you follow' : 'What your friends are listening to'}
+        subtitle={mode === 'artist' ? 'Fresh music from artists you follow' : 'What the people you follow are listening to'}
         mode={mode}
         onModeChange={onChangeMode}
       >
@@ -1218,10 +1245,14 @@ export default function FeedTab() {
                 ListHeaderComponent={() => (
                   <>
                     {renderWaveHeader()}
-                    {mode === 'social' && hasExpandableGroups ? (
+                    {mode === 'social' ? (
                       <View style={{ height: SOCIAL_HEADER_HEIGHT, justifyContent: 'center', marginBottom: 4 }}>
-                        <View style={{ flexDirection: 'row', justifyContent: 'flex-end' }}>
-                          <Pressable
+                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                          <Pressable accessibilityRole="button" accessibilityLabel="Find people" onPress={() => router.push('/profile/people')} style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 4, paddingVertical: 8, opacity: pressed ? 0.82 : 1 })}>
+                            <Ionicons name="person-add-outline" size={15} color={colors.accent.primary as any} />
+                            <Text style={{ color: colors.accent.primary, fontWeight: '800', fontSize: 12 }}>Find people</Text>
+                          </Pressable>
+                          {hasExpandableGroups ? <Pressable
                             accessibilityRole="button"
                             accessibilityLabel={allExpanded ? 'Collapse all' : 'Expand all'}
                             accessibilityHint="Expands or collapses all social activity groups"
@@ -1244,7 +1275,7 @@ export default function FeedTab() {
                                 {allExpanded ? 'Collapse all' : 'Expand all'}
                               </Text>
                             </View>
-                          </Pressable>
+                          </Pressable> : null}
                         </View>
                       </View>
                     ) : null}

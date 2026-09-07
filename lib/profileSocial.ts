@@ -3,8 +3,44 @@ import { supabase } from './supabase';
 export type PublicProfile = {
   user_id: string;
   display_name: string;
+  username: string | null;
   avatar_url: string | null;
   public_id: string;
+  is_private: boolean;
+  profile_setup_completed: boolean;
+};
+
+export type FollowRelationshipStatus = 'none' | 'requested' | 'following' | 'self';
+
+export type ListenerSearchResult = Pick<PublicProfile, 'user_id' | 'display_name' | 'username' | 'avatar_url' | 'is_private'> & {
+  relationship_status: Exclude<FollowRelationshipStatus, 'self'>;
+};
+
+export type ListenerProfile = Pick<PublicProfile, 'user_id' | 'display_name' | 'username' | 'avatar_url' | 'is_private'> & {
+  relationship_status: FollowRelationshipStatus;
+  follows_you: boolean;
+  can_view_content: boolean;
+  followers_count: number;
+  following_count: number;
+};
+
+export type ListenerMusicItem = {
+  section: 'recent' | 'top_rated';
+  id: string;
+  item_type: 'album' | 'track' | 'single';
+  provider: 'spotify' | 'apple' | null;
+  provider_id: string | null;
+  spotify_id: string | null;
+  apple_id: string | null;
+  title: string;
+  artist_name: string | null;
+  artwork_url: string | null;
+  release_date: string | null;
+  spotify_url: string | null;
+  apple_url: string | null;
+  done_at: string | null;
+  rating: number | null;
+  rated_at: string | null;
 };
 
 function deriveDefaultDisplayName(email?: string | null, fullName?: string | null) {
@@ -98,6 +134,181 @@ export async function getProfileByPublicId(publicId: string): Promise<PublicProf
     .maybeSingle();
   if (error) return null;
   return normalizeProfile(data as any);
+}
+
+function cleanUsername(value: string) {
+  return (value || '').trim().replace(/^@+/, '').toLowerCase();
+}
+
+export function isValidUsername(value: string) {
+  return /^[a-z0-9][a-z0-9._]{1,18}[a-z0-9]$/.test(cleanUsername(value));
+}
+
+export async function checkUsernameAvailable(value: string): Promise<boolean> {
+  const username = cleanUsername(value);
+  if (!isValidUsername(username)) return false;
+  const { data, error } = await supabase.rpc('check_username_available', { p_username: username });
+  if (error) throw new Error(error.message || 'Could not check username');
+  return data === true;
+}
+
+export async function saveMySocialProfile(input: {
+  username: string;
+  displayName?: string | null;
+  isPrivate: boolean;
+}): Promise<{ ok: true; profile: PublicProfile } | { ok: false; message: string }> {
+  const username = cleanUsername(input.username);
+  if (!isValidUsername(username)) {
+    return { ok: false, message: 'Use 3–20 letters, numbers, dots or underscores.' };
+  }
+  const { data, error } = await supabase.rpc('save_my_social_profile', {
+    p_username: username,
+    p_display_name: input.displayName?.trim() || null,
+    p_is_private: input.isPrivate,
+  });
+  if (error) {
+    const raw = String(error.message || 'Could not save profile');
+    const message = /taken|unique|duplicate/i.test(raw)
+      ? 'That username is already taken.'
+      : /function .* does not exist|schema cache/i.test(raw)
+        ? 'Username setup is not available yet.'
+        : raw;
+    return { ok: false, message };
+  }
+  const row = Array.isArray(data) ? data[0] : data;
+  const profile = normalizeProfile(row as any);
+  if (!profile?.username) return { ok: false, message: 'Could not save profile.' };
+  return { ok: true, profile };
+}
+
+export async function searchListenerProfiles(query: string, limit = 20): Promise<ListenerSearchResult[]> {
+  const q = cleanUsername(query);
+  if (q.length < 2) return [];
+  const { data, error } = await supabase.rpc('search_listener_profiles', { p_query: q, p_limit: limit });
+  if (error) throw new Error(error.message || 'Could not search listeners');
+  if (!Array.isArray(data)) return [];
+  return data.map((row: any) => ({
+    user_id: String(row.user_id),
+    display_name: String(row.display_name || 'Listener'),
+    username: row.username ? String(row.username) : null,
+    avatar_url: row.avatar_url ?? null,
+    is_private: row.is_private !== false,
+    relationship_status: row.relationship_status === 'following'
+      ? 'following'
+      : row.relationship_status === 'requested'
+        ? 'requested'
+        : 'none',
+  }));
+}
+
+export async function getListenerProfile(username: string): Promise<ListenerProfile | null> {
+  const clean = cleanUsername(username);
+  if (!clean) return null;
+  const { data, error } = await supabase.rpc('get_listener_profile', { p_username: clean });
+  if (error) throw new Error(error.message || 'Could not load listener');
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row?.user_id) return null;
+  const relationshipStatus: FollowRelationshipStatus = row.relationship_status === 'self'
+    ? 'self'
+    : row.relationship_status === 'following'
+      ? 'following'
+      : row.relationship_status === 'requested'
+        ? 'requested'
+        : 'none';
+  return {
+    user_id: String(row.user_id),
+    display_name: String(row.display_name || 'Listener'),
+    username: row.username ? String(row.username) : null,
+    avatar_url: row.avatar_url ?? null,
+    is_private: row.is_private !== false,
+    relationship_status: relationshipStatus,
+    follows_you: row.follows_you === true,
+    can_view_content: row.can_view_content === true,
+    followers_count: Number(row.followers_count || 0),
+    following_count: Number(row.following_count || 0),
+  };
+}
+
+export async function getListenerMusic(username: string, limit = 12): Promise<ListenerMusicItem[]> {
+  const clean = cleanUsername(username);
+  if (!clean) return [];
+  const { data, error } = await supabase.rpc('get_listener_music', { p_username: clean, p_limit: limit });
+  if (error) throw new Error(error.message || 'Could not load listener music');
+  if (!Array.isArray(data)) return [];
+  return data.map((row: any) => ({
+    section: row.section === 'top_rated' ? 'top_rated' : 'recent',
+    id: String(row.id),
+    item_type: row.item_type === 'album' ? 'album' : row.item_type === 'single' ? 'single' : 'track',
+    provider: row.provider === 'apple' ? 'apple' : row.provider === 'spotify' ? 'spotify' : null,
+    provider_id: row.provider_id != null ? String(row.provider_id) : null,
+    spotify_id: row.spotify_id != null ? String(row.spotify_id) : null,
+    apple_id: row.apple_id != null ? String(row.apple_id) : null,
+    title: String(row.title || 'Untitled'),
+    artist_name: row.artist_name ?? null,
+    artwork_url: row.artwork_url ?? null,
+    release_date: row.release_date ?? null,
+    spotify_url: row.spotify_url ?? null,
+    apple_url: row.apple_url ?? null,
+    done_at: row.done_at ?? null,
+    rating: typeof row.rating === 'number' ? row.rating : row.rating != null ? Number(row.rating) : null,
+    rated_at: row.rated_at ?? null,
+  }));
+}
+
+export async function followListener(userId: string): Promise<{ ok: boolean; status?: 'requested' | 'following'; message?: string }> {
+  const { data, error } = await supabase.rpc('follow_listener', { p_user_id: userId });
+  if (error) return { ok: false, message: error.message || 'Could not follow listener' };
+  const status = data === 'accepted' ? 'following' : data === 'pending' ? 'requested' : null;
+  return status ? { ok: true, status } : { ok: false, message: 'Could not follow listener' };
+}
+
+export async function unfollowListener(userId: string): Promise<{ ok: boolean; message?: string }> {
+  const { data, error } = await supabase.rpc('unfollow_listener', { p_user_id: userId });
+  if (error) return { ok: false, message: error.message || 'Could not unfollow listener' };
+  return { ok: data === true };
+}
+
+export type FollowingProfile = Omit<ListenerSearchResult, 'relationship_status'> & {
+  relationship_status: 'following' | 'requested';
+  created_at: string | null;
+};
+
+export async function listMyFollowingProfiles(): Promise<FollowingProfile[]> {
+  const { data, error } = await supabase.rpc('list_my_following_profiles');
+  if (error) throw new Error(error.message || 'Could not load following');
+  if (!Array.isArray(data)) return [];
+  return data.map((row: any) => ({
+    user_id: String(row.user_id),
+    display_name: String(row.display_name || 'Listener'),
+    username: row.username ? String(row.username) : null,
+    avatar_url: row.avatar_url ?? null,
+    is_private: row.is_private !== false,
+    relationship_status: row.relationship_status === 'following' ? 'following' : 'requested',
+    created_at: row.created_at ?? null,
+  }));
+}
+
+export type IncomingFollowRequest = Pick<PublicProfile, 'user_id' | 'display_name' | 'username' | 'avatar_url'> & {
+  created_at: string | null;
+};
+
+export async function listMyFollowRequests(): Promise<IncomingFollowRequest[]> {
+  const { data, error } = await supabase.rpc('list_my_follow_requests');
+  if (error) throw new Error(error.message || 'Could not load follow requests');
+  if (!Array.isArray(data)) return [];
+  return data.map((row: any) => ({
+    user_id: String(row.user_id),
+    display_name: String(row.display_name || 'Listener'),
+    username: row.username ? String(row.username) : null,
+    avatar_url: row.avatar_url ?? null,
+    created_at: row.created_at ?? null,
+  }));
+}
+
+export async function respondToFollowRequest(followerId: string, accept: boolean): Promise<{ ok: boolean; message?: string }> {
+  const { data, error } = await supabase.rpc('respond_to_follow_request', { p_follower_id: followerId, p_accept: accept });
+  if (error) return { ok: false, message: error.message || 'Could not update request' };
+  return { ok: data === true };
 }
 
 export async function uploadMyAvatar(input: { uri: string; contentType?: string | null }): Promise<{ ok: boolean; url?: string; message?: string }> {
@@ -321,6 +532,8 @@ export async function listAcceptedRelationships(): Promise<{ req: FriendRequestR
 export async function countIncomingPendingRequests(): Promise<number> {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return 0;
+  const modern = await supabase.rpc('list_my_follow_requests');
+  if (!modern.error && Array.isArray(modern.data)) return modern.data.length;
   const { count, error } = await supabase
     .from('friend_requests')
     .select('id', { count: 'exact', head: true })
@@ -383,6 +596,7 @@ export type SocialActivityItem = {
   kind: 'listened' | 'rated' | 'marked_listened';
   actorId: string;
   actorName: string;
+  actorUsername: string | null;
   actorAvatarUrl: string | null;
   createdAt: string;
   title: string;
@@ -392,6 +606,11 @@ export type SocialActivityItem = {
   appleUrl?: string | null;
   artworkUrl?: string | null;
   itemType?: 'album' | 'track' | null;
+  provider?: 'spotify' | 'apple' | null;
+  providerId?: string | null;
+  spotifyId?: string | null;
+  appleId?: string | null;
+  releaseDate?: string | null;
 };
 
 export type ShareCardTopRatedItem = {
@@ -426,7 +645,12 @@ export async function fetchShareCardTopRated(publicId: string, limit = 3): Promi
 }
 
 export async function fetchSocialActivity(): Promise<SocialActivityItem[]> {
-  const { data: listRows, error } = await supabase.rpc('get_social_activity', { p_limit: 60 });
+  let { data: listRows, error } = await supabase.rpc('get_following_activity', { p_limit: 60 });
+  if (error && /function .* does not exist|schema cache/i.test(String(error.message || ''))) {
+    const legacy = await supabase.rpc('get_social_activity', { p_limit: 60 });
+    listRows = legacy.data;
+    error = legacy.error;
+  }
   if (error) {
     if (__DEV__) console.log('[social] get_social_activity failed', error);
     throw new Error(error.message || 'Social activity failed');
@@ -450,6 +674,7 @@ export async function fetchSocialActivity(): Promise<SocialActivityItem[]> {
   const items: SocialActivityItem[] = rows.map((r) => {
     const profile = byId.get(r.user_id as string);
     const actorName = profile?.display_name || 'Listener';
+    const actorUsername = profile?.username ?? null;
     const actorAvatarUrl = profile?.avatar_url ?? null;
     const rating = typeof r.rating === 'number' ? r.rating : null;
     const doneAt = r.done_at ? String(r.done_at) : null;
@@ -464,6 +689,7 @@ export async function fetchSocialActivity(): Promise<SocialActivityItem[]> {
       kind,
       actorId: String(r.user_id),
       actorName,
+      actorUsername,
       actorAvatarUrl,
       createdAt,
       title: String(r.title || ''),
@@ -473,6 +699,11 @@ export async function fetchSocialActivity(): Promise<SocialActivityItem[]> {
       appleUrl: r.apple_url ?? null,
       artworkUrl: r.artwork_url ?? null,
       itemType: r.item_type === 'album' ? 'album' : 'track',
+      provider: r.provider === 'apple' ? 'apple' : r.provider === 'spotify' ? 'spotify' : null,
+      providerId: r.provider_id != null ? String(r.provider_id) : null,
+      spotifyId: r.spotify_id != null ? String(r.spotify_id) : null,
+      appleId: r.apple_id != null ? String(r.apple_id) : null,
+      releaseDate: r.release_date ?? null,
     };
   });
 
@@ -500,7 +731,10 @@ function normalizeProfile(row: any): PublicProfile | null {
   return {
     user_id: String(userId),
     display_name: String(row.display_name || 'Listener'),
+    username: row.username ? String(row.username) : null,
     avatar_url: row.avatar_url ?? null,
     public_id: String(row.public_id || ''),
+    is_private: row.is_private !== false,
+    profile_setup_completed: row.profile_setup_completed === true,
   };
 }

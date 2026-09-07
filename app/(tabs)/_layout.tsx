@@ -7,6 +7,7 @@ import { Image, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../../theme/useTheme';
 import TabBarBackground, { TAB_BAR_HEIGHT } from '../../components/ui/TabBarBackground';
+import ProfileSetupPrompt from '../../components/ProfileSetupPrompt';
 import { themeByName } from '../../theme/themes';
 
 const TAB_ITEM_SIZE = TAB_BAR_HEIGHT;
@@ -21,7 +22,8 @@ export default function TabsLayout() {
   const renderTabIcon = (icon: React.ReactNode) => <View style={styles.tabIconSlot}>{icon}</View>;
 
   return (
-    <Tabs
+    <>
+      <Tabs
       initialRouteName="discover"
       screenOptions={{
         headerShown: false,
@@ -132,7 +134,9 @@ export default function TabsLayout() {
       <Tabs.Screen name="upcoming" options={{ href: null }} />
       <Tabs.Screen name="add-release" options={{ href: null }} />
       <Tabs.Screen name="index" options={{ href: null }} />
-    </Tabs>
+      </Tabs>
+      <ProfileSetupPrompt />
+    </>
   );
 }
 

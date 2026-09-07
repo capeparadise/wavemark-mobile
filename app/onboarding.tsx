@@ -32,7 +32,7 @@ const ONBOARDING_SCREENS = [
   {
     id: 'feed',
     label: 'FEED',
-    title: 'Keep up with artists and friends',
+    title: 'Keep up with artists and listeners',
     body: 'See updates from the people and artists you follow.',
     cta: 'Next',
   },
@@ -364,7 +364,7 @@ export default function OnboardingScreen() {
         return;
       }
     } catch {}
-    router.replace('/(tabs)');
+    router.replace({ pathname: '/profile/setup', params: { next: 'home' } });
   };
 
   const goToNext = () => {
