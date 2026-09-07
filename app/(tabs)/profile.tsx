@@ -4,9 +4,9 @@
    ======================================================================== */
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import { Link, router } from 'expo-router';
+import { router } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, Pressable, ScrollView, Text, View } from 'react-native';
+import { Alert, Image, Pressable, ScrollView, Text, View } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import Avatar from '../../components/Avatar';
 import Screen from '../../components/Screen';
@@ -16,6 +16,7 @@ import { getUiColors, ui, icon } from '../../constants/ui';
 import { countIncomingPendingRequests, ensureMyProfile, uploadMyAvatar } from '../../lib/profileSocial';
 import { useTheme } from '../../theme/useTheme';
 import GlassCard from '../../components/GlassCard';
+import { goToRelease } from '../../lib/navigation';
 
 export default function ProfileTab() {
   const { colors } = useTheme();
@@ -27,6 +28,7 @@ export default function ProfileTab() {
   const [avatarBusy, setAvatarBusy] = useState(false);
   const [achievements, setAchievements] = useState<{ id: string; title: string; unlocked: boolean }[]>([]);
   const [topRated, setTopRated] = useState<ProfileSnapshot['topRated']>([]);
+  const [recentListening, setRecentListening] = useState<ProfileSnapshot['listened']>([]);
   const [requestsHasDot, setRequestsHasDot] = useState(false);
 
   const load = useCallback(async () => {
@@ -46,6 +48,7 @@ export default function ProfileTab() {
           streak: cached.streak,
         });
         setTopRated(cached.topRated || []);
+        setRecentListening(cached.listened || []);
         setAchievements(computeAchievements(cached).map(a => ({ id: a.id, title: a.title, unlocked: a.unlocked })));
       }
 
@@ -62,6 +65,7 @@ export default function ProfileTab() {
         streak: snap.streak,
       });
       setTopRated(snap.topRated || []);
+      setRecentListening(snap.listened || []);
       setAchievements(computeAchievements(snap).map(a => ({ id: a.id, title: a.title, unlocked: a.unlocked })));
       setLoading(false);
   }, []);
@@ -195,6 +199,36 @@ export default function ProfileTab() {
   );
 
   const avgRatingDisplay = stats.avgRating > 0 ? stats.avgRating.toFixed(1) : '—';
+  const MusicPreview = ({ title, items, onViewAll, empty }: {
+    title: string; items: ProfileSnapshot['listened']; onViewAll: () => void; empty: string;
+  }) => (
+    <View style={{ gap: 10 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Text style={{ fontSize: 18, fontWeight: '800', color: colors.text.secondary }}>{title}</Text>
+        <Pressable accessibilityRole="button" accessibilityLabel={`View all ${title.toLowerCase()}`} onPress={onViewAll} hitSlop={8} style={{ paddingVertical: 8 }}>
+          <Text style={{ color: colors.accent.primary, fontWeight: '700' }}>View all</Text>
+        </Pressable>
+      </View>
+      {items.length ? (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 12 }}>
+          {items.slice(0, 6).map(item => (
+            <Pressable key={item.id} accessibilityRole="button" accessibilityLabel={`${item.title}, ${item.artist_name || 'Unknown artist'}`} onPress={() => goToRelease(item.id)} style={{ width: 112, gap: 5 }}>
+              {item.artwork_url ? (
+                <Image source={{ uri: item.artwork_url }} style={{ width: 112, height: 112, borderRadius: ui.radius.lg }} />
+              ) : (
+                <View style={{ width: 112, height: 112, borderRadius: ui.radius.lg, backgroundColor: colors.bg.muted, alignItems: 'center', justifyContent: 'center' }}>
+                  <Ionicons name="musical-notes-outline" size={32} color={colors.text.muted} />
+                </View>
+              )}
+              <Text numberOfLines={1} style={{ color: colors.text.secondary, fontWeight: '700' }}>{item.title}</Text>
+              <Text numberOfLines={1} style={{ color: colors.text.muted, fontSize: 12 }}>{item.artist_name || 'Unknown artist'}</Text>
+              {typeof item.rating === 'number' ? <Text style={{ color: colors.accent.primary, fontSize: 12, fontWeight: '700' }}>{item.rating}/10</Text> : null}
+            </Pressable>
+          ))}
+        </ScrollView>
+      ) : <GlassCard><Text style={{ color: colors.text.muted }}>{empty}</Text></GlassCard>}
+    </View>
+  );
   const streakLabel = stats.streak ? `${stats.streak} days` : '—';
   const levelProgressPct = Math.min(100, Math.round(level.progress * 100));
 
@@ -209,7 +243,7 @@ export default function ProfileTab() {
               </Pressable>
               <View>
                 <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text.secondary }}>{displayName}</Text>
-                <Text style={{ color: colors.text.muted, marginTop: 2 }}>{avatarBusy ? 'Updating photo…' : 'Profile'}</Text>
+                <Text style={{ color: colors.text.muted, marginTop: 2 }}>{avatarBusy ? 'Updating photo…' : 'Your life in music'}</Text>
               </View>
             </View>
             <Pressable onPress={goSettings} hitSlop={8} style={{ width: icon.button, height: icon.button, borderRadius: ui.radius.lg, backgroundColor: colors.bg.muted, alignItems: 'center', justifyContent: 'center' }}>
@@ -229,12 +263,11 @@ export default function ProfileTab() {
           </View>
         ) : (
           <View style={{ gap: 18 }}>
+            <MusicPreview title="Recently listened" items={recentListening} onViewAll={() => router.push('/profile/history')} empty="Your listening story starts here. Mark a release as listened to see it on your profile." />
+            <MusicPreview title="Top rated" items={topRated} onViewAll={() => router.push('/profile/top-rated')} empty="Rate music you’ve listened to and your favourites will appear here." />
             {/* Stats row */}
             <View style={{ flexDirection: 'row', gap: 10, flexWrap: 'wrap' }}>
               <StatCard label="Unique listens" value={String(stats.total)} />
-              <StatCard label="This week" value={String(stats.week)} />
-              <StatCard label="30 days" value={String(stats.month)} />
-              <StatCard label="Streak" value={streakLabel} />
               <StatCard label="Avg rating" value={avgRatingDisplay} sub="from listened items" />
             </View>
 
@@ -281,10 +314,9 @@ export default function ProfileTab() {
             <View style={{ gap: 10 }}>
               <Text style={{ fontSize: 16, fontWeight: '800', color: colors.text.secondary, paddingHorizontal: 0 }}>Quick actions</Text>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', columnGap: 12, rowGap: 12 }}>
-                <QuickButton label="History" icon="time-outline" onPress={() => router.push('/profile/history')} />
                 <QuickButton label="Ratings" icon="star-outline" onPress={() => router.push('/profile/ratings')} />
                 <QuickButton label="To rate" icon="alert-circle-outline" onPress={() => router.push('/profile/pending')} />
-                <QuickButton label="Top rated" icon="trophy-outline" onPress={() => router.push('/profile/top-rated')} />
+                <QuickButton label="Reviews" icon="chatbubble-ellipses-outline" onPress={() => Alert.alert('Reviews', 'Coming soon')} />
                 <QuickButton label="Insights" icon="stats-chart-outline" onPress={() => router.push('/profile/insights')} />
                 <QuickButton
                   label="Social"
@@ -313,28 +345,6 @@ export default function ProfileTab() {
               </View>
             </View>
 
-            {/* Library */}
-            <View style={{ gap: 6, marginTop: 6 }}>
-              <Text style={{ fontSize: 16, fontWeight: '800', color: colors.text.secondary }}>Library</Text>
-              {[
-                { label: 'Listening history', href: '/profile/history', icon: 'time-outline' as const },
-                { label: 'Ratings', href: '/profile/ratings', icon: 'star-outline' as const },
-                { label: 'Reviews', href: null, icon: 'chatbubble-ellipses-outline' as const },
-              ].map((row) => (
-                <Link key={row.label} href={(row.href || '') as any} asChild>
-                  <Pressable
-                    onPress={() => { if (!row.href) Alert.alert('Reviews', 'Coming soon'); }}
-                    style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 12, paddingHorizontal: 10, borderRadius: 12, backgroundColor: uiColors.card, borderWidth: 1, borderColor: uiColors.border }}
-                  >
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                      <Ionicons name={row.icon} size={18} color={colors.text.secondary} />
-                      <Text style={{ fontWeight: '700', color: colors.text.secondary }}>{row.label}</Text>
-                    </View>
-                    <Ionicons name="chevron-forward" size={18} color={colors.accent.subtle} />
-                  </Pressable>
-                </Link>
-              ))}
-            </View>
           </View>
         )}
       </ScrollView>
