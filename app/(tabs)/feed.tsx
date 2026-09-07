@@ -8,7 +8,6 @@ import Avatar from '../../components/Avatar';
 import { H } from '../../components/haptics';
 import Screen from '../../components/Screen';
 import Snackbar from '../../components/Snackbar';
-import GlassCard from '../../components/GlassCard';
 import Chip from '../../components/Chip';
 import StatusMenu from '../../components/StatusMenu';
 import FeedHeader, { type FeedMode } from '../../components/feed/FeedHeader';
@@ -57,12 +56,6 @@ const extractAppleId = (value?: string | null) => {
     if (song?.[1]) return song[1];
   } catch {}
   return null;
-};
-
-const hashString = (s: string) => {
-  let h = 0;
-  for (let i = 0; i < s.length; i += 1) h = Math.imul(31, h) + s.charCodeAt(i) | 0;
-  return Math.abs(h);
 };
 
 const FEED_MODE_KEY = (uid: string) => `wavemark:feed-mode:${uid}`;
@@ -114,8 +107,7 @@ export default function FeedTab() {
   const [socialError, setSocialError] = useState<string | null>(null);
   const [expandedSocialGroupIds, setExpandedSocialGroupIds] = useState<Set<string>>(() => new Set());
   const [followedCount, setFollowedCount] = useState<number | null>(null);
-  const [filter, setFilter] = useState<'all' | 'album' | 'single' | 'ep' | 'new'>('all');
-  const [filtersExpanded, setFiltersExpanded] = useState(false);
+  const [filter, setFilter] = useState<'all' | 'album' | 'single' | 'new'>('all');
   const [doneKeys, setDoneKeys] = useState<string[]>([]);
   const [inListKeys, setInListKeys] = useState<string[]>([]);
   const [menuRow, setMenuRow] = useState<any | null>(null);
@@ -128,14 +120,8 @@ export default function FeedTab() {
   const restoreTargetRef = useRef<{ mode: FeedMode | null; offset: number }>({ mode: null, offset: 0 });
   const rowsRef = useRef<Item[]>([]);
   const socialRowsRef = useRef<SocialActivityItem[]>([]);
+  const socialAutoExpandedRef = useRef(false);
   const accentSoft = colors.accent.primary + '1a';
-  const successSoft = colors.accent.success + '1a';
-  const palette = useMemo(() => ([
-    { bg: colors.bg.secondary, border: colors.border.subtle, text: colors.text.secondary },
-    { bg: colors.bg.muted, border: colors.border.subtle, text: colors.text.secondary },
-    { bg: accentSoft, border: colors.accent.primary, text: colors.text.secondary },
-    { bg: successSoft, border: colors.accent.success, text: colors.text.secondary },
-  ]), [accentSoft, colors, successSoft]);
 
   useEffect(() => { rowsRef.current = rows; }, [rows]);
   useEffect(() => { socialRowsRef.current = socialRows; }, [socialRows]);
@@ -171,7 +157,6 @@ export default function FeedTab() {
   }, [mode, modeHydrated, user?.id]);
 
   const onChangeMode = useCallback((next: FeedMode) => {
-    setExpandedSocialGroupIds(new Set());
     setMode(next);
   }, []);
 
@@ -281,7 +266,6 @@ export default function FeedTab() {
     // Keep existing content visible; refresh in the background.
     load({ showLoading: false });
     loadSocial({ showLoading: false });
-    return () => { setExpandedSocialGroupIds(new Set()); };
   }, [load, loadSocial]));
   useEffect(() => {
     const handler = () => load();
@@ -355,6 +339,7 @@ export default function FeedTab() {
 
   const onRefreshSocial = useCallback(async () => {
     setSocialRefreshing(true);
+    socialAutoExpandedRef.current = false;
     setExpandedSocialGroupIds(new Set());
     try {
       await loadSocial();
@@ -402,8 +387,6 @@ export default function FeedTab() {
   };
 
   const newCount = useMemo(() => filteredRows.filter(r => isNew(r.release_date)).length, [filteredRows]);
-  const avatarStack = useMemo(() => rows.filter(r => !!r.image_url).slice(0, 5), [rows]);
-
   const localDateKeyFromDate = (d: Date) => {
     const y = d.getFullYear();
     const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -623,6 +606,11 @@ export default function FeedTab() {
     () => socialFeedRows.filter((r) => r.kind === 'group').map((r) => (r as any).group.id as string),
     [socialFeedRows],
   );
+  useEffect(() => {
+    if (mode !== 'social' || socialAutoExpandedRef.current || !socialGroupIds[0]) return;
+    socialAutoExpandedRef.current = true;
+    setExpandedSocialGroupIds(new Set([socialGroupIds[0]]));
+  }, [mode, socialGroupIds]);
   const expandedCount = useMemo(
     () => socialGroupIds.reduce((acc, id) => acc + (expandedSocialGroupIds.has(id) ? 1 : 0), 0),
     [expandedSocialGroupIds, socialGroupIds],
@@ -654,13 +642,13 @@ export default function FeedTab() {
     const listenedItems = useMemo(() => group.items.filter((x) => x.kind !== 'rated'), [group.items]);
     const ratedItems = useMemo(() => group.items.filter((x) => x.kind === 'rated'), [group.items]);
 
-    const expandedBg = expanded ? (colors.bg.muted) : undefined;
-    const outerPad = expanded ? 16 : 12;
-
     return (
-      <GlassCard style={{ padding: 0, backgroundColor: expandedBg }}>
-        <View style={{ marginHorizontal: 2, marginVertical: 6, padding: outerPad }}>
+      <View style={{ marginHorizontal: 2, borderBottomWidth: 1, borderBottomColor: colors.border.subtle }}>
+        <View style={{ paddingVertical: 15 }}>
           <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ expanded }}
+            accessibilityLabel={`${group.friendName}: ${summaryLineForGroup(group)}`}
             onPress={() => toggleExpandedGroup(group.id)}
             style={({ pressed }) => ({
               transform: [{ scale: pressed ? 0.996 : 1 }],
@@ -676,19 +664,18 @@ export default function FeedTab() {
                   {summaryLineForGroup(group)}
                 </Text>
               </View>
-              <View style={{ alignItems: 'flex-end', justifyContent: 'center', gap: 6 }}>
-                <Text style={{ color: colors.text.muted, fontSize: 12, fontWeight: '700' }}>{group.dateLabel}</Text>
+              <View style={{ alignItems: 'flex-end', justifyContent: 'center' }}>
                 <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={18} color={colors.text.muted as any} />
               </View>
             </View>
           </Pressable>
 
           <Animated.View style={{ opacity, height: expanded ? undefined : 0, overflow: 'hidden' }}>
-            <View style={{ marginTop: 8, gap: 14 }}>
+            <View style={{ marginTop: 10, gap: 16 }}>
               {listenedItems.length > 0 && (
-                <View style={{ gap: 10 }}>
-                  <Text style={{ color: colors.text.muted, fontWeight: '800', letterSpacing: 0.2 }}>Listened to</Text>
-                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: 10 }}>
+                <View>
+                  <Text style={{ marginBottom: 3, color: colors.text.muted, fontSize: 11, fontWeight: '900', letterSpacing: 0.8, textTransform: 'uppercase' }}>Listened to</Text>
+                  <View>
                     {listenedItems.map((it) => {
                       const key = socialItemKey(it);
                       const isInList = !!(key && inListSet.has(key));
@@ -699,20 +686,18 @@ export default function FeedTab() {
                         onLongPress={() => openSocialItemMenu(it)}
                         delayLongPress={RELEASE_LONG_PRESS_MS}
                         style={({ pressed }) => ({
-                          width: '48%',
-                          padding: 10,
-                          borderRadius: 14,
-                          backgroundColor: colors.bg.secondary,
-                          borderWidth: 1,
-                          borderColor: colors.border.subtle,
+                          width: '100%',
+                          paddingVertical: 11,
+                          borderTopWidth: 1,
+                          borderTopColor: colors.border.subtle,
                           opacity: pressed ? 0.9 : 1,
-                          transform: [{ scale: pressed ? 0.98 : 1 }],
+                          transform: [{ scale: pressed ? 0.992 : 1 }],
                         })}
                       >
                         <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
-                          <View style={{ width: 44, height: 44, borderRadius: 10, overflow: 'hidden', backgroundColor: colors.bg.muted }}>
+                          <View style={{ width: 52, height: 52, borderRadius: 10, overflow: 'hidden', backgroundColor: colors.bg.muted }}>
                             {!!it.artworkUrl ? (
-                              <Image source={{ uri: it.artworkUrl }} style={{ width: 44, height: 44 }} />
+                              <Image source={{ uri: it.artworkUrl }} style={{ width: 52, height: 52 }} />
                             ) : (
                               <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
                                 <Text style={{ color: colors.text.muted, fontWeight: '900' }}>♪</Text>
@@ -720,16 +705,16 @@ export default function FeedTab() {
                             )}
                           </View>
                           <View style={{ flex: 1, minWidth: 0 }}>
-                            <Text style={{ color: colors.text.secondary, fontWeight: '800', fontSize: 12 }} numberOfLines={1} ellipsizeMode="tail">
+                            <Text style={{ color: colors.text.secondary, fontWeight: '800', fontSize: 14 }} numberOfLines={1} ellipsizeMode="tail">
                               {it.title || 'Untitled'}
                             </Text>
                             {!!it.artistName && (
-                              <Text style={{ marginTop: 2, color: colors.text.muted, fontSize: 11 }} numberOfLines={1} ellipsizeMode="tail">
+                                <Text style={{ marginTop: 2, color: colors.text.muted, fontSize: 12 }} numberOfLines={1} ellipsizeMode="tail">
                                 {it.artistName}
                               </Text>
                             )}
-                            <View style={{ marginTop: 4, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
-                              <Text style={{ color: colors.text.muted, fontSize: 10 }}>
+                            <View style={{ marginTop: 5, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                              <Text style={{ color: colors.text.muted, fontSize: 11 }}>
                                 {contextLineForItem(it)}
                               </Text>
                               <Pressable
@@ -753,7 +738,7 @@ export default function FeedTab() {
                                     borderRadius: 999,
                                     borderWidth: 1,
                                     borderColor: focused ? colors.accent.primary : colors.border.subtle,
-                                    backgroundColor: isInList ? colors.bg.muted : colors.bg.secondary,
+                                    backgroundColor: isInList ? colors.bg.muted : 'transparent',
                                     opacity: state.pressed ? 0.8 : (isInList ? 0.6 : 1),
                                   };
                                 }}
@@ -773,9 +758,9 @@ export default function FeedTab() {
               )}
 
               {ratedItems.length > 0 && (
-                <View style={{ gap: 10 }}>
-                  <Text style={{ color: colors.text.muted, fontWeight: '800', letterSpacing: 0.2 }}>Rated</Text>
-                  <View style={{ gap: 10 }}>
+                <View>
+                  <Text style={{ marginBottom: 3, color: colors.text.muted, fontSize: 11, fontWeight: '900', letterSpacing: 0.8, textTransform: 'uppercase' }}>Rated</Text>
+                  <View>
                     {ratedItems.map((it) => {
                       const key = socialItemKey(it);
                       const isInList = !!(key && inListSet.has(key));
@@ -789,14 +774,11 @@ export default function FeedTab() {
                           flexDirection: 'row',
                           gap: 12,
                           alignItems: 'center',
-                          paddingVertical: 8,
-                          paddingHorizontal: 10,
-                          borderRadius: 14,
-                          backgroundColor: colors.bg.secondary,
-                          borderWidth: 1,
-                          borderColor: colors.border.subtle,
+                          paddingVertical: 11,
+                          borderTopWidth: 1,
+                          borderTopColor: colors.border.subtle,
                           opacity: pressed ? 0.9 : 1,
-                          transform: [{ scale: pressed ? 0.99 : 1 }],
+                          transform: [{ scale: pressed ? 0.992 : 1 }],
                         })}
                       >
                         <View style={{ width: 38, height: 38, borderRadius: 10, overflow: 'hidden', backgroundColor: colors.bg.muted }}>
@@ -842,7 +824,7 @@ export default function FeedTab() {
                                 borderRadius: 999,
                                 borderWidth: 1,
                                 borderColor: focused ? colors.accent.primary : colors.border.subtle,
-                                backgroundColor: isInList ? colors.bg.muted : colors.bg.secondary,
+                                backgroundColor: isInList ? colors.bg.muted : 'transparent',
                                 opacity: state.pressed ? 0.85 : (isInList ? 0.6 : 1),
                               };
                             }}
@@ -861,16 +843,15 @@ export default function FeedTab() {
             </View>
           </Animated.View>
         </View>
-      </GlassCard>
+      </View>
     );
   };
 
   const filterOptions = [
     { key: 'all', label: 'All' },
-    { key: 'album', label: 'Albums' },
-    { key: 'single', label: 'Singles' },
-    { key: 'ep', label: 'EPs' },
     { key: 'new', label: 'New this week' },
+    { key: 'album', label: 'Albums & EPs' },
+    { key: 'single', label: 'Singles' },
   ];
 
   const renderModeSwitch = (compact = false) => (
@@ -884,13 +865,15 @@ export default function FeedTab() {
       gap: compact ? 3 : 4,
     }}>
       {([
-        { key: 'artist', label: 'Artists' },
-        { key: 'social', label: 'Social' },
+        { key: 'artist', label: 'Releases' },
+        { key: 'social', label: 'Friends' },
       ] as const).map(({ key, label }) => {
         const selected = mode === key;
         return (
           <Pressable
             key={key}
+            accessibilityRole="button"
+            accessibilityState={{ selected }}
             onPress={() => {
               if (mode === key) return;
               H.tap();
@@ -976,21 +959,9 @@ export default function FeedTab() {
   const renderWaveHeader = () => (
     <View style={{ paddingTop: insets.top + 8 }}>
       <FeedHeader
-        subtitle={mode === 'artist' ? 'New releases from artists you follow' : 'Ripple activity from your network'}
+        subtitle={mode === 'artist' ? 'Fresh music from artists you follow' : 'What your friends are listening to'}
         mode={mode}
         onModeChange={onChangeMode}
-        rightAccessory={(
-          <View style={{ flexDirection: 'row' }}>
-            {avatarStack.map((r, idx) => (
-              <Image key={r.id} source={{ uri: r.image_url! }} style={{ width: 30, height: 30, borderRadius: 999, borderWidth: 1, borderColor: colors.border.strong, marginLeft: idx === 0 ? 0 : -9, backgroundColor: colors.bg.elevated }} />
-            ))}
-            {avatarStack.length === 0 && (
-              <View style={{ width: 30, height: 30, borderRadius: 999, backgroundColor: colors.bg.elevated, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.border.strong }}>
-                <Text style={{ color: colors.text.muted, fontWeight: '800', fontSize: 12 }}>?</Text>
-              </View>
-            )}
-          </View>
-        )}
       >
         {mode === 'artist' && newCount > 0 ? (
           <View style={{ flexDirection: 'row', alignItems: 'center' }}>
@@ -1003,14 +974,7 @@ export default function FeedTab() {
 
       {mode === 'artist' && (
         <View style={{ marginBottom: 6 }}>
-          <View style={{
-            flexDirection: 'row',
-            flexWrap: 'wrap',
-            gap: 8,
-            paddingVertical: 4,
-            maxHeight: filtersExpanded ? undefined : 44,
-            overflow: 'hidden',
-          }}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingVertical: 4 }}>
             {filterOptions.map(({ key, label }) => {
               const selected = filter === key;
               return (
@@ -1023,18 +987,7 @@ export default function FeedTab() {
                 />
               );
             })}
-          </View>
-          <Pressable
-            onPress={() => setFiltersExpanded(v => !v)}
-            style={({ pressed }) => ({
-              alignSelf: 'flex-start',
-              paddingHorizontal: 4,
-              paddingVertical: 4,
-              opacity: pressed ? 0.7 : 1,
-            })}
-          >
-            <Text style={{ color: colors.text.muted, fontWeight: '800', fontSize: 12 }}>{filtersExpanded ? 'Collapse filters' : 'Show all filters'}</Text>
-          </Pressable>
+          </ScrollView>
         </View>
       )}
     </View>
@@ -1049,21 +1002,17 @@ export default function FeedTab() {
           scrollEventThrottle={16}
         >
           {renderWaveHeader()}
-          <View style={{ marginTop: 8, gap: 12 }}>
+          <View style={{ marginTop: 8 }}>
           {[0, 1, 2].map(i => (
-            <View key={i} style={{ height: 110, borderRadius: 16, backgroundColor: colors.bg.secondary, overflow: 'hidden', padding: 12, borderWidth: 1, borderColor: colors.border.subtle }}>
-              <Animated.View style={{ position: 'absolute', inset: 0, backgroundColor: colors.bg.muted, opacity: 0.5 }} />
+            <View key={i} style={{ height: 91, overflow: 'hidden', paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: colors.border.subtle }}>
               <View style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}>
-                <View style={{ width: 56, height: 56, borderRadius: 12, backgroundColor: colors.bg.muted }} />
+                <View style={{ width: 64, height: 64, borderRadius: 11, backgroundColor: colors.bg.muted }} />
                 <View style={{ flex: 1, gap: 8 }}>
                   <View style={{ height: 12, borderRadius: 6, backgroundColor: colors.bg.muted, width: '70%' }} />
                   <View style={{ height: 10, borderRadius: 6, backgroundColor: colors.bg.muted, width: '40%' }} />
                   <View style={{ height: 10, borderRadius: 6, backgroundColor: colors.bg.muted, width: '55%' }} />
                 </View>
-              </View>
-              <View style={{ flexDirection: 'row', gap: 8, marginTop: 16 }}>
-                <View style={{ height: 32, borderRadius: 8, backgroundColor: colors.bg.muted, flex: 1 }} />
-                <View style={{ height: 32, borderRadius: 8, backgroundColor: colors.bg.muted, flex: 1 }} />
+                <View style={{ width: 60, height: 29, borderRadius: 999, backgroundColor: colors.bg.muted }} />
               </View>
             </View>
           ))}
@@ -1114,8 +1063,8 @@ export default function FeedTab() {
           refreshing={refreshing}
           onRefresh={onRefresh}
           renderSectionHeader={({ section: { title } }) => (
-            <View style={{ marginTop: 14, marginBottom: 4 }}>
-              <Text style={{ color: colors.text.muted, fontSize: 12, fontWeight: '900', letterSpacing: 0.2 }}>
+            <View style={{ marginTop: 18, marginBottom: 2 }}>
+              <Text style={{ color: colors.text.muted, fontSize: 11, fontWeight: '900', letterSpacing: 0.8, textTransform: 'uppercase' }}>
                 {(() => {
                   if (title === 'Unknown date') return 'Earlier';
                   const ts = Date.parse(title);
@@ -1173,61 +1122,68 @@ export default function FeedTab() {
             if (item.image_url) {
               Image.prefetch(item.image_url).catch(() => {});
             }
-            const accent = palette[hashString(item.id) % palette.length];
-            const waveHeights = (() => {
-              const base = hashString(item.id + (item.title || ''));
-              return [base % 8 + 4, (base >> 2) % 10 + 3, (base >> 4) % 8 + 5, (base >> 6) % 9 + 4, (base >> 8) % 7 + 6];
-            })();
+            const saved = isInList || !!added[item.id];
+            const saveLabel = isDone ? 'Listened' : saved ? 'Saved' : 'Save';
           return (
-            <GlassCard asChild style={{ padding: 0 }}>
-              <Pressable
-                style={({ pressed }) => ({
-                  marginHorizontal: 2,
-                  marginVertical: 6,
-                  padding: 14,
-                  transform: [{ scale: pressed ? 0.99 : 1 }],
-                })}
-                onPress={onOpen}
-                onLongPress={() => setMenuRow(menuPayload)}
-                delayLongPress={RELEASE_LONG_PRESS_MS}
-              >
-                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  {/* Artwork */}
-                  {item.image_url ? (
-                    <Image source={{ uri: item.image_url }} style={{ width: 62, height: 62, borderRadius: 12, backgroundColor: colors.bg.muted, marginRight: 12 }} />
-                  ) : (
-                    <View style={{ width: 62, height: 62, borderRadius: 12, backgroundColor: colors.bg.muted, alignItems: 'center', justifyContent: 'center', marginRight: 12 }}>
-                      <Text style={{ color: colors.text.muted, fontWeight: '800' }}>{(item.artist_name ?? '?').slice(0, 1).toUpperCase()}</Text>
-                    </View>
-                  )}
-                  <View style={{ flex: 1 }}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                      <Text style={{ fontWeight: '800', flexShrink: 1, color: colors.text.secondary, fontSize: 16 }} numberOfLines={1}>{item.title}</Text>
-                      {isNew(item.release_date) && (
-                        <View style={{ paddingHorizontal: 6, paddingVertical: 2, backgroundColor: accentSoft, borderRadius: 999 }}>
-                          <Text style={{ color: colors.accent.primary, fontSize: 10, fontWeight: '800', letterSpacing: 0.3 }}>NEW</Text>
-                        </View>
-                      )}
-                      {!!itemTypeOf(item) && (
-                        <View style={{ paddingHorizontal: 6, paddingVertical: 2, backgroundColor: accentSoft, borderRadius: 999, borderWidth: 1, borderColor: colors.accent.primary }}>
-                          <Text style={{ color: colors.accent.primary, fontSize: 10, fontWeight: '800', letterSpacing: 0.4 }}>{itemTypeOf(item)!.toUpperCase()}</Text>
-                        </View>
-                      )}
-                    </View>
-                    {!!item.artist_name && <Text style={{ color: colors.text.secondary }} numberOfLines={1}>{item.artist_name}</Text>}
-                    {!!item.release_date && <Text style={{ color: colors.text.muted, marginTop: 2 }}>{formatDate(item.release_date)}</Text>}
+            <Pressable
+              style={({ pressed }) => ({
+                marginHorizontal: 2,
+                paddingVertical: 13,
+                borderBottomWidth: 1,
+                borderBottomColor: colors.border.subtle,
+                opacity: pressed ? 0.9 : 1,
+                transform: [{ scale: pressed ? 0.994 : 1 }],
+              })}
+              onPress={onOpen}
+              onLongPress={() => setMenuRow(menuPayload)}
+              delayLongPress={RELEASE_LONG_PRESS_MS}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                {item.image_url ? (
+                  <Image source={{ uri: item.image_url }} style={{ width: 64, height: 64, borderRadius: 11, backgroundColor: colors.bg.muted, marginRight: 13 }} />
+                ) : (
+                  <View style={{ width: 64, height: 64, borderRadius: 11, backgroundColor: colors.bg.muted, alignItems: 'center', justifyContent: 'center', marginRight: 13 }}>
+                    <Text style={{ color: colors.text.muted, fontWeight: '800' }}>{(item.artist_name ?? '?').slice(0, 1).toUpperCase()}</Text>
                   </View>
+                )}
+                <View style={{ flex: 1, minWidth: 0, paddingRight: 8 }}>
+                  <Text style={{ color: colors.accent.primary, fontSize: 10, fontWeight: '900', letterSpacing: 0.8, textTransform: 'uppercase' }} numberOfLines={1}>
+                    {[isNew(item.release_date) ? 'New' : null, itemTypeOf(item)].filter(Boolean).join('  ·  ')}
+                  </Text>
+                  <Text style={{ marginTop: 3, fontWeight: '800', color: colors.text.secondary, fontSize: 16 }} numberOfLines={1}>{item.title}</Text>
+                  {!!item.artist_name && <Text style={{ marginTop: 2, color: colors.text.secondary, fontSize: 13 }} numberOfLines={1}>{item.artist_name}</Text>}
                 </View>
-                <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 14, justifyContent: 'space-between' }}>
-                  <Pressable onPress={onOpen} style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <Text style={{ color: colors.text.secondary, fontWeight: '800' }}>Open</Text>
+                <View style={{ alignItems: 'center', gap: 2 }}>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={saveLabel}
+                    disabled={saved}
+                    onPress={(e) => {
+                      (e as any)?.stopPropagation?.();
+                      if (!saved) void onAdd(item);
+                    }}
+                    style={({ pressed }) => ({
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 5,
+                      minWidth: 64,
+                      paddingHorizontal: 10,
+                      paddingVertical: 7,
+                      borderRadius: 999,
+                      backgroundColor: saved ? colors.bg.muted : accentSoft,
+                      opacity: pressed ? 0.8 : 1,
+                      justifyContent: 'center',
+                    })}
+                  >
+                    <Ionicons name={saved ? 'checkmark' : 'add'} size={14} color={saved ? colors.text.muted as any : colors.accent.primary as any} />
+                    <Text style={{ color: saved ? colors.text.muted : colors.accent.primary, fontWeight: '800', fontSize: 12 }}>{saveLabel}</Text>
                   </Pressable>
-                  <Pressable onPress={() => setMenuRow(menuPayload)} style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 12, backgroundColor: colors.bg.muted }}>
+                  <Pressable accessibilityRole="button" accessibilityLabel={`More options for ${item.title}`} onPress={(e) => { (e as any)?.stopPropagation?.(); setMenuRow(menuPayload); }} style={{ minWidth: 44, minHeight: 32, alignItems: 'center', justifyContent: 'center' }}>
                     <Text style={{ color: colors.text.secondary, fontWeight: '800' }}>•••</Text>
                   </Pressable>
                 </View>
-              </Pressable>
-            </GlassCard>
+              </View>
+            </Pressable>
           );
         }}
       />
@@ -1239,12 +1195,11 @@ export default function FeedTab() {
               scrollEventThrottle={16}
             >
               {renderWaveHeader()}
-              <View style={{ marginTop: 14, gap: 10 }}>
+              <View style={{ marginTop: 14 }}>
               {[0, 1, 2, 3].map((i) => (
-                <View key={i} style={{ height: 72, borderRadius: 14, backgroundColor: colors.bg.secondary, overflow: 'hidden', padding: 12, borderWidth: 1, borderColor: colors.border.subtle }}>
-                  <Animated.View style={{ position: 'absolute', inset: 0, backgroundColor: colors.bg.muted, opacity: 0.5 }} />
+                <View key={i} style={{ height: 72, overflow: 'hidden', paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: colors.border.subtle }}>
                   <View style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}>
-                    <View style={{ width: 44, height: 44, borderRadius: 10, backgroundColor: colors.bg.muted }} />
+                    <View style={{ width: 42, height: 42, borderRadius: 21, backgroundColor: colors.bg.muted }} />
                     <View style={{ flex: 1, gap: 8 }}>
                       <View style={{ height: 10, borderRadius: 6, backgroundColor: colors.bg.muted, width: '62%' }} />
                       <View style={{ height: 10, borderRadius: 6, backgroundColor: colors.bg.muted, width: '48%' }} />
@@ -1275,12 +1230,10 @@ export default function FeedTab() {
                             style={(state) => {
                               const focused = 'focused' in state && !!state.focused;
                               return {
-                                paddingHorizontal: 12,
+                                paddingHorizontal: 4,
                                 paddingVertical: 8,
-                                borderRadius: 999,
-                                borderWidth: 1,
-                                borderColor: focused ? colors.accent.primary : colors.border.subtle,
-                                backgroundColor: colors.bg.muted,
+                                borderBottomWidth: focused ? 1 : 0,
+                                borderBottomColor: colors.accent.primary,
                                 opacity: state.pressed ? 0.85 : 1,
                               };
                             }}

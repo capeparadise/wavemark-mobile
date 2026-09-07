@@ -40,16 +40,18 @@ export default function FeedHeader({
                 {subtitleAccessory}
               </View>
 
-              <View style={{ flexDirection: 'row', marginTop: 10, alignItems: 'center', gap: 10 }}>
-                <View style={{ flex: 1, flexDirection: 'row', padding: 3, borderRadius: 13, backgroundColor: colors.bg.muted, borderWidth: 1, borderColor: colors.border.subtle, gap: 4 }}>
+              <View style={{ flexDirection: 'row', marginTop: 12, alignItems: 'center', gap: 10 }}>
+                <View style={{ flex: 1, flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: colors.border.subtle }}>
                     {([
-                      { key: 'artist', label: 'Artists' },
-                      { key: 'social', label: 'Social' },
+                      { key: 'artist', label: 'Releases' },
+                      { key: 'social', label: 'Friends' },
                     ] as const).map(({ key, label }) => {
                     const selected = mode === key;
                     return (
                       <Pressable
                         key={key}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected }}
                         onPress={() => {
                           if (mode === key) return;
                           H.tap();
@@ -58,18 +60,13 @@ export default function FeedHeader({
                         style={({ pressed }) => ({
                           flex: 1,
                           opacity: pressed ? 0.85 : 1,
+                          alignItems: 'center',
+                          paddingVertical: 9,
+                          borderBottomWidth: selected ? 2 : 0,
+                          borderBottomColor: colors.accent.primary,
                         })}
                       >
-                        <View style={{
-                          paddingHorizontal: 12,
-                          paddingVertical: 8,
-                          borderRadius: 10,
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          backgroundColor: selected ? colors.accent.primary : 'transparent',
-                        }}>
-                          <Text style={{ color: selected ? colors.text.inverted : colors.text.secondary, fontWeight: '800', fontSize: 13 }}>{label}</Text>
-                        </View>
+                        <Text style={{ color: selected ? colors.accent.primary : colors.text.muted, fontWeight: '800', fontSize: 13 }}>{label}</Text>
                       </Pressable>
                     );
                   })}
