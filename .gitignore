@@ -50,3 +50,6 @@ node_modules/
 *.backup
 .env.backup
 .vscode/settings.json
+
+# Supabase CLI local link state
+supabase/.temp/
