@@ -1,5 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import * as AppleAuthentication from 'expo-apple-authentication';
+import { useFocusEffect } from '@react-navigation/native';
+import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { ActivityIndicator, Alert, Pressable, ScrollView, Switch, Text, View } from 'react-native';
 import PlayerToggle from '../../components/PlayerToggle';
@@ -9,6 +11,7 @@ import { emit } from '../../lib/events';
 import { supabase } from '../../lib/supabase';
 import { getAdvancedRatingsEnabled, setAdvancedRatingsEnabled } from '../../lib/user';
 import { isHapticsEnabled, setHapticsEnabled } from '../../components/haptics';
+import { countIncomingPendingRequests } from '../../lib/profileSocial';
 import { useTheme } from '../../theme/useTheme';
 
 export default function ProfileSettingsPage() {
@@ -19,6 +22,7 @@ export default function ProfileSettingsPage() {
   const [advSaving, setAdvSaving] = useState<boolean>(false);
   const [hapticsEnabled, setHapticsEnabledState] = useState<boolean>(true);
   const [hapticSaving, setHapticSaving] = useState<boolean>(false);
+  const [requestsHasDot, setRequestsHasDot] = useState(false);
 
   useEffect(() => {
     // Load advanced rating preference
@@ -26,6 +30,12 @@ export default function ProfileSettingsPage() {
     // Load haptics pref
     setHapticsEnabledState(isHapticsEnabled());
   }, []);
+
+  useFocusEffect(useCallback(() => {
+    countIncomingPendingRequests()
+      .then((count) => setRequestsHasDot(count > 0))
+      .catch(() => setRequestsHasDot(false));
+  }, []));
 
   const APPLE_ENABLED = process.env.EXPO_PUBLIC_ENABLE_APPLE === 'true';
 
@@ -119,11 +129,62 @@ export default function ProfileSettingsPage() {
     );
   };
 
+  const ProfileDestination = ({
+    label,
+    detail,
+    icon,
+    onPress,
+    dot,
+  }: {
+    label: string;
+    detail: string;
+    icon: keyof typeof Ionicons.glyphMap;
+    onPress: () => void;
+    dot?: boolean;
+  }) => (
+    <Pressable
+      accessibilityRole="button"
+      onPress={onPress}
+      style={({ pressed }) => ({
+        minHeight: 58,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
+        paddingVertical: 11,
+        borderBottomWidth: 1,
+        borderBottomColor: colors.border.subtle,
+        opacity: pressed ? 0.72 : 1,
+      })}
+    >
+      <View style={{ width: 28, alignItems: 'center' }}>
+        <Ionicons name={icon} size={20} color={colors.accent.primary} />
+      </View>
+      <View style={{ flex: 1 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
+          <Text style={{ color: colors.text.secondary, fontSize: 15, fontWeight: '800' }}>{label}</Text>
+          {dot ? <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: '#ff3b30' }} /> : null}
+        </View>
+        <Text style={{ color: colors.text.muted, fontSize: 12, marginTop: 2 }}>{detail}</Text>
+      </View>
+      <Ionicons name="chevron-forward" size={16} color={colors.text.muted} />
+    </Pressable>
+  );
+
   return (
     <Screen edges={['left', 'right']}>
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 28 }}>
         <Text style={{ fontSize: 22, fontWeight: '700', marginBottom: 8, color: colors.text.secondary }}>Settings</Text>
-        <Text style={{ color: colors.text.muted, marginBottom: 18 }}>Manage your app preferences.</Text>
+        <Text style={{ color: colors.text.muted, marginBottom: 18 }}>Manage your profile and app preferences.</Text>
+
+        <View style={{ marginBottom: 28 }}>
+          <Text style={{ fontWeight: '800', fontSize: 17, marginBottom: 4, color: colors.text.secondary }}>Your Ripple</Text>
+          <ProfileDestination label="Ratings" detail="See everything you’ve rated" icon="star-outline" onPress={() => router.push('/profile/ratings')} />
+          <ProfileDestination label="To rate" detail="Finish ratings for listened music" icon="alert-circle-outline" onPress={() => router.push('/profile/pending')} />
+          <ProfileDestination label="Insights" detail="Explore your listening patterns" icon="stats-chart-outline" onPress={() => router.push('/profile/insights')} />
+          <ProfileDestination label="People" detail="Manage requests and the listeners you follow" icon="people-outline" dot={requestsHasDot} onPress={() => router.push('/profile/people')} />
+          <ProfileDestination label="Share profile" detail="Create your listener profile card" icon="share-outline" onPress={() => router.push('/profile/share-card')} />
+          <ProfileDestination label="Reviews" detail="Coming soon" icon="chatbubble-ellipses-outline" onPress={() => Alert.alert('Reviews', 'Coming soon')} />
+        </View>
 
         <View style={{ marginBottom: 24 }}>
           <Text style={{ fontWeight: '700', marginBottom: 6, color: colors.text.secondary }}>Listener profile</Text>

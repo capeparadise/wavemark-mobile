@@ -13,7 +13,6 @@ import {
   View,
 } from 'react-native';
 import Screen from '../../components/Screen';
-import GlassCard from '../../components/GlassCard';
 
 import {
   addUpcomingToListen,
@@ -223,7 +222,7 @@ export default function ListenTab() {
 
   // Also refresh when the tab icon is tapped (even if already focused)
   useEffect(() => {
-    const unsub = (navigation as any).addListener('tabPress', () => { load(); });
+    const unsub = (navigation as any).addListener('tabPress', () => { load({ force: true }); });
     return unsub;
   }, [navigation, load]);
 
@@ -617,13 +616,13 @@ export default function ListenTab() {
                 onHapticSuccess={H.success}
                 onHapticError={H.error}
               >
-                <GlassCard asChild style={{ marginHorizontal: 12, marginVertical: 4, padding: 0 }}>
+                <View style={{ marginHorizontal: 2, borderBottomWidth: 1, borderBottomColor: colors.border.subtle }}>
                   <Pressable
                     onPress={() => onOpen(item)}
                     onLongPress={() => setMenuRow(item)}
                     delayLongPress={RELEASE_LONG_PRESS_MS}
                     style={({ pressed }) => ({
-                      padding: 12,
+                      paddingVertical: 14,
                       opacity: pressed ? 0.92 : 1,
                       transform: [{ scale: pressed ? 0.995 : 1 }],
                     })}
@@ -636,13 +635,13 @@ export default function ListenTab() {
                           ? item.artwork_url.trim()
                           : null;
                         const url = persistedArtwork || artMap[key];
-                        const size = 54;
+                        const size = 62;
                         return (
-                          <View style={{ width: size, height: size, borderRadius: 12, backgroundColor: colors.bg.muted, overflow: 'hidden' }}>
+                          <View style={{ width: size, height: size, borderRadius: 11, backgroundColor: colors.bg.muted, overflow: 'hidden' }}>
                             {url ? (
                               <Image source={{ uri: url }} style={{ width: size, height: size }} />
                             ) : (
-                              <Shimmer w={size} h={size} r={12} />
+                              <Shimmer w={size} h={size} r={11} />
                             )}
                           </View>
                         );
@@ -660,13 +659,13 @@ export default function ListenTab() {
                             return isSingle ? 'SINGLE' : 'ALBUM';
                           })();
                           return (
-                            <Text style={{ fontSize: 10, fontWeight: '800', color: colors.text.muted, marginBottom: 6 }}>
+                            <Text style={{ fontSize: 10, fontWeight: '900', letterSpacing: 0.8, color: colors.accent.primary, marginBottom: 4 }}>
                               {label}
                             </Text>
                           );
                         })()}
                         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                          <Text style={{ fontWeight: '600', fontSize: 16, flex: 1, color: colors.text.secondary }} numberOfLines={2}>
+                          <Text style={{ fontWeight: '800', fontSize: 16, flex: 1, color: colors.text.secondary }} numberOfLines={2}>
                             {item.title}
                           </Text>
                           <Stars value={item.rating} />
@@ -678,14 +677,14 @@ export default function ListenTab() {
                             <Text style={{ fontSize: 18, color: colors.text.muted }}>⋯</Text>
                           </Pressable>
                         </View>
-                        <Text style={{ color: colors.text.muted, marginTop: 6 }} numberOfLines={1}>
+                        <Text style={{ color: colors.text.muted, marginTop: 4, fontSize: 13 }} numberOfLines={1}>
                           {item.artist_name}
                         </Text>
                       </View>
                       {/* listened indicator removed; keep swipe-to-listened only */}
                     </View>
                   </Pressable>
-                </GlassCard>
+                </View>
               </SwipeRow>
             )}
           />

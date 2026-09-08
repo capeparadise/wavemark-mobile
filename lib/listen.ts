@@ -534,8 +534,9 @@ export async function addToListFromSearch(input: {
   appleAlbumId = existingAppleIds.albumId;
   appleStorefront = existingAppleIds.storefront;
 
-  // If we're saving without Apple fields, resolve them now via iTunes Search for better deep linking later
-  if (!appleId || !appleUrl) {
+  // Spotify saves should reach the Listen List immediately. Apple links can be
+  // resolved on demand when the listener opens the release in Apple Music.
+  if (!spotifyId && (!appleId || !appleUrl)) {
     try {
       const cc = (getMarket() || 'US').toUpperCase();
       const term = encodeURIComponent([input.title, input.artist].filter(Boolean).join(' '));
@@ -569,9 +570,16 @@ export async function addToListFromSearch(input: {
     } catch {}
   }
 
-  // Attempt canonical Apple Music resolution via edge function if still missing or legacy iTunes link
+  // Apple-sourced saves still need a canonical Apple identity before insertion.
+  // Spotify-sourced saves deliberately skip this slower enrichment step.
   try {
-    const needCanonical = !!input.isrc || !!input.upc || !appleId || !appleUrl || !/music\.apple\.com\//.test(String(appleUrl));
+    const needCanonical = !spotifyId && (
+      !!input.isrc ||
+      !!input.upc ||
+      !appleId ||
+      !appleUrl ||
+      !/music\.apple\.com\//.test(String(appleUrl))
+    );
     if (needCanonical) {
       const { data: appleResolved } = await supabase.functions.invoke('apple-resolve', {
         body: {

@@ -14,8 +14,8 @@ import Chip from '../../components/Chip';
 import HeroReleaseCard from '../../components/discover/HeroReleaseCard';
 import { formatDate } from '../../lib/date';
 import { fetchFeed, fetchFeedForArtists, listFollowedArtists, type FeedItem, type FollowChangedEvent } from '../../lib/follow';
-import { off, on } from '../../lib/events';
-import { addToListFromSearch, markDoneByProvider } from '../../lib/listen';
+import { emit, off, on } from '../../lib/events';
+import { addToListFromSearch, removeListenByProvider } from '../../lib/listen';
 import { goToRelease } from '../../lib/navigation';
 import { openArtist } from '../../lib/openArtist';
 import { getNewReleasesByGenre, getTopPicks, getWesternNewReleases } from '../../lib/recommend';
@@ -424,6 +424,7 @@ export default function DiscoverTab() {
   const discoverStartupReadyRef = useRef(false);
   const artistImageMapRef = useRef<Record<string, string>>({});
   const updatesLastDeepScanAtRef = useRef<number>(0);
+  const savePendingRef = useRef<Set<string>>(new Set());
   const forYouItemsRef = useRef<typeof forYouItems>([]);
   const yourUpdatesReleasesRef = useRef<typeof yourUpdatesReleases>([]);
   const currentFollowedIdsRef = useRef<Set<string>>(new Set());
@@ -1237,6 +1238,81 @@ export default function DiscoverTab() {
     setAddedIds(prev => ({ ...prev, [key]: true }));
     setListenStatus(prev => ({ ...prev, [key]: prev[key] || {} }));
   }, []);
+
+  const beginOptimisticSave = useCallback((id?: string | null, spotifyUrl?: string | null) => {
+    const key = spotifyKey(id, spotifyUrl);
+    const pendingKey = key || spotifyUrl || id;
+    if (pendingKey && savePendingRef.current.has(pendingKey)) return null;
+    if (pendingKey) savePendingRef.current.add(pendingKey);
+
+    const wasAdded = key ? !!addedIds[key] : false;
+    const previousStatus = key ? listenStatus[key] : undefined;
+
+    markAddedKey(id, spotifyUrl);
+    if (key) {
+      setListenStatus((prev) => ({
+        ...prev,
+        [key]: { ...(prev[key] || {}), done: false },
+      }));
+    }
+    H.success();
+
+    return {
+      key,
+      finish: () => {
+        if (pendingKey) savePendingRef.current.delete(pendingKey);
+      },
+      rollback: () => {
+        if (!key) return;
+        setAddedIds((prev) => {
+          if (wasAdded) return { ...prev, [key]: true };
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
+        setListenStatus((prev) => {
+          if (previousStatus) return { ...prev, [key]: previousStatus };
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
+      },
+    };
+  }, [addedIds, listenStatus, markAddedKey]);
+
+  const onUnsave = async (id?: string | null, spotifyUrl?: string | null) => {
+    const key = spotifyKey(id, spotifyUrl);
+    if (!key || savePendingRef.current.has(key)) return;
+    savePendingRef.current.add(key);
+    const wasAdded = !!addedIds[key];
+    const previousStatus = listenStatus[key];
+
+    setAddedIds((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+    setListenStatus((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+    H.success();
+
+    try {
+      const res = await removeListenByProvider({ provider: 'spotify', provider_id: key });
+      if (!res.ok || res.removed < 1) throw new Error(res.message || 'Could not remove release');
+      emit('listen:updated');
+      emit('listen:refresh');
+    } catch (error: any) {
+      if (wasAdded) setAddedIds((prev) => ({ ...prev, [key]: true }));
+      if (previousStatus) setListenStatus((prev) => ({ ...prev, [key]: previousStatus }));
+      H.error();
+      Alert.alert('Could not remove', error?.message || 'Please try again.');
+    } finally {
+      savePendingRef.current.delete(key);
+    }
+  };
 
   const cacheArtistImagesV2 = useCallback(async (images: Record<string, string>) => {
     const entries = Object.entries(images || {}).filter(([, url]) => !!url);
@@ -2691,13 +2767,10 @@ export default function DiscoverTab() {
     Keyboard.dismiss();
   };
 
-  const onAddNew = async (a: { id: string; title: string; artist: string; releaseDate?: string | null; spotifyUrl?: string | null; imageUrl?: string | null; type?: string | null; isrc?: string | null }, stat?: { done?: boolean | undefined }) => {
+  const onAddNew = async (a: { id: string; title: string; artist: string; releaseDate?: string | null; spotifyUrl?: string | null; imageUrl?: string | null; type?: string | null; isrc?: string | null }, _stat?: { done?: boolean | undefined }) => {
     const key = spotifyKey(a.id, a.spotifyUrl);
-    if (stat?.done && key) {
-      // If previously listened, mark it active again before adding so the unique row can be reused
-      await markDoneByProvider({ provider: 'spotify', provider_id: key, makeDone: false });
-      setListenStatus(prev => ({ ...prev, [key]: { ...(prev[key] || {}), done: false } }));
-    }
+    const optimistic = beginOptimisticSave(a.id, a.spotifyUrl);
+    if (!optimistic) return;
     const inferredFromUrl =
       (a.spotifyUrl && /open\.spotify\.com\/album\//.test(a.spotifyUrl)) ? 'album' :
       (a.spotifyUrl && /open\.spotify\.com\/track\//.test(a.spotifyUrl)) ? 'track' :
@@ -2706,50 +2779,71 @@ export default function DiscoverTab() {
       (a.type === 'album' || a.type === 'single') ? a.type :
       (a.type === 'ep') ? 'album' :
       (inferredFromUrl === 'album' ? 'album' : 'track');
-    const res = await addToListFromSearch({
-      type: itemType,
-      title: a.title,
-      artist: a.artist,
-      releaseDate: a.releaseDate ?? null,
-      spotifyUrl: a.spotifyUrl ?? null,
-      isrc: a.isrc ?? null,
-      appleUrl: null,
-      imageUrl: a.imageUrl ?? null,
-    });
-    if (!res.ok) { H.error(); Alert.alert(res.message || 'Could not save'); return; }
-    H.success();
-    if (key && res.row) {
-      setListenStatus(prev => ({ ...prev, [key]: { rating: res.row.rating ?? null, done: !!res.row.done_at, details: res.row.rating_details ?? null } }));
+    try {
+      const res = await addToListFromSearch({
+        type: itemType,
+        title: a.title,
+        artist: a.artist,
+        releaseDate: a.releaseDate ?? null,
+        spotifyUrl: a.spotifyUrl ?? null,
+        isrc: a.isrc ?? null,
+        appleUrl: null,
+        imageUrl: a.imageUrl ?? null,
+      });
+      if (!res.ok) {
+        optimistic.rollback();
+        H.error();
+        Alert.alert('Could not save', res.message || 'Please try again.');
+        return;
+      }
+      if (key && res.row) {
+        setListenStatus(prev => ({ ...prev, [key]: { rating: res.row.rating ?? null, done: !!res.row.done_at, details: res.row.rating_details ?? null } }));
+      }
+      emit('listen:refresh');
+      if (res.message === 'Already on your list') await refreshListenStatus();
+    } catch (error: any) {
+      optimistic.rollback();
+      H.error();
+      Alert.alert('Could not save', error?.message || 'Please try again.');
+    } finally {
+      optimistic.finish();
     }
-    markAddedKey(a.id, a.spotifyUrl);
-    if (res.message === 'Already on your list') await refreshListenStatus();
   };
 
-  const onSaveSearch = async (r: SpotifyResult, stat?: { done?: boolean | undefined }) => {
+  const onSaveSearch = async (r: SpotifyResult, _stat?: { done?: boolean | undefined }) => {
     if (r.type === 'artist') { Alert.alert('Pick a track or album to save'); return; }
-    const listenKey = spotifyKey(r.id, r.spotifyUrl);
-    if (stat?.done && listenKey) {
-      await markDoneByProvider({ provider: 'spotify', provider_id: listenKey, makeDone: false });
-      setListenStatus(prev => ({ ...prev, [listenKey]: { ...(prev[listenKey] || {}), done: false } }));
-    }
-    const res = await addToListFromSearch({
-      type: r.type === 'album' ? 'album' : 'track',
-      title: r.title,
-      artist: r.artist ?? null,
-      releaseDate: r.releaseDate ?? null,
-      spotifyUrl: r.spotifyUrl ?? null,
-      isrc: r.isrc ?? null,
-      appleUrl: null,
-      imageUrl: r.imageUrl ?? null,
-    });
-    if (!res.ok) { H.error(); Alert.alert(res.message || 'Could not save'); return; }
-    H.success();
     const newKey = spotifyKey(r.id, r.spotifyUrl);
-    if (newKey && res.row) {
-      setListenStatus(prev => ({ ...prev, [newKey]: { rating: res.row.rating ?? null, done: !!res.row.done_at, details: res.row.rating_details ?? null } }));
+    const optimistic = beginOptimisticSave(r.id, r.spotifyUrl);
+    if (!optimistic) return;
+    try {
+      const res = await addToListFromSearch({
+        type: r.type === 'album' ? 'album' : 'track',
+        title: r.title,
+        artist: r.artist ?? null,
+        releaseDate: r.releaseDate ?? null,
+        spotifyUrl: r.spotifyUrl ?? null,
+        isrc: r.isrc ?? null,
+        appleUrl: null,
+        imageUrl: r.imageUrl ?? null,
+      });
+      if (!res.ok) {
+        optimistic.rollback();
+        H.error();
+        Alert.alert('Could not save', res.message || 'Please try again.');
+        return;
+      }
+      if (newKey && res.row) {
+        setListenStatus(prev => ({ ...prev, [newKey]: { rating: res.row.rating ?? null, done: !!res.row.done_at, details: res.row.rating_details ?? null } }));
+      }
+      emit('listen:refresh');
+      if (res.message === 'Already on your list') await refreshListenStatus();
+    } catch (error: any) {
+      optimistic.rollback();
+      H.error();
+      Alert.alert('Could not save', error?.message || 'Please try again.');
+    } finally {
+      optimistic.finish();
     }
-    markAddedKey(r.id, r.spotifyUrl);
-    if (res.message === 'Already on your list') await refreshListenStatus();
   };
 
   // Build rows: carousel (Latest) shows first N; list shows remainder labeled 'More new releases'
@@ -3065,8 +3159,8 @@ export default function DiscoverTab() {
       );
     };
     return (
-      <GlassCard asChild style={{ marginVertical: 4, marginHorizontal: 16, padding: 0 }}>
-        <View style={{ paddingVertical: 10, paddingHorizontal: 6, opacity: 1 }}>
+      <View style={{ marginHorizontal: 16, borderBottomWidth: 1, borderBottomColor: colors.border.subtle }}>
+        <View style={{ paddingVertical: 12, opacity: 1 }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
             <Pressable
               onPress={openSearchRelease}
@@ -3110,7 +3204,7 @@ export default function DiscoverTab() {
             ) : (
               <View style={{ alignItems: 'flex-end' }}>
                 {renderStatusBlock(stat)}
-                <Pressable onPress={() => onSaveSearch(r, stat)} disabled={stat?.done ? false : isAdded} hitSlop={8} style={{ marginTop: 4 }}>
+                <Pressable onPress={() => isAdded && !stat?.done ? onUnsave(r.id, r.spotifyUrl) : onSaveSearch(r, stat)} hitSlop={8} style={{ marginTop: 4 }}>
                   <Text style={{ color: colors.accent.success, fontWeight: '700' }}>
                     {label}
                   </Text>
@@ -3126,7 +3220,7 @@ export default function DiscoverTab() {
             )}
           </View>
         </View>
-      </GlassCard>
+      </View>
     );
   };
   const renderItem = ({ item }: { item: Row }) => {
@@ -3142,8 +3236,8 @@ export default function DiscoverTab() {
   const label = tagLabel(stat, isAdded);
   const releaseDateLabel = formatDate(item.releaseDate);
     return (
-      <GlassCard asChild style={{ marginVertical: 4, marginHorizontal: 16, padding: 0, opacity: isAdded ? 0.82 : 1 }}>
-        <View style={{ paddingVertical: 10, paddingHorizontal: 6 }}>
+      <View style={{ marginHorizontal: 16, borderBottomWidth: 1, borderBottomColor: colors.border.subtle, opacity: isAdded ? 0.82 : 1 }}>
+        <View style={{ paddingVertical: 12 }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
             <Image source={{ uri: item.imageUrl ?? undefined }} style={{ width: 60, height: 60, borderRadius: 12, backgroundColor: colors.bg.muted }} />
             <View style={{ flex: 1, paddingRight: 12 }}>
@@ -3164,7 +3258,7 @@ export default function DiscoverTab() {
             </View>
             <View style={{ alignItems: 'flex-end' }}>
               {renderStatusBlock(stat)}
-              <Pressable onPress={() => onAddNew(item, stat)} disabled={stat?.done ? false : isAdded} hitSlop={8} style={{ marginTop: 4 }}>
+              <Pressable onPress={() => isAdded && !stat?.done ? onUnsave(item.id, item.spotifyUrl) : onAddNew(item, stat)} hitSlop={8} style={{ marginTop: 4 }}>
                 <Text style={{ color: colors.accent.success, fontWeight: '700' }}>
                   {label}
                 </Text>
@@ -3179,7 +3273,7 @@ export default function DiscoverTab() {
             </View>
           </View>
         </View>
-      </GlassCard>
+      </View>
     );
     }
   // Upcoming removed
@@ -3252,14 +3346,13 @@ export default function DiscoverTab() {
           };
           const handlePress = options?.onPress ?? openRelease;
           return (
-            <GlassCard
+            <View
               key={item.id || item.title}
-              asChild
               style={{
                 width: '100%',
-                padding: 0,
-                borderRadius: 18,
                 minHeight: 88,
+                borderBottomWidth: 1,
+                borderBottomColor: colors.border.subtle,
               }}
             >
               <Pressable
@@ -3270,13 +3363,13 @@ export default function DiscoverTab() {
                   flexDirection: 'row',
                   alignItems: 'center',
                   gap: 12,
-                  paddingHorizontal: 12,
-                  paddingVertical: 12,
+                  paddingHorizontal: 2,
+                  paddingVertical: 11,
                   opacity: pressed ? 0.9 : 1,
                   transform: [{ scale: pressed ? 0.995 : 1 }],
                 })}
               >
-                <View style={{ width: imageSize, height: imageSize, borderRadius: 14, backgroundColor: colors.bg.muted, overflow: 'hidden' }}>
+                <View style={{ width: imageSize, height: imageSize, borderRadius: 10, backgroundColor: colors.bg.muted, overflow: 'hidden' }}>
                   {item.imageUrl ? (
                     <Image source={{ uri: item.imageUrl }} style={{ width: imageSize, height: imageSize }} />
                   ) : (
@@ -3321,8 +3414,9 @@ export default function DiscoverTab() {
                 </View>
                 <View style={{ alignItems: 'flex-end', flex: 0 }}>
                   <Pressable
-                    onPress={() => onAddNew({ id: item.id, title: item.title, artist: item.artist || '', releaseDate: item.releaseDate ?? null, spotifyUrl: item.spotifyUrl ?? null, imageUrl: item.imageUrl ?? null, type: item.type ?? null })}
-                    disabled={isAdded}
+                    onPress={() => isAdded && !stat?.done
+                      ? onUnsave(item.id, item.spotifyUrl)
+                      : onAddNew({ id: item.id, title: item.title, artist: item.artist || '', releaseDate: item.releaseDate ?? null, spotifyUrl: item.spotifyUrl ?? null, imageUrl: item.imageUrl ?? null, type: item.type ?? null })}
                     hitSlop={8}
                   >
                     <Text style={{ color: colors.accent.success, fontWeight: '700', opacity: isAdded ? 0.6 : 1, fontSize: 12 }}>{label}</Text>
@@ -3330,7 +3424,7 @@ export default function DiscoverTab() {
                   {renderStatusBlock(stat, true, true)}
                 </View>
               </Pressable>
-            </GlassCard>
+            </View>
           );
         };
 
@@ -3376,20 +3470,20 @@ export default function DiscoverTab() {
               onPress={handlePress}
               onLongPress={() => setMenuRow({ ...item, artist_id: artistId, in_list: isAdded, done_at: stat?.done ? new Date().toISOString() : null } as any)}
               delayLongPress={RELEASE_LONG_PRESS_MS}
-              onSave={() =>
-                onAddNew(
-                  {
-                    id: item.id,
-                    title: item.title,
-                    artist: item.artist || '',
-                    releaseDate: item.releaseDate ?? null,
-                    spotifyUrl: item.spotifyUrl ?? null,
-                    imageUrl: item.imageUrl ?? null,
-                    type: item.type ?? null,
-                  },
-                  stat
-                )
-              }
+              onSave={() => isAdded && !stat?.done
+                ? onUnsave(item.id, item.spotifyUrl)
+                : onAddNew(
+                    {
+                      id: item.id,
+                      title: item.title,
+                      artist: item.artist || '',
+                      releaseDate: item.releaseDate ?? null,
+                      spotifyUrl: item.spotifyUrl ?? null,
+                      imageUrl: item.imageUrl ?? null,
+                      type: item.type ?? null,
+                    },
+                    stat
+                  )}
             />
           );
         };
@@ -3740,8 +3834,8 @@ export default function DiscoverTab() {
         transform: [{ translateY: headerTranslateY }],
       }}
     >
-      <View style={{ marginHorizontal: 16, borderRadius: 18, overflow: 'hidden', borderWidth: 1, borderColor: colors.overlay.softLight, backgroundColor: colors.bg.secondary + 'cc' }}>
-        <BlurView intensity={68} tint="dark" style={{ paddingHorizontal: 10, paddingVertical: 8 }}>
+      <View style={{ marginHorizontal: 16, borderRadius: 16, overflow: 'hidden', backgroundColor: colors.bg.secondary + 'b8' }}>
+        <BlurView intensity={68} tint="dark" style={{ paddingHorizontal: 8, paddingVertical: 8 }}>
           <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
             <TextInput
               ref={searchInputRef}

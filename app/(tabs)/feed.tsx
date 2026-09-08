@@ -14,10 +14,10 @@ import FeedHeader, { type FeedMode } from '../../components/feed/FeedHeader';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { formatDate } from '../../lib/date';
 import { discoverReleaseDateTimestamp } from '../../lib/discoverFreshness';
-import { off, on } from '../../lib/events';
+import { emit, off, on } from '../../lib/events';
 import { FN_BASE, fetchFn } from '../../lib/fnBase';
 import { fetchFeedForArtists, listFollowedArtists, type FeedItem } from '../../lib/follow';
-import { addToListFromSearch, fetchListenList, removeListen } from '../../lib/listen';
+import { addToListFromSearch, fetchHistory, fetchListenList, removeListen } from '../../lib/listen';
 import { parseSpotifyUrlOrId } from '../../lib/spotify';
 import { goToRelease } from '../../lib/navigation';
 import { fetchSocialActivity } from '../../lib/profileSocial';
@@ -62,6 +62,46 @@ const extractAppleId = (value?: string | null) => {
     if (song?.[1]) return song[1];
   } catch {}
   return null;
+};
+
+type FeedListenState = {
+  listenId: string;
+  done: boolean;
+  rating: number | null;
+};
+
+const normalizeMusicIdentityText = (value?: string | null) => (
+  String(value || '')
+    .normalize('NFKC')
+    .toLocaleLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim()
+);
+
+const musicIdentityKeys = (item: any): string[] => {
+  const keys = new Set<string>();
+  const add = (prefix: string, value?: string | null) => {
+    const normalized = String(value || '').trim();
+    if (normalized) keys.add(`${prefix}:${normalized}`);
+  };
+
+  const spotifyUrl = item?.spotify_url ?? item?.spotifyUrl ?? null;
+  const appleUrl = item?.apple_url ?? item?.appleUrl ?? null;
+  const spotifyId = item?.spotify_id ?? item?.spotifyId ?? parseSpotifyUrlOrId(spotifyUrl || '')?.id ?? null;
+  const appleId = item?.apple_id ?? item?.appleId ?? extractAppleId(appleUrl) ?? null;
+
+  add('spotify', spotifyId);
+  add('apple', appleId);
+  add('provider', item?.provider_id ?? item?.providerId ?? null);
+  add('external', item?.external_id ?? item?.externalId ?? null);
+  add('spotify-url', spotifyUrl);
+  add('apple-url', appleUrl);
+
+  const title = normalizeMusicIdentityText(item?.title);
+  const artist = normalizeMusicIdentityText(item?.artist_name ?? item?.artistName ?? item?.artist);
+  if (title && artist) keys.add(`music:${title}__${artist}`);
+
+  return Array.from(keys);
 };
 
 const FEED_MODE_KEY = (uid: string) => `wavemark:feed-mode:${uid}`;
@@ -116,6 +156,8 @@ export default function FeedTab() {
   const [filter, setFilter] = useState<'all' | 'album' | 'single' | 'new'>('all');
   const [doneKeys, setDoneKeys] = useState<string[]>([]);
   const [inListKeys, setInListKeys] = useState<string[]>([]);
+  const [listenStateByKey, setListenStateByKey] = useState<Record<string, FeedListenState>>({});
+  const [savePendingIds, setSavePendingIds] = useState<Record<string, boolean>>({});
   const [menuRow, setMenuRow] = useState<any | null>(null);
   const [stickyControlsVisible, setStickyControlsVisible] = useState(false);
   const [snack, setSnack] = useState<{ visible: boolean; message: string; listenId?: string | null; feedId?: string | null }>({ visible: false, message: '', listenId: null, feedId: null });
@@ -210,26 +252,34 @@ export default function FeedTab() {
     const showLoading = opts?.showLoading ?? rowsRef.current.length === 0;
     if (showLoading) setLoading(true);
     try {
-      const [followed, listenRows] = await Promise.all([listFollowedArtists().catch(() => []), fetchListenList().catch(() => [])]);
+      const [followed, activeListenRows, historyResult] = await Promise.all([
+        listFollowedArtists().catch(() => []),
+        fetchListenList().catch(() => []),
+        fetchHistory().catch(() => ({ ok: false as const, message: 'Could not load listening history' })),
+      ]);
       const artistIds = (followed || []).map((a) => a.id).filter(Boolean);
       setFollowedCount(artistIds.length);
       const data = artistIds.length ? await fetchFeedForArtists({ artistIds }) : [];
       const done = new Set<string>();
       const inList = new Set<string>();
-      listenRows.filter(r => !!r.done_at).forEach((r) => {
-        if (r.spotify_url) done.add(r.spotify_url);
-        if (r.apple_url) done.add(r.apple_url);
-        if (r.title && r.artist_name) done.add(`${r.title}__${r.artist_name}`);
-      });
-      (listenRows || []).forEach((r) => {
-        if (r.spotify_url) inList.add(r.spotify_url);
-        if (r.apple_url) inList.add(r.apple_url);
-        if (r.provider_id) inList.add(String(r.provider_id));
-        if ((r as any).spotify_id) inList.add(String((r as any).spotify_id));
-        if (r.title && r.artist_name) inList.add(`${r.title}__${r.artist_name}`);
+      const stateByKey: Record<string, FeedListenState> = {};
+      const historyRows = historyResult.ok ? historyResult.rows : [];
+      const listenRows = [...(activeListenRows || []), ...historyRows];
+      listenRows.forEach((r) => {
+        const state: FeedListenState = {
+          listenId: r.id,
+          done: !!r.done_at,
+          rating: typeof r.rating === 'number' ? r.rating : null,
+        };
+        musicIdentityKeys(r).forEach((key) => {
+          inList.add(key);
+          if (state.done) done.add(key);
+          stateByKey[key] = state;
+        });
       });
       setDoneKeys(Array.from(done));
       setInListKeys(Array.from(inList));
+      setListenStateByKey(stateByKey);
       setRows(prepareFeedRows(data));
     } finally {
       if (showLoading) setLoading(false);
@@ -275,9 +325,15 @@ export default function FeedTab() {
     loadSocial({ showLoading: false });
   }, [load, loadSocial]));
   useEffect(() => {
-    const handler = () => load();
+    const handler = () => load({ showLoading: false });
     on('feed:refresh', handler);
-    return () => off('feed:refresh', handler);
+    on('listen:updated', handler);
+    on('listen:refresh', handler);
+    return () => {
+      off('feed:refresh', handler);
+      off('listen:updated', handler);
+      off('listen:refresh', handler);
+    };
   }, [load]);
 
   useEffect(() => { loadSocial(); }, [loadSocial]);
@@ -313,9 +369,8 @@ export default function FeedTab() {
   const doneSet = useMemo(() => new Set(doneKeys), [doneKeys]);
   const inListSet = useMemo(() => new Set(inListKeys), [inListKeys]);
   const remainingCount = useMemo(() => filteredRows.filter((r) => {
-    const key = r.spotify_url ?? (r.title && r.artist_name ? `${r.title}__${r.artist_name}` : null);
-    if (!key) return true;
-    return !doneSet.has(key);
+    const keys = musicIdentityKeys(r);
+    return !keys.some((key) => doneSet.has(key));
   }).length, [filteredRows, doneSet]);
   const sections = useMemo(() => {
     const byDay = new Map<string, Item[]>();
@@ -356,30 +411,80 @@ export default function FeedTab() {
   }, [loadSocial]);
 
   const onAdd = async (r: Item) => {
+    if (savePendingIds[r.id]) return;
+    setSavePendingIds((prev) => ({ ...prev, [r.id]: true }));
+    setAdded((prev) => ({ ...prev, [r.id]: true }));
+    H.success();
     const itemType = itemTypeOf(r);
-    const res = await addToListFromSearch({
-      // Store singles as tracks to satisfy DB constraint on item_type
-      type: itemType === 'album' ? 'album' : 'track',
-      title: r.title,
-      artist: r.artist_name ?? null,
-      releaseDate: r.release_date ?? null,
-      spotifyUrl: r.spotify_url ?? null,
-      appleUrl: r.apple_url ?? null,
-      artworkUrl: r.artwork_url ?? null,
-      providerId: (r as any).provider_id ?? r.spotify_id ?? (r as any).apple_id ?? (r as any).external_id ?? null,
-    });
-    if (res.ok) {
-      H.success();
-      setAdded(prev => ({ ...prev, [r.id]: true }));
+    try {
+      const res = await addToListFromSearch({
+        // Store singles as tracks to satisfy DB constraint on item_type
+        type: itemType === 'album' ? 'album' : 'track',
+        title: r.title,
+        artist: r.artist_name ?? null,
+        releaseDate: r.release_date ?? null,
+        spotifyUrl: r.spotify_url ?? null,
+        appleUrl: r.apple_url ?? null,
+        artworkUrl: r.artwork_url ?? null,
+        providerId: (r as any).provider_id ?? r.spotify_id ?? (r as any).apple_id ?? (r as any).external_id ?? null,
+      });
+      if (!res.ok || !res.id) throw new Error(res.message || 'Could not save');
+      const identityKeys = musicIdentityKeys(r);
+      const nextState: FeedListenState = { listenId: res.id, done: false, rating: null };
+      setInListKeys((prev) => Array.from(new Set([...prev, ...identityKeys])));
+      setListenStateByKey((prev) => {
+        const next = { ...prev };
+        identityKeys.forEach((key) => { next[key] = nextState; });
+        return next;
+      });
       setSnack({
         visible: true,
         message: `Added ${r.title}`,
         listenId: res.id ?? null,
         feedId: r.id,
       });
-    } else {
+      emit('listen:refresh');
+    } catch (error: any) {
+      setAdded((prev) => ({ ...prev, [r.id]: false }));
       H.error();
-      Alert.alert(res.message || 'Could not add');
+      Alert.alert('Could not save', error?.message || 'Please try again.');
+    } finally {
+      setSavePendingIds((prev) => {
+        const next = { ...prev };
+        delete next[r.id];
+        return next;
+      });
+    }
+  };
+
+  const onUnsave = async (r: Item, state: FeedListenState) => {
+    if (savePendingIds[r.id] || !state?.listenId || state.done) return;
+    const identityKeys = musicIdentityKeys(r);
+    setSavePendingIds((prev) => ({ ...prev, [r.id]: true }));
+    setAdded((prev) => ({ ...prev, [r.id]: false }));
+    setInListKeys((prev) => prev.filter((key) => !identityKeys.includes(key)));
+    setListenStateByKey((prev) => {
+      const next = { ...prev };
+      identityKeys.forEach((key) => { delete next[key]; });
+      return next;
+    });
+    H.success();
+    try {
+      const res = await removeListen(state.listenId);
+      if (!res.ok) throw new Error(res.message || 'Could not remove release');
+      setSnack({ visible: true, message: `Removed ${r.title}`, listenId: null, feedId: null });
+      emit('listen:updated');
+      emit('listen:refresh');
+    } catch (error: any) {
+      H.error();
+      await load({ showLoading: false });
+      Alert.alert('Could not remove', error?.message || 'Please try again.');
+    } finally {
+      setSavePendingIds((prev) => {
+        const next = { ...prev };
+        delete next[r.id];
+        return next;
+      });
     }
   };
 
@@ -1107,16 +1212,18 @@ export default function FeedTab() {
           renderItem={({ item }) => {
             // derive album id from spotify_url to fetch artwork via /lookup if desired
             // quick-and-dirty thumb from open.spotify.com image CDN is not public; prefer lookup later
-            const key = item.spotify_url ?? (item.title && item.artist_name ? `${item.title}__${item.artist_name}` : null);
-            const isDone = !!(key && doneSet.has(key));
-            const isInList = !!(key && inListSet.has(key));
+            const identityKeys = musicIdentityKeys(item);
+            const listenState = identityKeys.map((key) => listenStateByKey[key]).find(Boolean);
+            const isDone = !!(listenState?.done || identityKeys.some((key) => doneSet.has(key)));
+            const isInList = !!(listenState || identityKeys.some((key) => inListSet.has(key)));
+            const rating = listenState?.rating ?? null;
             const providerId =
               (item as any).provider_id ??
               item.spotify_id ??
               (item as any).apple_id ??
               (item as any).external_id ??
               null;
-            const rowId = providerId || item.spotify_url || item.apple_url || key || item.id;
+            const rowId = providerId || item.spotify_url || item.apple_url || item.id;
             const releaseId =
               providerId ||
               item.spotify_id ||
@@ -1129,7 +1236,7 @@ export default function FeedTab() {
               if (releaseId) goToRelease(releaseId);
             };
             const menuPayload = {
-              id: rowId,
+              id: listenState?.listenId || rowId,
               item_type: itemTypeOf(item) === 'album' ? 'album' : 'track',
               provider: item.spotify_url ? 'spotify' : 'apple',
               provider_id: providerId || rowId,
@@ -1140,7 +1247,7 @@ export default function FeedTab() {
               apple_url: item.apple_url ?? null,
               artwork_url: item.artwork_url ?? item.image_url ?? null,
               done_at: isDone ? new Date().toISOString() : null,
-              rating: null,
+              rating,
               created_at: null,
               artist_id: item.artist_id ?? null,
               in_list: isInList || !!added[item.id],
@@ -1150,7 +1257,9 @@ export default function FeedTab() {
               Image.prefetch(item.image_url).catch(() => {});
             }
             const saved = isInList || !!added[item.id];
-            const saveLabel = isDone ? 'Listened' : saved ? 'Saved' : 'Save';
+            const hasRating = typeof rating === 'number' && !Number.isNaN(rating);
+            const saveLabel = hasRating ? `${rating}/10` : isDone ? 'Listened' : saved ? 'Saved' : 'Save';
+            const savePending = !!savePendingIds[item.id];
           return (
             <Pressable
               style={({ pressed }) => ({
@@ -1183,11 +1292,13 @@ export default function FeedTab() {
                 <View style={{ alignItems: 'center', gap: 2 }}>
                   <Pressable
                     accessibilityRole="button"
-                    accessibilityLabel={saveLabel}
-                    disabled={saved}
+                    accessibilityLabel={hasRating ? `Rated ${rating} out of 10` : saveLabel}
+                    disabled={isDone || savePending}
                     onPress={(e) => {
                       (e as any)?.stopPropagation?.();
-                      if (!saved) void onAdd(item);
+                      if (isDone || savePending) return;
+                      if (saved && listenState) void onUnsave(item, listenState);
+                      else if (!saved) void onAdd(item);
                     }}
                     style={({ pressed }) => ({
                       flexDirection: 'row',
@@ -1197,13 +1308,17 @@ export default function FeedTab() {
                       paddingHorizontal: 10,
                       paddingVertical: 7,
                       borderRadius: 999,
-                      backgroundColor: saved ? colors.bg.muted : accentSoft,
-                      opacity: pressed ? 0.8 : 1,
+                      backgroundColor: hasRating ? accentSoft : saved ? colors.bg.muted : accentSoft,
+                      opacity: savePending ? 0.6 : pressed ? 0.8 : 1,
                       justifyContent: 'center',
                     })}
                   >
-                    <Ionicons name={saved ? 'checkmark' : 'add'} size={14} color={saved ? colors.text.muted as any : colors.accent.primary as any} />
-                    <Text style={{ color: saved ? colors.text.muted : colors.accent.primary, fontWeight: '800', fontSize: 12 }}>{saveLabel}</Text>
+                    <Ionicons
+                      name={hasRating ? 'star' : saved ? 'checkmark' : 'add'}
+                      size={14}
+                      color={hasRating ? colors.accent.primary as any : saved ? colors.text.muted as any : colors.accent.primary as any}
+                    />
+                    <Text style={{ color: hasRating ? colors.accent.primary : saved ? colors.text.muted : colors.accent.primary, fontWeight: '800', fontSize: 12 }}>{saveLabel}</Text>
                   </Pressable>
                   <Pressable accessibilityRole="button" accessibilityLabel={`More options for ${item.title}`} onPress={(e) => { (e as any)?.stopPropagation?.(); setMenuRow(menuPayload); }} style={{ minWidth: 44, minHeight: 32, alignItems: 'center', justifyContent: 'center' }}>
                     <Text style={{ color: colors.text.secondary, fontWeight: '800' }}>•••</Text>
@@ -1337,6 +1452,8 @@ export default function FeedTab() {
               if (!res.ok) throw new Error(res.message || 'Undo failed');
               if (snack.feedId) setAdded(prev => ({ ...prev, [snack.feedId!]: false }));
               H.success();
+              await load({ showLoading: false });
+              emit('listen:updated');
             }
           } catch (e) {
             H.error();

@@ -1,5 +1,7 @@
 import React, { useMemo, useState } from 'react';
-import { Alert, Modal, Pressable, Text, View } from 'react-native';
+import { Alert, Image, Modal, Pressable, Text, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { openArtist } from '../lib/openArtist';
 import { parseSpotifyUrlOrId, spotifyLookup } from '../lib/spotify';
 import { emit } from '../lib/events';
@@ -14,6 +16,7 @@ import {
   type ListenRow,
 } from '../lib/listen';
 import { useTheme } from '../theme/useTheme';
+import { H } from './haptics';
 import RatingModal from './RatingModal';
 
 export type ReleaseActionSheetRow = ListenRow & {
@@ -48,6 +51,7 @@ function spotifyKey(id?: string | null, spotifyUrl?: string | null) {
 
 export default function ReleaseActionSheet({ row, visible, onClose, onRate, onChanged }: ReleaseActionSheetProps) {
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
   const [busy, setBusy] = useState(false);
   const [ratingVisible, setRatingVisible] = useState(false);
   const [ratingRow, setRatingRow] = useState<ListenRow | null>(null);
@@ -275,15 +279,21 @@ export default function ReleaseActionSheet({ row, visible, onClose, onRate, onCh
     }
   };
 
-  const actions = [
+  const actions: {
+    label: string;
+    icon: keyof typeof Ionicons.glyphMap;
+    onPress: () => void | Promise<void>;
+    destructive?: boolean;
+  }[] = [
     ...(ctx.artistId || ctx.provider === 'spotify'
-      ? [{ label: 'View artist profile', onPress: () => run(resolveAndOpenArtist) }]
+      ? [{ label: 'View artist profile', icon: 'person-outline' as const, onPress: () => run(resolveAndOpenArtist) }]
       : []),
     ...(ctx.done
-      ? [{ label: 'Add back to Listen List', onPress: () => onMark(false) }]
-      : [{ label: 'Mark as listened', onPress: () => onMark(true) }]),
+      ? [{ label: 'Add back to Listen List', icon: 'arrow-undo-outline' as const, onPress: () => onMark(false) }]
+      : [{ label: 'Mark as listened', icon: 'checkmark-circle-outline' as const, onPress: () => onMark(true) }]),
     {
       label: (typeof (row as any).rating === 'number' && !Number.isNaN((row as any).rating)) ? 'Change rating' : 'Rate',
+      icon: (typeof (row as any).rating === 'number' && !Number.isNaN((row as any).rating)) ? 'star' : 'star-outline',
       onPress: async () => {
         const r = await ensureRow();
         if (onRate) {
@@ -294,11 +304,12 @@ export default function ReleaseActionSheet({ row, visible, onClose, onRate, onCh
         setRatingVisible(true);
       },
     },
-    ...(ctx.inList ? [] : [{ label: 'Add to Listen List', onPress: () => run(onAdd) }]),
+    ...(ctx.inList ? [] : [{ label: 'Add to Listen List', icon: 'add-circle-outline' as const, onPress: () => run(onAdd) }]),
     ...(ctx.inList
       ? [
           {
             label: ctx.done ? 'Remove from history' : 'Remove from Listen List',
+            icon: 'trash-outline' as const,
             onPress: onRemove,
             destructive: true,
           },
@@ -308,7 +319,7 @@ export default function ReleaseActionSheet({ row, visible, onClose, onRate, onCh
 
   return (
     <>
-      <Modal transparent visible={visible} animationType="fade" onRequestClose={onClose}>
+      <Modal transparent visible={visible && !ratingVisible} animationType="slide" onRequestClose={onClose}>
         <Pressable style={{ flex: 1, backgroundColor: colors.overlay.dim }} onPress={onClose} />
         <View
           style={{
@@ -316,33 +327,67 @@ export default function ReleaseActionSheet({ row, visible, onClose, onRate, onCh
             left: 0,
             right: 0,
             bottom: 0,
-            backgroundColor: colors.bg.primary,
-            borderTopLeftRadius: 20,
-            borderTopRightRadius: 20,
-            padding: 16,
-            paddingBottom: 22,
-            gap: 8,
+            backgroundColor: colors.bg.secondary,
+            borderTopLeftRadius: 28,
+            borderTopRightRadius: 28,
+            borderWidth: 1,
+            borderBottomWidth: 0,
+            borderColor: colors.border.subtle,
+            paddingHorizontal: 18,
+            paddingTop: 10,
+            paddingBottom: Math.max(18, insets.bottom + 8),
           }}
         >
-          {actions.map((a) => (
+          <View style={{ width: 38, height: 4, borderRadius: 2, backgroundColor: colors.border.strong, alignSelf: 'center', marginBottom: 15 }} />
+
+          <Text style={{ color: colors.text.muted, fontSize: 11, fontWeight: '900', letterSpacing: 0.9, textTransform: 'uppercase' }}>
+            Release options
+          </Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: colors.border.subtle }}>
+            {ctx.highlightImageUrl ? (
+              <Image source={{ uri: ctx.highlightImageUrl }} style={{ width: 52, height: 52, borderRadius: 11, backgroundColor: colors.bg.muted }} />
+            ) : (
+              <View style={{ width: 52, height: 52, borderRadius: 11, backgroundColor: colors.bg.muted, alignItems: 'center', justifyContent: 'center' }}>
+                <Ionicons name="musical-notes-outline" size={22} color={colors.text.muted} />
+              </View>
+            )}
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={{ color: colors.text.secondary, fontSize: 17, fontWeight: '900' }} numberOfLines={1}>{row.title || 'Untitled'}</Text>
+              {!!ctx.artistName && <Text style={{ marginTop: 3, color: colors.text.muted, fontSize: 13 }} numberOfLines={1}>{ctx.artistName}</Text>}
+            </View>
+            {typeof (row as any).rating === 'number' && !Number.isNaN((row as any).rating) ? (
+              <Text style={{ color: colors.accent.primary, fontWeight: '900' }}>{(row as any).rating}/10</Text>
+            ) : null}
+          </View>
+
+          <View>
+          {actions.map((a, index) => (
             <Pressable
               key={a.label}
               disabled={busy}
               onPress={a.onPress}
-              style={{
+              style={({ pressed }) => ({
+                minHeight: 54,
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 13,
                 paddingVertical: 12,
-                paddingHorizontal: 6,
-                borderRadius: 12,
-                backgroundColor: colors.bg.muted,
-              }}
+                borderBottomWidth: index === actions.length - 1 ? 0 : 1,
+                borderBottomColor: colors.border.subtle,
+                opacity: busy ? 0.5 : pressed ? 0.68 : 1,
+              })}
             >
-              <Text style={{ fontSize: 16, fontWeight: '700', color: a.destructive ? '#b91c1c' : colors.text.secondary }}>
+              <View style={{ width: 30, alignItems: 'center' }}>
+                <Ionicons name={a.icon} size={21} color={a.destructive ? '#ff6b6b' : colors.accent.primary} />
+              </View>
+              <Text style={{ flex: 1, fontSize: 15, fontWeight: '800', color: a.destructive ? '#ff6b6b' : colors.text.secondary }}>
                 {a.label}
               </Text>
             </Pressable>
           ))}
-          <Pressable onPress={onClose} style={{ paddingVertical: 12, paddingHorizontal: 6 }}>
-            <Text style={{ textAlign: 'center', fontSize: 16, fontWeight: '600', color: colors.text.secondary }}>Cancel</Text>
+          </View>
+          <Pressable onPress={onClose} style={({ pressed }) => ({ marginTop: 10, paddingVertical: 12, borderRadius: 14, backgroundColor: colors.bg.muted, opacity: pressed ? 0.72 : 1 })}>
+            <Text style={{ textAlign: 'center', fontSize: 15, fontWeight: '800', color: colors.text.secondary }}>Cancel</Text>
           </Pressable>
         </View>
       </Modal>
@@ -353,18 +398,24 @@ export default function ReleaseActionSheet({ row, visible, onClose, onRate, onCh
         initial={ratingRow?.rating ?? 0}
         initialDetails={ratingRow?.rating_details as any}
         advanced={false}
-        onCancel={() => setRatingVisible(false)}
+        onCancel={() => {
+          setRatingVisible(false);
+          onClose();
+        }}
         onSubmit={async (stars, details) => {
           setRatingVisible(false);
           const target = ratingRow || (row as ListenRow);
           setBusy(true);
           try {
-            if (details && Object.keys(details || {}).length) {
-              await setRatingDetailed(target.id, stars, details);
-            } else {
-              await setRating(target.id, stars);
-            }
-            onChanged?.({ type: 'rate', row: { ...target, rating: stars } as ListenRow });
+            const options = { doneAt: target.done_at || new Date().toISOString() };
+            const result = details && Object.keys(details || {}).length
+              ? await setRatingDetailed(target.id, stars, details, undefined, options)
+              : await setRating(target.id, stars, undefined, options);
+            if (!result.ok) throw new Error(result.message || 'Could not save rating');
+            const updated = { ...target, ...(result.row || {}), rating: stars, done_at: options.doneAt } as ListenRow;
+            onChanged?.({ type: 'rate', row: updated, done: true });
+            H.success();
+            emit('listen:updated');
             emit('listen:refresh');
             onClose();
           } catch (e: any) {
