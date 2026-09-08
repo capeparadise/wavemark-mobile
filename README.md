@@ -103,19 +103,11 @@ You must provide your Supabase project credentials for the app to read/write dat
    EXPO_PUBLIC_SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
    EXPO_PUBLIC_SUPABASE_ANON_KEY=YOUR_ANON_KEY
    ```
-4. (Optional) Add a dev email/password to auto sign-in during development:
-   ```
-   EXPO_PUBLIC_SUPABASE_DEV_EMAIL=you@example.com
-   EXPO_PUBLIC_SUPABASE_DEV_PASSWORD=YourPassword123!
-   ```
-5. Restart Expo: quit the running process then start again.
+4. Restart Expo: quit the running process then start again.
 
-Verification:
-```js
-// In console you should see after app start:
-[devAuth] signed in as you@example.com
-```
-If you see warnings about missing keys, re-check the `.env.local` spelling and ensure variables start with `EXPO_PUBLIC_` so Expo exposes them.
+Never place user emails, passwords, service-role keys, or other private credentials in an
+`EXPO_PUBLIC_` variable. Those variables are intended for values that are safe to include in
+the client app, such as the Supabase project URL and anon key.
 
 Without these keys Apple deep link resolution can't persist canonical URLs and adds fallback mismatch risk.
 

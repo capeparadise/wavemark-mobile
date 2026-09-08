@@ -80,7 +80,17 @@ export default function ListenerProfileScreen() {
     setProfile((current) => {
       if (!current) return current;
       const canView = status === 'following' || status === 'self' || !current.is_private;
-      return { ...current, relationship_status: status, can_view_content: canView };
+      const wasFollowing = current.relationship_status === 'following';
+      const isFollowing = status === 'following';
+      const followersCount = wasFollowing === isFollowing
+        ? current.followers_count
+        : Math.max(0, current.followers_count + (isFollowing ? 1 : -1));
+      return {
+        ...current,
+        relationship_status: status,
+        can_view_content: canView,
+        followers_count: followersCount,
+      };
     });
     if (status === 'following' || profile?.is_private === false) {
       const nextMusic = await getListenerMusic(username).catch(() => []);

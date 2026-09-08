@@ -200,7 +200,9 @@ export default function FriendRequestsScreen() {
             <Avatar uri={person.avatarUrl} size={48} borderColor={colors.border.subtle} backgroundColor={colors.bg.muted} />
             <View style={{ flex: 1, minWidth: 0 }}>
               <Text style={{ color: colors.text.secondary, fontWeight: '900' }} numberOfLines={1}>{person.displayName}</Text>
-              <Text style={{ marginTop: 3, color: colors.text.muted }} numberOfLines={1}>{person.username ? `@${person.username}` : 'Existing connection'}</Text>
+              {person.username ? (
+                <Text style={{ marginTop: 3, color: colors.text.muted }} numberOfLines={1}>@{person.username}</Text>
+              ) : null}
             </View>
             <ListenerFollowButton
               compact

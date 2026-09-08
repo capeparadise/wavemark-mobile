@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { spotifyLookup } from './spotify';
 
 export type PublicProfile = {
   user_id: string;
@@ -42,6 +43,67 @@ export type ListenerMusicItem = {
   rating: number | null;
   rated_at: string | null;
 };
+
+const listenerArtworkRequests = new Map<string, Promise<string | null>>();
+
+function appleCatalogId(item: ListenerMusicItem) {
+  if (item.apple_id) return item.apple_id;
+  if (item.provider === 'apple' && item.provider_id) return item.provider_id;
+  if (!item.apple_url) return null;
+  try {
+    const url = new URL(item.apple_url);
+    const trackId = url.searchParams.get('i');
+    if (trackId && /^\d+$/.test(trackId)) return trackId;
+    return url.pathname.match(/\/(?:album|song)\/[^/]+\/(\d+)/)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveListenerArtwork(item: ListenerMusicItem) {
+  if (item.artwork_url) return item.artwork_url;
+
+  const spotifyId = item.spotify_id || (item.provider === 'spotify' ? item.provider_id : null);
+  const appleId = appleCatalogId(item);
+  const cacheKey = spotifyId
+    ? `spotify:${item.item_type === 'album' ? 'album' : 'track'}:${spotifyId}`
+    : appleId
+      ? `apple:${appleId}`
+      : null;
+  if (!cacheKey) return null;
+
+  const cached = listenerArtworkRequests.get(cacheKey);
+  if (cached) return cached;
+
+  const request = (async () => {
+    if (spotifyId) {
+      try {
+        const result = await spotifyLookup(spotifyId, item.item_type === 'album' ? 'album' : 'track');
+        const artwork = result?.[0]?.imageUrl;
+        if (artwork) return artwork;
+      } catch {
+        // Fall through to Apple when both catalog identities are available.
+      }
+    }
+
+    if (appleId) {
+      try {
+        const response = await fetch(`https://itunes.apple.com/lookup?id=${encodeURIComponent(appleId)}`);
+        if (response.ok) {
+          const data: any = await response.json();
+          const artwork = data?.results?.[0]?.artworkUrl100 || data?.results?.[0]?.artworkUrl;
+          if (artwork) return String(artwork).replace(/\d+x\d+bb/, '512x512bb');
+        }
+      } catch {
+        // A placeholder remains the final fallback when neither catalog resolves.
+      }
+    }
+    return null;
+  })();
+
+  listenerArtworkRequests.set(cacheKey, request);
+  return request;
+}
 
 function deriveDefaultDisplayName(email?: string | null, fullName?: string | null) {
   const fromName = (fullName || '').trim();
@@ -235,7 +297,7 @@ export async function getListenerMusic(username: string, limit = 12): Promise<Li
   const { data, error } = await supabase.rpc('get_listener_music', { p_username: clean, p_limit: limit });
   if (error) throw new Error(error.message || 'Could not load listener music');
   if (!Array.isArray(data)) return [];
-  return data.map((row: any) => ({
+  const rows: ListenerMusicItem[] = data.map((row: any) => ({
     section: row.section === 'top_rated' ? 'top_rated' : 'recent',
     id: String(row.id),
     item_type: row.item_type === 'album' ? 'album' : row.item_type === 'single' ? 'single' : 'track',
@@ -252,6 +314,13 @@ export async function getListenerMusic(username: string, limit = 12): Promise<Li
     done_at: row.done_at ?? null,
     rating: typeof row.rating === 'number' ? row.rating : row.rating != null ? Number(row.rating) : null,
     rated_at: row.rated_at ?? null,
+  }));
+  if (rows.every((item) => !!item.artwork_url)) return rows;
+
+  return Promise.all(rows.map(async (item) => {
+    if (item.artwork_url) return item;
+    const artworkUrl = await resolveListenerArtwork(item);
+    return artworkUrl ? { ...item, artwork_url: artworkUrl } : item;
   }));
 }
 
