@@ -174,7 +174,7 @@ export default function ProfileTab() {
       <ScrollView contentContainerStyle={{ gap: 18, paddingBottom: 124 }}>
         <View style={{ paddingVertical: 8 }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+            <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 12 }}>
               <Pressable onPress={changeAvatar} disabled={avatarBusy} style={({ pressed }) => ({ opacity: avatarBusy ? 0.6 : pressed ? 0.85 : 1 })}>
                 <Avatar uri={avatarUrl} size={52} borderColor={colors.border.muted} backgroundColor={colors.bg.muted} />
               </Pressable>
@@ -190,7 +190,13 @@ export default function ProfileTab() {
                 </View>
               </View>
             </View>
-            <Pressable onPress={goSettings} hitSlop={8} style={{ width: icon.button, height: icon.button, alignItems: 'center', justifyContent: 'center' }}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Open profile settings"
+              onPress={goSettings}
+              hitSlop={8}
+              style={{ width: icon.button, height: icon.button, flexShrink: 0, alignItems: 'center', justifyContent: 'center' }}
+            >
               <Ionicons name="settings-outline" size={20} color={colors.text.secondary} />
             </Pressable>
           </View>

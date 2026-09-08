@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import { spotifyLookup } from './spotify';
+import { spotifyLookup, spotifySearch } from './spotify';
 
 export type PublicProfile = {
   user_id: string;
@@ -46,7 +46,33 @@ export type ListenerMusicItem = {
 
 const listenerArtworkRequests = new Map<string, Promise<string | null>>();
 
-function appleCatalogId(item: ListenerMusicItem) {
+type ArtworkResolvableItem = Pick<
+  ListenerMusicItem,
+  'item_type' | 'provider' | 'provider_id' | 'spotify_id' | 'apple_id' | 'spotify_url' | 'apple_url' | 'artwork_url' | 'title' | 'artist_name'
+>;
+
+function normalizeArtworkText(value?: string | null) {
+  return (value || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function spotifyCatalogId(item: ArtworkResolvableItem) {
+  if (item.spotify_id) return item.spotify_id;
+  if (item.provider === 'spotify' && item.provider_id) return item.provider_id;
+  if (!item.spotify_url) return null;
+  try {
+    const url = new URL(item.spotify_url);
+    return url.pathname.match(/\/(?:album|track)\/([A-Za-z0-9]+)/)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function appleCatalogId(item: ArtworkResolvableItem) {
   if (item.apple_id) return item.apple_id;
   if (item.provider === 'apple' && item.provider_id) return item.provider_id;
   if (!item.apple_url) return null;
@@ -60,16 +86,18 @@ function appleCatalogId(item: ListenerMusicItem) {
   }
 }
 
-async function resolveListenerArtwork(item: ListenerMusicItem) {
+export async function resolveListenerArtwork(item: ArtworkResolvableItem) {
   if (item.artwork_url) return item.artwork_url;
 
-  const spotifyId = item.spotify_id || (item.provider === 'spotify' ? item.provider_id : null);
+  const spotifyId = spotifyCatalogId(item);
   const appleId = appleCatalogId(item);
   const cacheKey = spotifyId
     ? `spotify:${item.item_type === 'album' ? 'album' : 'track'}:${spotifyId}`
     : appleId
       ? `apple:${appleId}`
-      : null;
+      : item.title && item.artist_name
+        ? `search:${item.item_type}:${normalizeArtworkText(item.title)}:${normalizeArtworkText(item.artist_name)}`
+        : null;
   if (!cacheKey) return null;
 
   const cached = listenerArtworkRequests.get(cacheKey);
@@ -96,6 +124,24 @@ async function resolveListenerArtwork(item: ListenerMusicItem) {
         }
       } catch {
         // A placeholder remains the final fallback when neither catalog resolves.
+      }
+    }
+
+    if (item.title && item.artist_name) {
+      try {
+        const title = normalizeArtworkText(item.title);
+        const artist = normalizeArtworkText(item.artist_name);
+        const type = item.item_type === 'album' ? 'album' : 'track';
+        const results = await spotifySearch(`${item.title} ${item.artist_name}`, type);
+        const exact = results.find((result) => (
+          normalizeArtworkText(result.title) === title
+          && [result.artist, ...(result.artistNames || [])]
+            .some((name) => normalizeArtworkText(name) === artist)
+          && !!result.imageUrl
+        ));
+        if (exact?.imageUrl) return exact.imageUrl;
+      } catch {
+        // The placeholder remains when the title-and-artist search cannot resolve safely.
       }
     }
     return null;

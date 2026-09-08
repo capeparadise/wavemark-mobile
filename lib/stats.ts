@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getUniqueListenedCount } from './listen';
+import { resolveListenerArtwork } from './profileSocial';
 import { supabase } from './supabase';
 
 export type ListenSummary = {
@@ -11,6 +12,10 @@ export type ListenSummary = {
   done_at: string | null;
   rating?: number | null;
   rated_at?: string | null;
+  provider?: 'spotify' | 'apple' | null;
+  provider_id?: string | null;
+  spotify_id?: string | null;
+  apple_id?: string | null;
   spotify_url?: string | null;
   apple_url?: string | null;
 };
@@ -90,14 +95,14 @@ export async function fetchProfileSnapshot(): Promise<ProfileSnapshot> {
     getUniqueListenedCount(),
     supabase
       .from('listen_list')
-      .select('id,title,artist_name,item_type,artwork_url,done_at,spotify_url,apple_url')
+      .select('id,title,artist_name,item_type,provider,provider_id,spotify_id,apple_id,artwork_url,done_at,spotify_url,apple_url')
       .eq('user_id', user.id)
       .not('done_at', 'is', null)
       .order('done_at', { ascending: false, nullsFirst: false })
       .limit(400),
     supabase
       .from('listen_list')
-      .select('id,title,artist_name,item_type,artwork_url,done_at,rating,rated_at,spotify_url,apple_url')
+      .select('id,title,artist_name,item_type,provider,provider_id,spotify_id,apple_id,artwork_url,done_at,rating,rated_at,spotify_url,apple_url')
       .eq('user_id', user.id)
       .not('rating', 'is', null)
       .not('done_at', 'is', null)
@@ -106,7 +111,7 @@ export async function fetchProfileSnapshot(): Promise<ProfileSnapshot> {
       .limit(400),
     supabase
       .from('listen_list')
-      .select('id,title,artist_name,item_type,artwork_url,done_at,rating,rated_at,spotify_url,apple_url')
+      .select('id,title,artist_name,item_type,provider,provider_id,spotify_id,apple_id,artwork_url,done_at,rating,rated_at,spotify_url,apple_url')
       .eq('user_id', user.id)
       .not('rating', 'is', null)
       .not('done_at', 'is', null)
@@ -116,9 +121,38 @@ export async function fetchProfileSnapshot(): Promise<ProfileSnapshot> {
       .limit(10),
   ]);
 
-  const listened = (listenedRes.data as ListenSummary[] | null) ?? [];
+  const listenedRaw = (listenedRes.data as ListenSummary[] | null) ?? [];
   const ratings = (ratingsRes.data as ListenSummary[] | null) ?? [];
-  const topRated = (topRes.data as ListenSummary[] | null) ?? [];
+  const topRatedRaw = (topRes.data as ListenSummary[] | null) ?? [];
+
+  const hydrateArtwork = async (items: ListenSummary[]) => Promise.all(items.map(async (item) => {
+    if (item.artwork_url) return item;
+    const artworkUrl = await resolveListenerArtwork({
+      item_type: item.item_type,
+      provider: item.provider ?? null,
+      provider_id: item.provider_id ?? null,
+      spotify_id: item.spotify_id ?? null,
+      apple_id: item.apple_id ?? null,
+      spotify_url: item.spotify_url ?? null,
+      apple_url: item.apple_url ?? null,
+      artwork_url: item.artwork_url ?? null,
+      title: item.title,
+      artist_name: item.artist_name,
+    });
+    if (!artworkUrl) return item;
+    void supabase
+      .from('listen_list')
+      .update({ artwork_url: artworkUrl })
+      .eq('id', item.id)
+      .eq('user_id', user.id);
+    return { ...item, artwork_url: artworkUrl };
+  }));
+
+  const [recentPreview, topRated] = await Promise.all([
+    hydrateArtwork(listenedRaw.slice(0, 6)),
+    hydrateArtwork(topRatedRaw),
+  ]);
+  const listened = [...recentPreview, ...listenedRaw.slice(recentPreview.length)];
 
   const weekStart = startOfWeek(new Date());
   const monthStart = startOfNDaysAgo(30);
