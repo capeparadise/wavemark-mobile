@@ -36,6 +36,8 @@ import {
 import { supabase } from '../../lib/supabase';
 import { useOffline } from '../../components/useOffline';
 import { useTheme } from '../../theme/useTheme';
+import { useAdvancedRatingsEnabled } from '../../lib/user';
+import { advancedRatingTotal } from '../../lib/ratingDisplay';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { filterReleasesByGenres, loadIncludedGenres, saveIncludedGenres, mapToCanonicalGenres, getArtistGenresCached, type CanonicalGenre } from '../../lib/styleFilters';
 import { RELEASE_LONG_PRESS_MS } from '../../hooks/useReleaseActions';
@@ -341,9 +343,9 @@ type DiscoverLoad = (opts?: {
 
 export default function DiscoverTab() {
   const { colors } = useTheme();
+  const [advancedRatings] = useAdvancedRatingsEnabled();
   const insets = useSafeAreaInsets();
   const accentSoft = colors.accent.primary + '1a';
-  const successSoft = colors.accent.success + '1a';
   const navigation = useNavigation();
   const [viewMode, setViewMode] = useState<DiscoverViewMode>('mixed');
   const viewAnim = useRef(new Animated.Value(1)).current;
@@ -2653,11 +2655,23 @@ export default function DiscoverTab() {
     if (!offline) refreshDiscoverIfDue();
   }, [offline, refreshDiscoverIfDue]);
 
-  // Refresh on focus when the last successful refresh is stale for the current local day.
+  // Personal listening state changes independently of the daily release catalog.
+  useEffect(() => {
+    const handler = () => { void refreshListenStatus(); };
+    on('listen:updated', handler);
+    on('listen:refresh', handler);
+    return () => {
+      off('listen:updated', handler);
+      off('listen:refresh', handler);
+    };
+  }, [refreshListenStatus]);
+
+  // Refresh listening state on every visit, even when the catalog is still fresh.
   useFocusEffect(
     useCallback(() => {
+      void refreshListenStatus();
       refreshDiscoverIfDue();
-    }, [refreshDiscoverIfDue])
+    }, [refreshDiscoverIfDue, refreshListenStatus])
   );
 
   // No genre management in simplified view
@@ -2993,59 +3007,19 @@ export default function DiscoverTab() {
 
   const renderStatusBlock = (stat?: { rating?: number | null; done?: boolean; details?: any }, compact = false, alignStart = false) => {
     if (!stat) return null;
-    const rated = typeof stat.rating === 'number' && !Number.isNaN(stat.rating);
-    const overallDetail = (() => {
-      if (!stat.details) return null;
-      const o = (stat.details as any).overall ?? (stat.details as any).overall_rating ?? (stat.details as any).overall_score;
-      if (o == null) return null;
-      const n = Number(o);
-      return Number.isFinite(n) ? n : null;
-    })();
-    const derivedDetail = (() => {
-      if (!stat.details) return null;
-      const vals = Object.values(stat.details as Record<string, number>).map(v => Number(v)).filter(v => Number.isFinite(v));
-      if (!vals.length) return null;
-      const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
-      return Math.round(avg * 10) / 10;
-    })();
-    const ratingValue = (() => {
-      if (overallDetail != null) return overallDetail;
-      if (rated) return Number(stat.rating);
-      return derivedDetail;
-    })();
-    const listened = !!stat.done;
+    const rated = typeof stat.rating === 'number' && Number.isFinite(stat.rating);
+    const total = advancedRatings ? advancedRatingTotal(stat.rating, stat.details) : null;
+    if (!rated && !stat.done) return null;
     return (
-      <View style={{ gap: 2, alignItems: alignStart ? 'flex-start' : 'flex-end', alignSelf: alignStart ? 'flex-start' : 'auto' }}>
-        {ratingValue ? (
-          <View style={{
-            backgroundColor: accentSoft,
-            paddingHorizontal: compact ? 8 : 10,
-            paddingVertical: compact ? 4 : 6,
-            borderRadius: 999,
-            borderWidth: 1,
-            borderColor: colors.accent.primary,
-          }}>
-            <Text style={{ fontWeight: '800', color: colors.text.secondary, fontSize: 12 }}>
-              ★ {Math.round(Number(ratingValue))}
-            </Text>
-          </View>
-        ) : null}
-        {listened ? (
-          <View style={{
-            backgroundColor: successSoft,
-            paddingHorizontal: compact ? 8 : 10,
-            paddingVertical: compact ? 4 : 6,
-            borderRadius: 999,
-            borderWidth: 1,
-            borderColor: colors.accent.success,
-          }}>
-            <Text style={{ fontWeight: '700', color: colors.accent.success, fontSize: 12 }}>Listened</Text>
-          </View>
-        ) : null}
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 5, alignItems: 'center', alignSelf: alignStart ? 'flex-start' : 'flex-end' }}>
+        {rated ? <Text style={{ color: colors.accent.primary, fontWeight: '800', fontSize: compact ? 11 : 12 }}>
+          {total !== null ? `${total}/50` : `${stat.rating}/10`}
+        </Text> : null}
+        {rated && stat.done ? <Text style={{ color: colors.text.muted, fontSize: 11 }}>·</Text> : null}
+        {stat.done ? <Text style={{ color: colors.text.muted, fontSize: compact ? 11 : 12 }}>Listened</Text> : null}
       </View>
     );
   };
-
   const renderDebugBlock = (label: string, payload: DebugFetchResult | null) => {
     const okLabel = payload ? `${payload.status} ${payload.ok ? 'OK' : 'ERR'}` : '—';
     return (
@@ -3325,7 +3299,6 @@ export default function DiscoverTab() {
           const attributionLabel = options?.attributionLabel ?? null;
           const stat = statusFor(item.id, item.spotifyUrl);
           const isAdded = isAddedFor(item.id, item.spotifyUrl) || !!stat;
-          const label = tagLabel(stat, isAdded);
           const artistId = item.artistId || item.artist_id || null;
           const openRelease = () => {
             const releaseId = spotifyKey(item.id, item.spotifyUrl || item.spotify_url) || item.id;
@@ -3411,17 +3384,23 @@ export default function DiscoverTab() {
                       {item.artist}
                     </Text>
                   )}
+                  {renderStatusBlock(stat, true, true)}
                 </View>
                 <View style={{ alignItems: 'flex-end', flex: 0 }}>
                   <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={stat?.done ? `Add ${item.title} to Listen List again` : `${isAdded ? 'Unsave' : 'Save'} ${item.title}`}
                     onPress={() => isAdded && !stat?.done
                       ? onUnsave(item.id, item.spotifyUrl)
                       : onAddNew({ id: item.id, title: item.title, artist: item.artist || '', releaseDate: item.releaseDate ?? null, spotifyUrl: item.spotifyUrl ?? null, imageUrl: item.imageUrl ?? null, type: item.type ?? null })}
                     hitSlop={8}
                   >
-                    <Text style={{ color: colors.accent.success, fontWeight: '700', opacity: isAdded ? 0.6 : 1, fontSize: 12 }}>{label}</Text>
+                    {stat?.done ? (
+                      <View style={{ width: 40, height: 40, alignItems: 'center', justifyContent: 'center' }}>
+                        <Ionicons name="add-outline" size={21} color={colors.text.muted} />
+                      </View>
+                    ) : <Text style={{ color: colors.accent.primary, fontWeight: '700', fontSize: 12 }}>{isAdded ? 'Saved' : 'Save'}</Text>}
                   </Pressable>
-                  {renderStatusBlock(stat, true, true)}
                 </View>
               </Pressable>
             </View>

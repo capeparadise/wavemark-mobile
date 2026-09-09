@@ -3,6 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import React from 'react';
 import { getDefaultPlayer as getDefaultPlayerPref } from './listen';
 import { supabase } from './supabase';
+import { on, off } from './events';
 
 export type Profile = {
   id: string;
@@ -85,6 +86,9 @@ export function useAdvancedRatingsEnabled() {
   const [enabled, setEnabled] = React.useState(false as boolean);
   React.useEffect(() => {
     getAdvancedRatingsEnabled().then(setEnabled).catch(() => setEnabled(false));
+    const update = (value?: boolean) => { if (typeof value === 'boolean') setEnabled(value); };
+    on('prefs:advanced_ratings', update);
+    return () => off('prefs:advanced_ratings', update);
   }, []);
   return [enabled, setEnabled] as const;
 }
