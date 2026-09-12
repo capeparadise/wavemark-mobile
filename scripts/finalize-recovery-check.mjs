@@ -1,0 +1,14 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import {execFileSync} from 'node:child_process';
+const directory=process.argv[2];
+if(!directory?.startsWith('/tmp/rppl-hosted-recovery.')) throw new Error('Expected recovery directory');
+const cli='/Users/f4f/.npm/_npx/aa8e5c70f9d8d161/node_modules/@supabase/cli-darwin-arm64/bin/supabase';
+const data=fs.readFileSync(path.join(directory,'data.sql'),'utf8');
+const sequences=[...data.matchAll(/^SELECT pg_catalog\.setval\('(public|auth)\.[^'\n]+', \d+, (?:true|false)\);$/gm)].map(m=>m[0]);
+const sql=sequences.join('\n')+`\nSELECT (SELECT count(*) FROM auth.users WHERE email LIKE 'rppl-recovery-%@example.com') AS remaining_probe_users, has_table_privilege('authenticated','public.listen_list','SELECT') AS client_list_access, has_function_privilege('authenticated','public.get_share_card_top_rated(text,integer)','EXECUTE') AS client_share_access, (SELECT public FROM storage.buckets WHERE id='avatars') AS avatars_public;`;
+const file=path.join(directory,'final-check.sql');fs.writeFileSync(file,sql,{mode:0o600});
+const out=execFileSync(cli,['db','query','--linked','--project-ref','mlciopffwtbopluuahoj','--file',file,'--output','json'],{encoding:'utf8'});
+const result=JSON.parse(out.slice(out.indexOf('{'))).rows[0];
+if(result.remaining_probe_users!==0||result.client_list_access||result.client_share_access||result.avatars_public) throw new Error('Recovery environment cleanup check failed');
+console.log('Sequence counters restored. No temporary accounts remain. Test client access closed; avatars private.');

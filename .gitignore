@@ -53,3 +53,8 @@ node_modules/
 
 # Supabase CLI local link state
 supabase/.temp/
+
+# Encrypted/manual backup outputs
+.backups/
+*.rppl-backup.enc
+*.dump

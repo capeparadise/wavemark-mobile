@@ -22,6 +22,16 @@ async function appleSearchAlbums(artist: string, country: string) {
 
 serve(async (req) => {
   try {
+    if (req.method !== 'POST') {
+      return new Response('Method not allowed', { status: 405 });
+    }
+
+    const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')?.trim() ?? '';
+    const authorization = req.headers.get('Authorization')?.trim() ?? '';
+    if (!serviceRoleKey || authorization !== `Bearer ${serviceRoleKey}`) {
+      return new Response('Authentication required', { status: 401 });
+    }
+
     const url = new URL(req.url);
   const country = (url.searchParams.get('country') ?? 'GB').toUpperCase();
   // Multi-country sweep: always try requested country PLUS US & GB (if not already) to catch storefront-specific preorders.
@@ -34,16 +44,11 @@ serve(async (req) => {
     const limitArtists = Math.max(1, Math.min(200, Number(url.searchParams.get('limitArtists') ?? '100')));
 
     const SUPABASE_URL = Deno.env.get('SUPABASE_URL');
-    const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+    const SUPABASE_SERVICE_ROLE_KEY = serviceRoleKey;
     if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
       return new Response('Missing Supabase env', { status: 500 });
     }
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-
-    // Cleanup: purge any manually added upcoming rows (source='manual') to reduce clutter now that manual adds are removed.
-    try {
-      await supabase.from('upcoming_releases').delete().eq('source', 'manual');
-    } catch {}
 
     // Get followed artists per user
     const { data: follows, error } = await supabase
