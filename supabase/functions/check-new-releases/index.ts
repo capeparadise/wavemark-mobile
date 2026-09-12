@@ -47,9 +47,12 @@ function isAllowedFollowedRelease(album: any, artistId: string) {
 
 serve(async (req) => {
   try {
+    if (req.method !== 'GET' && req.method !== 'POST') {
+      return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'GET, POST' } });
+    }
     const url = new URL(req.url);
   const market = (url.searchParams.get("market") ?? "GB").toUpperCase();
-  const maxArtists = parseInt(url.searchParams.get("limitArtists") ?? "200", 10);
+  const maxArtists = Number(url.searchParams.get("limitArtists") ?? "200");
   const singleArtistId = url.searchParams.get("artistId");
 
     const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
@@ -66,6 +69,29 @@ serve(async (req) => {
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
+    const bearer = req.headers.get('Authorization')?.match(/^Bearer\s+(\S+)$/i)?.[1];
+    if (!bearer) return new Response('Authentication required', { status: 401 });
+    // Only the exact server-side credential may scan across accounts. Never
+    // trust decoded JWT claims or a caller-supplied user ID.
+    const trustedScheduler = bearer === SUPABASE_SERVICE_ROLE_KEY;
+    let userId: string | null = null;
+    if (!trustedScheduler) {
+      const { data, error } = await supabase.auth.getUser(bearer);
+      if (error || !data?.user) return new Response('Authentication required', { status: 401 });
+      userId = data.user.id;
+    }
+    if (!/^[A-Z]{2}$/.test(market) || !Number.isInteger(maxArtists) || maxArtists < 1 || maxArtists > 200 ||
+        (singleArtistId !== null && !/^[A-Za-z0-9]{22}$/.test(singleArtistId))) {
+      return new Response('Invalid scan parameters', { status: 400 });
+    }
+    if (!trustedScheduler) {
+      if (!singleArtistId) return new Response('An artist is required', { status: 400 });
+      const { data, error } = await supabase.from('followed_artists')
+        .select('artist_id').eq('user_id', userId).eq('artist_id', singleArtistId).limit(1);
+      if (error) return new Response('Unable to verify artist follow', { status: 503 });
+      if (!data?.length) return new Response('Follow this artist before refreshing', { status: 403 });
+    }
+
     let artists: Array<[string, string | null]> = [];
     if (singleArtistId) {
       artists = [[singleArtistId, null]];
@@ -73,7 +99,8 @@ serve(async (req) => {
       // Fetch followed artists (all users). We'll dedupe by artist_id client-side.
       const { data: follows, error: followsErr } = await supabase
         .from("followed_artists")
-        .select("artist_id, artist_name");
+        .select("artist_id, artist_name")
+        .limit(1000);
       if (followsErr) throw followsErr;
 
       const uniqueMap = new Map<string, string | null>();
@@ -165,6 +192,6 @@ serve(async (req) => {
       headers: { "Content-Type": "application/json" },
     });
   } catch (e) {
-    return new Response(`error: ${(e as Error).message}` , { status: 500 });
+    return new Response('Release refresh failed', { status: 500 });
   }
 });

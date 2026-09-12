@@ -1,5 +1,18 @@
 # RPPL security audit — 9 September 2026
 
+## 12 September follow-up — current checkpoint
+
+Earlier uncommitted-status notes below are historical: the initial security and recovery work was committed as `7cbaf23`; duplicate-save handling as `6bdaaf6`. Branch remains `feature/beta-polish`. Pre-existing UI/rating/demo changes remain in the working tree and were not modified during this review. No production changes, pushes or deployments were made in this pass.
+
+- Live GitHub recheck: public repository, main unprotected (protection endpoint 404), no rulesets. Secret scanning and push protection enabled; no returned secret alerts. Dependabot security updates disabled. Full-history scanning and account 2FA verification remain outstanding.
+- GitHub's Upcoming scan workflow is disabled due to inactivity. Its local source is only an echo placeholder, not a functioning scanner invocation. Do not assume this provides scheduled release refreshes.
+- HIGH, confirmed deployed source: `check-new-releases` version 10 has gateway JWT verification disabled and no handler authentication. It uses service-role access to read followed artists across users and write shared release-feed data. `limitArtists` has no upper bound. Deployed source was downloaded into an isolated temporary directory and inspected; the mutating endpoint was not invoked. This demonstrates an authorization/resource-abuse gap, not evidence of actual exploitation or disclosure of private listening history.
+- Compatibility constraint: Discover and follow-triggered refresh call `fetchFn`, whose helper sends the public anon key as Authorization. Requiring a real user token server-side immediately would reject existing clients. Recommended remediation: add a dedicated authenticated refresh client (leave unrelated public search calls alone), validate the session server-side, restrict normal callers to bounded followed-artist scans, retain an explicitly trusted scheduler path, and verify follow/feed behavior. Production rollout needs an explicit choice about old-client compatibility; do not deploy a breaking restriction silently.
+- Correction to the older local-config inference: live `spotify-search` version 99 reports `verify_jwt: true`, despite the local function config disabling it. Other live settings: spotify-resolve true; delete-account true; apple-resolve false; upcoming-scan false with previously verified handler authentication. A gateway JWT setting alone does not establish signed-in-user authorization.
+- Read-only npm audit returned 43 affected dependency entries: 1 low, 24 moderate, 17 high, 1 critical. These include transitive/meta-vulnerability entries, not 43 independently proven app exploits. The critical entry is shell-quote 1.8.3, reached through react-devtools-core. Runtime/build-time reachability and compatible patched versions still need triage. Some suggested fixes cross Expo major versions or downgrade routing: no automatic audit fix, install or lockfile modification was performed.
+
+The audits remain open. Next priority is the release-refresh authorization fix and rollout decision, followed by dependency triage, remaining RLS/RPC/storage/Auth checks, and repository protections.
+
 Audit in progress. Initial findings below record the read-only review; the latest remediation status is recorded at the end.
 
 ## Checkpoint

@@ -20,6 +20,7 @@ import { goToRelease } from '../../lib/navigation';
 import { openArtist } from '../../lib/openArtist';
 import { getNewReleasesByGenre, getTopPicks, getWesternNewReleases } from '../../lib/recommend';
 import { FN_BASE as FN, fetchFn } from '../../lib/fnBase';
+import { requestArtistFeedRefresh } from '../../lib/feedRefresh';
 import { getMarket, parseSpotifyUrlOrId, spotifyLookup, spotifySearch, type SpotifyResult } from '../../lib/spotify';
 import { artistAlbums, artistTopTracks, fetchArtistDetails } from '../../lib/spotifyArtist';
 import {
@@ -2129,7 +2130,7 @@ export default function DiscoverTab() {
               for (let index = 0; index < refreshIds.length; index += UPDATES_SCAN_BATCH_SIZE) {
                 const batch = refreshIds.slice(index, index + UPDATES_SCAN_BATCH_SIZE);
                 await Promise.all(batch.map((artistId) => (
-                  fetchFn(`${FN}/check-new-releases?` + new URLSearchParams({ artistId, market })).catch(() => null)
+                  requestArtistFeedRefresh(artistId, market)
                 )));
               }
               const feed = await fetchFeedForArtists({ artistIds: validFollowedIds, limit: 250 });

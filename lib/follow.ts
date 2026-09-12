@@ -1,4 +1,6 @@
 import { emit } from './events';
+import { requestArtistFeedRefresh } from './feedRefresh';
+import { getMarket } from './spotify';
 import { supabase } from './supabase';
 
 export type FollowChangedEvent = {
@@ -7,6 +9,15 @@ export type FollowChangedEvent = {
   artistName?: string;
   spotifyUrl?: string | null;
 };
+
+export async function refreshFollowedArtistFeed(artistId: string): Promise<boolean> {
+  if (!/^[A-Za-z0-9]{22}$/.test(artistId)) return false;
+  try {
+    return await requestArtistFeedRefresh(artistId, getMarket());
+  } catch {
+    return false;
+  }
+}
 
 export async function isFollowing(artistId: string) {
   const { data: { user } } = await supabase.auth.getUser();
@@ -37,6 +48,11 @@ export async function followArtist(input: { artistId: string; artistName: string
   };
   emit('follow:changed', payload);
   emit('feed:refresh', payload);
+  // Populate this artist's release feed without making the Follow button wait.
+  // A second refresh event updates Feed once the provider scan has completed.
+  void refreshFollowedArtistFeed(input.artistId).then(() => {
+    emit('feed:refresh', payload);
+  });
   return { ok: true };
 }
 

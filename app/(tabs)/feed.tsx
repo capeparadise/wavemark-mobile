@@ -15,8 +15,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { formatDate } from '../../lib/date';
 import { discoverReleaseDateTimestamp } from '../../lib/discoverFreshness';
 import { emit, off, on } from '../../lib/events';
-import { FN_BASE, fetchFn } from '../../lib/fnBase';
-import { fetchFeedForArtists, listFollowedArtists, type FeedItem } from '../../lib/follow';
+import { fetchFeedForArtists, listFollowedArtists, refreshFollowedArtistFeed, type FeedItem } from '../../lib/follow';
 import { addToListFromSearch, fetchHistory, fetchListenList, removeListen } from '../../lib/listen';
 import { parseSpotifyUrlOrId } from '../../lib/spotify';
 import { goToRelease } from '../../lib/navigation';
@@ -489,12 +488,16 @@ export default function FeedTab() {
   };
 
   const runCheckerNow = async () => {
-    try {
-      // Best-effort: triggers the server-side “check new releases” job.
-      // Uses a safe fallback base URL (see `lib/fnBase.ts`) so pull-to-refresh doesn’t pop alerts when env is missing.
-      await fetchFn(`${FN_BASE}/check-new-releases`);
-    } catch {
-      // Silent failure; the feed will still refresh from whatever is already in `new_release_feed`.
+    // Refresh the signed-in listener's artists specifically. The former global
+    // scan could stop before reaching a newly followed artist shared by this user.
+    const followed = await listFollowedArtists().catch(() => []);
+    const artistIds = Array.from(new Set(
+      followed.map((artist) => artist.id).filter((id) => /^[A-Za-z0-9]{22}$/.test(id))
+    ));
+    const concurrency = 4;
+    for (let index = 0; index < artistIds.length; index += concurrency) {
+      const batch = artistIds.slice(index, index + concurrency);
+      await Promise.all(batch.map((artistId) => refreshFollowedArtistFeed(artistId)));
     }
   };
 
