@@ -695,6 +695,7 @@ export default function ReleaseScreen() {
       });
       if (res.ok) {
         setAdded(true);
+        if (res.alreadySaved && res.message) Alert.alert(res.message);
       } else {
         Alert.alert('Could not add', res.message || 'Please try again.');
       }
@@ -728,6 +729,7 @@ export default function ReleaseScreen() {
       });
       if (res.ok) {
         setSavedTrackIds((prev) => new Set(prev).add(key));
+        if (res.alreadySaved && res.message) Alert.alert(res.message);
       } else {
         Alert.alert('Could not save track', res.message || 'Please try again.');
       }

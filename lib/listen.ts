@@ -477,7 +477,7 @@ export async function addToListFromSearch(input: {
   providerId?: string | null,
   isrc?: string | null,
   upc?: string | null,
-}): Promise<{ ok: boolean; id?: string; upcoming?: boolean; message?: string; row?: any }> {
+}): Promise<{ ok: boolean; id?: string; upcoming?: boolean; message?: string; alreadySaved?: boolean; row?: any }> {
   const { data: { user }, error: userErr } = await supabase.auth.getUser();
   if (userErr) return { ok: false, message: userErr.message };
   if (!user) return { ok: false, message: 'Not signed in' };
@@ -617,6 +617,7 @@ export async function addToListFromSearch(input: {
 
   // Map UI "single" to DB-supported item_type "track"
   const dbItemType: 'track' | 'album' = input.type === 'album' ? 'album' : 'track';
+  const alreadySavedMessage = `This ${dbItemType === 'album' ? 'project' : 'track'} is already in your listen list`;
   const artworkUrl =
     input.artworkUrl?.trim() ||
     input.imageUrl?.trim() ||
@@ -643,18 +644,28 @@ export async function addToListFromSearch(input: {
   };
 
   const normalizeRow = (row: any) => row ? { ...row, rating_details: row.rating_details ?? null } : row;
-  const saveSelect = 'id, upcoming, rating, rating_details, done_at, artwork_url';
-  const saveSelectNoDetails = 'id, upcoming, rating, done_at, artwork_url';
-
-  // If the item already exists for this user+provider+id, reuse it to avoid UNIQUE violations.
-  try {
-    const { data: existing, error: existingErr } = await supabase
-      .from('listen_list')
-      .select(saveSelect)
+  const saveSelectNoDetails = 'id, upcoming, rating, done_at, artwork_url, title, artist_name, release_date';
+  const saveSelect = `${saveSelectNoDetails}, rating_details`;
+  // Match all four fields in listen_list_unique_per_user_item. A track and an
+  // album can have the same provider ID without being the same saved item.
+  const findExisting = async () => {
+    const lookup = (columns: string) => supabase.from('listen_list')
+      .select(columns)
       .eq('user_id', user.id)
+      .eq('item_type', dbItemType)
       .eq('provider', provider)
       .eq('provider_id', provider_id)
       .maybeSingle();
+    let result = await lookup(saveSelect);
+    if (result.error?.code === '42703' || result.error?.code === 'PGRST204') {
+      result = await lookup(saveSelectNoDetails);
+    }
+    return { ...result, data: normalizeRow(result.data) };
+  };
+
+  // If the item already exists for this user+provider+id, reuse it to avoid UNIQUE violations.
+  try {
+    const { data: existing, error: existingErr } = await findExisting();
     if (!existingErr && existing) {
       // Patch missing fields (artwork/title/artist/release_date) if we have fresh data
       const patch: Record<string, any> = {};
@@ -681,11 +692,11 @@ export async function addToListFromSearch(input: {
           .maybeSingle();
         if (updated) {
           const normalized = normalizeRow({ ...updated, ...patch });
-          return { ok: true, id: normalized.id, upcoming: normalized.upcoming ?? upcoming, message: 'Already on your list', row: normalized };
+          return { ok: true, id: normalized.id, upcoming: normalized.upcoming ?? upcoming, row: normalized };
         }
       }
       const normalized = normalizeRow({ ...existing, ...patch });
-      return { ok: true, id: normalized.id, upcoming: normalized.upcoming ?? upcoming, message: 'Already on your list', row: normalized };
+      return { ok: true, id: normalized.id, upcoming: normalized.upcoming ?? upcoming, alreadySaved: !existing.done_at, message: !existing.done_at ? alreadySavedMessage : undefined, row: normalized };
     }
   } catch {}
 
@@ -708,13 +719,7 @@ export async function addToListFromSearch(input: {
   if (error) {
     // Treat unique constraint as "already added" and return existing row id
     if ((error as any)?.code === '23505') {
-      const { data: existing } = await supabase
-        .from('listen_list')
-        .select(saveSelect)
-        .eq('user_id', user.id)
-        .eq('provider', provider)
-        .eq('provider_id', provider_id)
-        .maybeSingle();
+      const { data: existing } = await findExisting();
       if (existing?.id) {
         const patch: Record<string, any> = {};
         if (!(existing as any)?.artwork_url && payload.artwork_url) patch.artwork_url = payload.artwork_url;
@@ -725,22 +730,9 @@ export async function addToListFromSearch(input: {
           try { await supabase.from('listen_list').update(patch).eq('id', existing.id).eq('user_id', user.id); } catch {}
         }
         const normalized = normalizeRow({ ...existing, ...patch });
-        return { ok: true, id: normalized.id, upcoming: normalized.upcoming ?? upcoming, message: 'Already on your list', row: normalized };
+        return { ok: true, id: normalized.id, upcoming: normalized.upcoming ?? upcoming, alreadySaved: !existing.done_at, message: !existing.done_at ? alreadySavedMessage : undefined, row: normalized };
       }
-      // Retry select without rating_details if column missing
-      if ((error as any)?.code === '42703' || (error as any)?.code === 'PGRST204') {
-        const { data: existingNoDetails } = await supabase
-          .from('listen_list')
-          .select(saveSelectNoDetails)
-          .eq('user_id', user.id)
-          .eq('provider', provider)
-          .eq('provider_id', provider_id)
-          .maybeSingle();
-        if (existingNoDetails?.id) {
-          const normalized = normalizeRow(existingNoDetails);
-          return { ok: true, id: normalized.id, upcoming: normalized.upcoming ?? upcoming, message: 'Already on your list', row: normalized };
-        }
-      }
+      return { ok: false, message: 'This item is already saved, but we could not refresh it. Please try again.' };
     }
     return { ok: false, message: error.message };
   }
