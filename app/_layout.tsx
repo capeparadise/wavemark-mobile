@@ -24,14 +24,16 @@ function AuthSync() {
     let cancelled = false;
     (async () => {
       const root = segments[0];
+      const authScreen = segments[1];
       const isProtectedRoot = root === '(tabs)' || root === 'onboarding' || root === 'profile';
+      const isPasswordRecovery = root === '(auth)' && authScreen === 'reset-password';
 
       if (root === 'session') {
         setCheckingAccess(false);
         return;
       }
 
-      if (session && root === '(auth)') {
+      if (session && root === '(auth)' && !isPasswordRecovery) {
         setCheckingAccess(false);
         router.replace('/session');
         return;

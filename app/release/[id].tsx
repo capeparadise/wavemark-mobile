@@ -5,6 +5,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { ActivityIndicator, Alert, Image, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import GlassCard from '../../components/GlassCard';
+import TrackRatingButton, { TrackRatingsProvider } from '../../components/TrackRatingButton';
 import { formatDate } from '../../lib/date';
 import { addToListFromSearch, getDefaultPlayer, openByDefaultPlayer, type ListenPlayer, type ListenRow } from '../../lib/listen';
 import { type SimpleAlbum } from '../../lib/recommend';
@@ -14,7 +15,7 @@ import { artistAlbums } from '../../lib/spotifyArtist';
 import { supabase } from '../../lib/supabase';
 import { openArtist } from '../../lib/openArtist';
 import { useTheme } from '../../theme/useTheme';
-import { goToRelease } from '../../lib/navigation';
+import { backFromRelease, goToRelease } from '../../lib/navigation';
 import { normalizeReleasePresentationType, parseTrackCount, releasePresentationLabel, type ReleasePresentationType, type ReleaseTrack } from '../../lib/releaseModel';
 
 export const options = { title: 'Release', headerShown: false };
@@ -193,7 +194,8 @@ export default function ReleaseScreen() {
   const [savedTrackIds, setSavedTrackIds] = useState<Set<string>>(new Set());
   const [savingTrackIds, setSavingTrackIds] = useState<Set<string>>(new Set());
   const skeletonTiles = useMemo(() => Array.from({ length: 5 }, (_, i) => i), []);
-  const lastMoreByKeyRef = React.useRef<string>('');
+  const moreByRequestRef = React.useRef(0);
+  const [moreByError, setMoreByError] = useState(false);
 
   const releaseKey = String(release?.spotifyId || release?.providerId || spotifyIdParam || releaseId || '').trim();
   const artistKey = String(release?.artistId || artistIdParam || '').trim();
@@ -433,7 +435,7 @@ export default function ReleaseScreen() {
         }
       }
 
-      if (!detail || (detail.provider === 'apple' && detail.itemType === 'album')) {
+      if (!detail || detail.provider === 'apple') {
         const appleId = extractAppleId(String(detail?.appleAlbumId || detail?.appleId || detail?.providerId || releaseId));
         if (appleId) {
           try {
@@ -465,7 +467,7 @@ export default function ReleaseScreen() {
                 itemType: 'album',
               };
             }
-            if (!detail) {
+            if (!album) {
               const track = await fetchTrackById(appleId);
               if (track) {
                 detail = {
@@ -519,6 +521,7 @@ export default function ReleaseScreen() {
   }, [releaseId]);
 
   const loadMoreByArtist = useCallback(async () => {
+    const request = ++moreByRequestRef.current;
     const artistName = String(release?.artistName || '').trim();
     if (!release || (!artistKey && !artistName)) {
       setMoreByArtist([]);
@@ -526,6 +529,7 @@ export default function ReleaseScreen() {
     }
 
     setMoreByArtistLoading(true);
+    setMoreByError(false);
     const currentIds = new Set(
       [
         release.id,
@@ -651,11 +655,11 @@ export default function ReleaseScreen() {
       });
 
       const limited = deduped.slice(0, 5);
-      setMoreByArtist((prev) => (sameIds(prev, limited) ? prev : limited));
+      if(request===moreByRequestRef.current)setMoreByArtist((prev) => (sameIds(prev, limited) ? prev : limited));
     } catch {
-      setMoreByArtist((prev) => (prev.length ? prev : []));
+      if(request===moreByRequestRef.current)setMoreByError(true);
     } finally {
-      setMoreByArtistLoading(false);
+      if(request===moreByRequestRef.current)setMoreByArtistLoading(false);
     }
   }, [artistKey, release, releaseId, sameIds]);
 
@@ -664,10 +668,10 @@ export default function ReleaseScreen() {
       setMoreByArtist([]);
       return;
     }
-    if (lastMoreByKeyRef.current === moreByKey) return;
-    lastMoreByKeyRef.current = moreByKey;
+    if(release?.provider==='apple' && !/^\d+$/.test(artistKey))return;
     loadMoreByArtist();
-  }, [loadMoreByArtist, moreByKey]);
+    return()=>{moreByRequestRef.current++;};
+  }, [loadMoreByArtist, moreByKey, release?.provider, artistKey]);
 
   const metaLine = useMemo(() => {
     if (!release) return null;
@@ -744,12 +748,6 @@ export default function ReleaseScreen() {
 
   const onOpenExternal = useCallback(async () => {
     if (!release) return;
-    if (preferredPlayer === 'spotify' && release.spotifyUrl) {
-      try {
-        await Linking.openURL(release.spotifyUrl);
-        return;
-      } catch {}
-    }
     const row: ListenRow = {
       id: release.id,
       item_type: release.itemType === 'album' ? 'album' : 'track',
@@ -872,7 +870,9 @@ export default function ReleaseScreen() {
         <ScrollView contentContainerStyle={{ paddingBottom: 44 }}>
           <View style={{ paddingHorizontal: 20, paddingTop: 14 }}>
             <Pressable
-              onPress={() => router.back()}
+              accessibilityRole="button"
+              accessibilityLabel="Back"
+              onPress={backFromRelease}
               hitSlop={10}
               style={({ pressed }) => ({
                 width: 42,
@@ -990,69 +990,39 @@ export default function ReleaseScreen() {
                   <Text style={{ fontSize: 19, fontWeight: '800', color: colors.text.inverted, marginBottom: 12 }}>
                     Tracklist
                   </Text>
-                  <GlassCard style={{ paddingVertical: 6, paddingHorizontal: 0, borderRadius: 20 }}>
-                    {releaseTracks.map((track, index) => {
+                  <View>
+                    <TrackRatingsProvider tracks={releaseTracks}>{releaseTracks.map((track, index) => {
                       const duration = formatDuration(track.durationMs);
                       const trackNumber = track.trackNumber ?? index + 1;
-                      const saveKey = trackSaveKey(track);
-                      const trackSaved = !!saveKey && savedTrackIds.has(saveKey);
-                      const trackSaving = !!saveKey && savingTrackIds.has(saveKey);
                       return (
                         <View
                           key={`${track.id || track.title}-${index}`}
                           style={{
                             flexDirection: 'row',
                             alignItems: 'center',
-                            gap: 12,
-                            paddingHorizontal: 14,
-                            paddingVertical: 10,
+                            gap: 8,
+                            minHeight: 64,
+                            paddingVertical: 7,
                             borderTopWidth: index === 0 ? 0 : StyleSheet.hairlineWidth,
                             borderTopColor: colors.border.subtle,
                           }}
                         >
-                          <Text style={{ width: 24, textAlign: 'right', color: colors.text.muted, fontWeight: '800', fontSize: 12 }}>
+                          <Text style={{ width: 20, textAlign: 'left', color: colors.text.muted, fontWeight: '500', fontSize: 12 }}>
                             {trackNumber}
                           </Text>
                           <View style={{ flex: 1, minWidth: 0 }}>
-                            <Text style={{ color: colors.text.secondary, fontWeight: '800' }} numberOfLines={1}>
+                            <Text style={{ color: colors.text.secondary, fontWeight: '600', fontSize: 15, lineHeight: 20 }} numberOfLines={2}>
                               {track.title}
                             </Text>
-                            {track.artist ? (
-                              <Text style={{ color: colors.text.muted, marginTop: 3, fontSize: 12 }} numberOfLines={1}>
-                                {track.artist}
-                              </Text>
-                            ) : null}
+                            <Text style={{ color: colors.text.muted, marginTop: 2, fontSize: 12, lineHeight: 16 }} numberOfLines={1}>
+                              {[track.artist || release?.artistName, duration].filter(Boolean).join(' · ')}
+                            </Text>
                           </View>
-                          {duration ? (
-                            <Text style={{ color: colors.text.muted, fontSize: 12, fontWeight: '700' }}>
-                              {duration}
-                            </Text>
-                          ) : null}
-                          <Pressable
-                            onPress={() => onSaveTrack(track)}
-                            disabled={!saveKey || trackSaved || trackSaving}
-                            hitSlop={8}
-                            style={({ pressed }) => ({
-                              minWidth: 58,
-                              paddingHorizontal: 10,
-                              paddingVertical: 7,
-                              borderRadius: 999,
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              backgroundColor: trackSaved ? colors.bg.muted : `${colors.bg.muted}cc`,
-                              borderWidth: 1,
-                              borderColor: `${colors.border.subtle}66`,
-                              opacity: pressed ? 0.9 : 1,
-                            })}
-                          >
-                            <Text style={{ color: colors.text.secondary, fontSize: 12, fontWeight: '800' }}>
-                              {trackSaved ? 'Saved' : trackSaving ? 'Saving' : 'Save'}
-                            </Text>
-                          </Pressable>
+                          <TrackRatingButton track={track} artworkUrl={release?.artworkUrl} artist={release?.artistName} releaseDate={release?.releaseDate} />
                         </View>
                       );
-                    })}
-                  </GlassCard>
+                    })}</TrackRatingsProvider>
+                  </View>
                 </View>
               ) : null}
 
@@ -1074,10 +1044,11 @@ export default function ReleaseScreen() {
                   </View>
                 ) : moreByArtist.length === 0 ? (
                   <GlassCard style={{ padding: 18, borderRadius: 20 }}>
-                    <Text style={{ color: colors.text.secondary, fontWeight: '800', fontSize: 15 }}>No more releases yet</Text>
+                    <Text style={{ color: colors.text.secondary, fontWeight: '800', fontSize: 15 }}>{moreByError ? 'Could not load releases' : 'No more releases yet'}</Text>
                     <Text style={{ color: colors.text.muted, marginTop: 6, lineHeight: 20 }}>
-                      We do not have other releases for this artist right now.
+                      {moreByError ? 'Please try again.' : 'We do not have other releases for this artist right now.'}
                     </Text>
+                    <Pressable onPress={loadMoreByArtist} style={{minHeight:44,justifyContent:'center'}}><Text style={{color:colors.accent.primary}}>Retry</Text></Pressable>
                   </GlassCard>
                 ) : (
                   <View style={{ rowGap: 10 }}>
@@ -1086,13 +1057,15 @@ export default function ReleaseScreen() {
                         <Pressable
                           onPress={() =>
                             goToRelease(item.id, {
-                              spotifyId: item.id ?? null,
+                              provider: release?.provider === 'apple' ? 'apple' : 'spotify',
+                              appleId: release?.provider === 'apple' ? item.id : null,
+                              spotifyId: release?.provider === 'apple' ? null : item.id ?? null,
                               title: item.title,
                               artistName: item.artist,
                               imageUrl: item.imageUrl ?? null,
                               artistId: item.artistId ?? null,
                               releaseDate: item.releaseDate ?? null,
-                              type: item.type ?? null,
+                              type: release?.provider === 'apple' ? 'album' : item.type ?? null,
                               totalTracks: item.totalTracks ?? null,
                               spotifyUrl: item.spotifyUrl ?? null,
                             })

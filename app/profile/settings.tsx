@@ -12,6 +12,7 @@ import { supabase } from '../../lib/supabase';
 import { getAdvancedRatingsEnabled, setAdvancedRatingsEnabled } from '../../lib/user';
 import { isHapticsEnabled, setHapticsEnabled } from '../../components/haptics';
 import { countIncomingPendingRequests } from '../../lib/profileSocial';
+import { getDemoSnapshotSummary, resetDemoProfile, restoreDemoProfile, type DemoSnapshotSummary } from '../../lib/demoProfile';
 import { useTheme } from '../../theme/useTheme';
 
 export default function ProfileSettingsPage() {
@@ -23,6 +24,8 @@ export default function ProfileSettingsPage() {
   const [hapticsEnabled, setHapticsEnabledState] = useState<boolean>(true);
   const [hapticSaving, setHapticSaving] = useState<boolean>(false);
   const [requestsHasDot, setRequestsHasDot] = useState(false);
+  const [demoBusy, setDemoBusy] = useState(false);
+  const [demoSnapshot, setDemoSnapshot] = useState<DemoSnapshotSummary | null>(null);
 
   useEffect(() => {
     // Load advanced rating preference
@@ -35,7 +38,62 @@ export default function ProfileSettingsPage() {
     countIncomingPendingRequests()
       .then((count) => setRequestsHasDot(count > 0))
       .catch(() => setRequestsHasDot(false));
+    if (__DEV__) {
+      getDemoSnapshotSummary().then(setDemoSnapshot).catch(() => setDemoSnapshot(null));
+    }
   }, []));
+
+  const runDemoReset = async () => {
+    if (demoBusy) return;
+    try {
+      setDemoBusy(true);
+      const result = await resetDemoProfile();
+      setDemoSnapshot(result.snapshot);
+      router.replace({ pathname: '/profile/setup', params: { next: 'home', demoReset: '1' } });
+    } catch (e: any) {
+      Alert.alert('Reset failed', e?.message || 'Could not reset the demo profile.');
+    } finally {
+      setDemoBusy(false);
+    }
+  };
+
+  const onDemoReset = () => {
+    Alert.alert(
+      'Reset demo profile?',
+      'A local backup will be saved first. This clears the listener name, photo, saved music, history, ratings, artist follows and listener connections. The login stays signed in.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Reset profile', style: 'destructive', onPress: runDemoReset },
+      ],
+    );
+  };
+
+  const runDemoRestore = async () => {
+    if (demoBusy) return;
+    try {
+      setDemoBusy(true);
+      const result = await restoreDemoProfile();
+      setDemoSnapshot(null);
+      Alert.alert('Demo profile restored', `${result.label} is ready to use again.`);
+      router.replace('/(tabs)/profile');
+    } catch (e: any) {
+      Alert.alert('Restore failed', e?.message || 'Could not restore the saved demo profile.');
+    } finally {
+      setDemoBusy(false);
+    }
+  };
+
+  const onDemoRestore = () => {
+    if (!demoSnapshot) return;
+    Alert.alert(
+      `Restore ${demoSnapshot.label}?`,
+      'This replaces the current demo data with the locally saved profile, listening activity and artist follows.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Restore', onPress: runDemoRestore },
+      ],
+    );
+  };
 
   const APPLE_ENABLED = process.env.EXPO_PUBLIC_ENABLE_APPLE === 'true';
 
@@ -270,6 +328,56 @@ export default function ProfileSettingsPage() {
             />
           </View>
       </View>
+
+        {__DEV__ ? (
+          <View style={{ marginTop: 8, marginBottom: 26, paddingTop: 18, borderTopWidth: 1, borderTopColor: colors.border.subtle }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+              <Ionicons name="construct-outline" size={18} color={colors.accent.primary} />
+              <Text style={{ fontWeight: '800', color: colors.text.secondary }}>Demo tools</Text>
+            </View>
+            <Text style={{ color: colors.text.muted, marginBottom: 10 }}>
+              Start a clean fictional listener while keeping this login. A local backup is created before each reset.
+            </Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Reset demo profile"
+              onPress={onDemoReset}
+              disabled={demoBusy}
+              style={({ pressed }) => ({
+                minHeight: 48,
+                padding: 12,
+                borderRadius: 14,
+                backgroundColor: colors.bg.secondary,
+                borderWidth: 1,
+                borderColor: colors.accent.primary,
+                opacity: demoBusy ? 0.55 : pressed ? 0.75 : 1,
+              })}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                <Text style={{ color: colors.accent.primary, fontWeight: '800' }}>Reset demo profile</Text>
+                {demoBusy ? <ActivityIndicator /> : <Ionicons name="refresh" size={18} color={colors.accent.primary} />}
+              </View>
+            </Pressable>
+            {demoSnapshot ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Restore ${demoSnapshot.label}`}
+                onPress={onDemoRestore}
+                disabled={demoBusy}
+                style={({ pressed }) => ({
+                  minHeight: 44,
+                  justifyContent: 'center',
+                  marginTop: 8,
+                  paddingHorizontal: 12,
+                  opacity: demoBusy ? 0.55 : pressed ? 0.7 : 1,
+                })}
+              >
+                <Text style={{ color: colors.text.secondary, fontWeight: '700' }}>Restore {demoSnapshot.label}</Text>
+                <Text style={{ color: colors.text.muted, fontSize: 12, marginTop: 2 }}>Listening activity and artist follows</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        ) : null}
 
         <View style={{ marginTop: 8 }}>
           <Text style={{ fontWeight: '700', marginBottom: 6, color: colors.text.secondary }}>Account</Text>

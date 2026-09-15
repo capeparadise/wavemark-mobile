@@ -4,7 +4,8 @@ import { Linking } from 'react-native';
 import { resolveAppleUrl } from './appleResolver';
 import { debugNS } from './debug';
 import { openInApple } from './openApple';
-import { getMarket, spotifyLookup } from './spotify';
+import { getMarket, spotifyLookup, spotifyResolveRelease } from './spotify';
+import { spotifyOpenMatch } from './spotifyOpenMatch';
 import { supabase } from './supabase';
 
 const debug = debugNS('listen');
@@ -644,7 +645,7 @@ export async function addToListFromSearch(input: {
   };
 
   const normalizeRow = (row: any) => row ? { ...row, rating_details: row.rating_details ?? null } : row;
-  const saveSelectNoDetails = 'id, upcoming, rating, done_at, artwork_url, title, artist_name, release_date';
+  const saveSelectNoDetails = 'id, item_type, provider, provider_id, upcoming, rating, review, done_at, artwork_url, title, artist_name, release_date';
   const saveSelect = `${saveSelectNoDetails}, rating_details`;
   // Match all four fields in listen_list_unique_per_user_item. A track and an
   // album can have the same provider ID without being the same saved item.
@@ -1121,7 +1122,7 @@ async function trySpotify(item: ListenRow) {
   debug('trySpotify', 'url=', item.spotify_url, 'id=', item.spotify_id);
 
   // If there's a stored spotify_url, try to open it directly (best-effort)
-  if (item.spotify_url) {
+  if (item.spotify_url && /^https:\/\/open\.spotify\.com\/(?:intl-[a-z]+\/)?(?:album|track)\/[A-Za-z0-9]{22}(?:[?/#]|$)/i.test(item.spotify_url)) {
     try {
       await Linking.openURL(item.spotify_url);
       debug('trySpotify:opened', item.spotify_url);
@@ -1132,11 +1133,21 @@ async function trySpotify(item: ListenRow) {
   }
 
   // 2) Deep link by ID if present
-  if (item.spotify_id) {
+  if (item.spotify_id && /^[A-Za-z0-9]{22}$/.test(item.spotify_id)) {
     const path = item.item_type === 'track' ? 'track' : 'album';
     const deep = `https://open.spotify.com/${path}/${item.spotify_id}`;
   debug('trySpotify:idDeep', deep);
     if (await tryOpen(deep)) return true;
+  }
+
+  // Apple-sourced items often have no Spotify identity. Resolve before falling back
+  // to search, without changing the saved provider or the user's rating/history.
+  try {
+    const resolved = await spotifyResolveRelease(item.item_type === 'album' ? 'album' : 'track', item.title, item.artist_name);
+    const direct = spotifyOpenMatch(item, resolved);
+    if (direct && await tryOpen(direct)) return true;
+  } catch (error) {
+    debug('trySpotify:resolveFailed', error);
   }
 
   // Build query once
@@ -1211,14 +1222,15 @@ export async function setRating(id: string, rating: number, review?: string, opt
     const r = normalizeRating(rating);
     if (r < 1 || r > 10 || Number.isNaN(r)) return { ok: false, message: 'Rating must be 1–10' };
 
-    const attemptUpdate = async (value: number, withDetails: boolean) => {
+    const attemptUpdate = async (value: number) => {
       const payload: any = {
         rating: value,
         review: review ?? null,
         rated_at: new Date().toISOString(),
         ...(options ? { done_at: options.doneAt } : {}),
       };
-      if (withDetails) payload.rating_details = { overall: value };
+      // Simple edits change only the canonical overall rating. Preserve any
+      // saved categories so switching rating modes never destroys detail.
       debug('rate:set:payload', payload);
       return await supabase
         .from('listen_list')
@@ -1230,20 +1242,20 @@ export async function setRating(id: string, rating: number, review?: string, opt
     };
 
     // First attempt with normalized rating
-    let { data, error } = await attemptUpdate(r, true);
+    let { data, error } = await attemptUpdate(r);
 
     if (error) {
       // Column missing: retry without rating_details
       if ((error as any)?.code === '42703' || (error as any)?.code === 'PGRST204') {
-        const retry = await attemptUpdate(r, false);
+        const retry = await attemptUpdate(r);
         if (!retry.error) return { ok: true, row: retry.data };
         error = retry.error;
       }
       if ((error as any)?.code === '23514') {
         // Retry with safe defaults (first 5, then 1) to satisfy tighter CHECK constraints
-        const retryMid = await attemptUpdate(5, true);
+        const retryMid = await attemptUpdate(5);
         if (!retryMid.error) return { ok: true, row: retryMid.data };
-        const retryLow = await attemptUpdate(1, true);
+        const retryLow = await attemptUpdate(1);
         if (!retryLow.error) return { ok: true, row: retryLow.data };
       }
       debug('rate:set:error', error);
@@ -1303,21 +1315,8 @@ export async function setRatingDetailed(
     if (error) {
       const isMissingColumn = (error as any)?.code === '42703' || (error as any)?.code === 'PGRST204';
       const isConstraint = (error as any)?.code === '23514';
-      if (isMissingColumn) {
-        const fallback = await supabase
-          .from('listen_list')
-          .update(basePayload)
-          .eq('id', id)
-          .eq('user_id', user.id)
-          .select('id, rating, review, rated_at')
-          .maybeSingle();
-        if (!fallback.error) return { ok: true, row: fallback.data };
-        error = fallback.error;
-      } else if (isConstraint) {
-        // Fall back to the simpler rating path (which already handles constraints/legacy columns)
-        const simple = await setRating(id, r, review, options);
-        if (simple.ok) return simple;
-        error = (simple as any).error || error;
+      if (isMissingColumn || isConstraint) {
+        return { ok: false, message: 'Detailed ratings could not be saved. Please try again after the service is updated.', error };
       }
       debug('rate:set:detailed:error', error);
       return { ok: false, message: 'Could not save rating', error };

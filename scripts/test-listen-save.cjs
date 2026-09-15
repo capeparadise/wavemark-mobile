@@ -34,6 +34,13 @@ const input={type:'album',title:'PRIMA',artist:'ADÉLA',spotifyUrl:'https://open
 const saved=()=>({id:'album-row',user_id:user.id,item_type:'album',provider:'spotify',provider_id:'fixturePrima',title:'PRIMA',artist_name:'ADÉLA',rating:8,rating_details:{production:9,vocals:8,lyrics:7,replay:8},review:'Keep review',done_at:null});
 function reset(data){rows=data;missingDetails=false;race=false;selectFailures=0;}
 (async()=>{
+ reset([]);
+ let firstTrack=await mod.exports.addToListFromSearch({...input,type:'track'});
+ assert.equal(firstTrack.ok,true);
+ assert.equal(firstTrack.row.item_type,'track','First save must return the track identity required by the rating flow');
+ assert.equal(firstTrack.row.provider,'spotify');assert.equal(firstTrack.row.provider_id,input.providerId);
+ const firstRating=await mod.exports.setRatingDetailed(firstTrack.id,4,{production:3,vocals:5,lyrics:6,replay:6},undefined,{doneAt:'2026-09-13T10:28:00Z'});
+ assert.equal(firstRating.ok,true,'A newly inserted track can be rated immediately, without another lookup/save');
  reset([saved(),{...saved(),id:'track-row',item_type:'track'}]);
  let result=await mod.exports.addToListFromSearch(input);
  assert.equal(result.ok,true,'Save must find the exact album when a track shares its provider ID');
@@ -50,5 +57,15 @@ function reset(data){rows=data;missingDetails=false;race=false;selectFailures=0;
  result=await mod.exports.addToListFromSearch(input);assert.equal(result.ok,true);assert.equal(result.id,'race-winner');assert.equal(rows[0].rating,9);assert.equal(rows[0].review,'Keep this');
  reset([{...saved(),done_at:'2026-09-08T12:00:00Z'}]);
  result=await mod.exports.addToListFromSearch(input);assert.equal(result.ok,true);assert.equal(rows[0].done_at,null,'Explicit save again still requeues the release');assert.equal(rows[0].rating,8);assert.equal(rows[0].review,'Keep review');assert.deepEqual(rows[0].rating_details,saved().rating_details);
- console.log('Listen save regressions passed (synthetic PRIMA fixture; no tester data).');
+ reset([saved(),{...saved(),id:'track-row',item_type:'track',rating:4}]);
+ const albumBefore=JSON.stringify(rows[0]);
+ result=await mod.exports.setRating('track-row',6,'Track opinion',{doneAt:'2026-09-13T10:00:00Z'});
+ assert.equal(result.ok,true);assert.equal(rows[1].rating,6);assert.equal(JSON.stringify(rows[0]),albumBefore,'Track rating must not alter album');
+ result=await mod.exports.setRatingDetailed('track-row',9,{production:8,vocals:7,lyrics:6,replay:10},'Detailed track opinion');
+ assert.equal(result.ok,true);assert.equal(rows[1].rating,9);assert.equal(rows[1].rating_details.production,8);
+ assert.equal(JSON.stringify(rows[0]),albumBefore,'Detailed track rating must not alter album');
+ const trackBefore=JSON.stringify(rows[1]);
+ await mod.exports.setRating('album-row',2,'Album opinion');
+ assert.equal(JSON.stringify(rows[1]),trackBefore,'Album rating must not alter track');
+ console.log('Listen save and independent simple/detailed track/album rating regressions passed (synthetic fixtures).');
 })().catch(e=>{console.error(e);process.exitCode=1;});

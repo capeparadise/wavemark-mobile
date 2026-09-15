@@ -1,0 +1,10 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const source = fs.readFileSync('app/profile/pending.tsx', 'utf8');
+assert.match(source, /useAdvancedRatingsEnabled\(\)/, 'Pending Ratings must use the account preference');
+assert.match(source, /rating_details/, 'Pending query must load saved advanced details');
+assert.match(source, /advanced=\{advancedRatings\}/, 'Pending modal must render in advanced mode');
+assert.match(source, /initialDetails=\{ratingRow\?\.rating_details\}/, 'Existing advanced values must be retained');
+assert.match(source, /advancedRatings && details[\s\S]*setRatingDetailed/, 'Advanced submissions must save the breakdown');
+assert.match(source, /Could not save rating/, 'Write failures must be visible and keep the modal open');
+console.log('PASS: Pending Ratings loads, renders, preserves and saves advanced ratings with visible failures');

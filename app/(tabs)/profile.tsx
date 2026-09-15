@@ -11,14 +11,39 @@ import * as ImagePicker from 'expo-image-picker';
 import Avatar from '../../components/Avatar';
 import Screen from '../../components/Screen';
 import { computeAchievements } from '../../lib/achievements';
-import { fetchProfileSnapshot, loadCachedProfileSnapshot, type ProfileSnapshot } from '../../lib/stats';
+import { fetchProfileSnapshot, loadCachedProfileSnapshot, type ListenSummary, type ProfileSnapshot } from '../../lib/stats';
 import { getUiColors, ui, icon } from '../../constants/ui';
 import { ensureMyProfile, uploadMyAvatar } from '../../lib/profileSocial';
 import { useTheme } from '../../theme/useTheme';
 import { goToRelease } from '../../lib/navigation';
+import { useAdvancedRatingsEnabled } from '../../lib/user';
+import { ratingLabel } from '../../lib/ratingDisplay';
+import ReleaseActionSheet, { type ReleaseActionSheetRow } from '../../components/ReleaseActionSheet';
+import { RELEASE_LONG_PRESS_MS } from '../../hooks/useReleaseActions';
+
+const profileActionRow = (item: ListenSummary): ReleaseActionSheetRow => ({
+  id: item.id,
+  item_type: item.item_type,
+  provider: item.provider ?? undefined,
+  provider_id: item.provider_id ?? null,
+  title: item.title,
+  artist_name: item.artist_name,
+  artwork_url: item.artwork_url ?? null,
+  release_date: item.release_date ?? null,
+  done_at: item.done_at,
+  rating: item.rating ?? null,
+  rating_details: item.rating_details ?? null,
+  rated_at: item.rated_at ?? null,
+  spotify_url: item.spotify_url ?? null,
+  spotify_id: item.spotify_id ?? null,
+  apple_url: item.apple_url ?? null,
+  apple_id: item.apple_id ?? null,
+  in_list: true,
+});
 
 export default function ProfileTab() {
   const { colors } = useTheme();
+  const [advancedRatings] = useAdvancedRatingsEnabled();
   const navigation = useNavigation();
   const [loading, setLoading] = useState(true);
   const [stats, setStats] = useState({ total: 0, avgRating: 0, week: 0, month: 0, streak: 0 });
@@ -31,6 +56,7 @@ export default function ProfileTab() {
   const [achievements, setAchievements] = useState<{ id: string; title: string; unlocked: boolean }[]>([]);
   const [topRated, setTopRated] = useState<ProfileSnapshot['topRated']>([]);
   const [recentListening, setRecentListening] = useState<ProfileSnapshot['listened']>([]);
+  const [menuRow, setMenuRow] = useState<ReleaseActionSheetRow | null>(null);
 
   const load = useCallback(async () => {
       const profile = await ensureMyProfile();
@@ -148,7 +174,7 @@ export default function ProfileTab() {
       {items.length ? (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 12 }}>
           {items.slice(0, 6).map(item => (
-            <Pressable key={item.id} accessibilityRole="button" accessibilityLabel={`${item.title}, ${item.artist_name || 'Unknown artist'}`} onPress={() => goToRelease(item.id)} style={{ width: 112, gap: 5 }}>
+            <Pressable key={item.id} accessibilityRole="button" accessibilityLabel={`${item.title}, ${item.artist_name || 'Unknown artist'}`} accessibilityHint="Tap to open. Hold for release options." onPress={() => goToRelease(item.id)} onLongPress={() => setMenuRow(profileActionRow(item))} delayLongPress={RELEASE_LONG_PRESS_MS} style={{ width: 112, gap: 5 }}>
               {item.artwork_url ? (
                 <Image source={{ uri: item.artwork_url }} style={{ width: 112, height: 112, borderRadius: ui.radius.lg }} />
               ) : (
@@ -158,7 +184,7 @@ export default function ProfileTab() {
               )}
               <Text numberOfLines={1} style={{ color: colors.text.secondary, fontWeight: '700' }}>{item.title}</Text>
               <Text numberOfLines={1} style={{ color: colors.text.muted, fontSize: 12 }}>{item.artist_name || 'Unknown artist'}</Text>
-              {typeof item.rating === 'number' ? <Text style={{ color: colors.accent.primary, fontSize: 12, fontWeight: '700' }}>{item.rating}/10</Text> : null}
+              {typeof item.rating === 'number' ? <Text style={{ color: colors.accent.primary, fontSize: 12, fontWeight: '700' }}>{ratingLabel(item.rating, item.rating_details, advancedRatings)}</Text> : null}
             </Pressable>
           ))}
         </ScrollView>
@@ -202,7 +228,7 @@ export default function ProfileTab() {
           </View>
         </View>
 
-        {!profileSetupCompleted || !username ? (
+        {!loading && (!profileSetupCompleted || !username) ? (
           <Pressable
             accessibilityRole="button"
             onPress={() => router.push('/profile/setup')}
@@ -246,7 +272,7 @@ export default function ProfileTab() {
             <View style={{ flexDirection: 'row', gap: 18, paddingVertical: 4 }}>
               <StatCard label="Unique listens" value={String(stats.total)} />
               <View style={{ width: 1, backgroundColor: colors.border.subtle }} />
-              <StatCard label="Avg rating" value={avgRatingDisplay} sub="from listened items" />
+              <StatCard label="Avg rating" value={avgRatingDisplay} sub="overall scores · out of 10" />
             </View>
 
             {/* Achievements preview */}
@@ -269,6 +295,12 @@ export default function ProfileTab() {
           </View>
         )}
       </ScrollView>
+      <ReleaseActionSheet
+        row={menuRow}
+        visible={!!menuRow}
+        onClose={() => setMenuRow(null)}
+        onChanged={() => { setMenuRow(null); void load(); }}
+      />
     </Screen>
   );
 }

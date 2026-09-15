@@ -26,7 +26,7 @@ function usernameValidationMessage(value: string) {
 
 export default function ProfileSetupScreen() {
   const { colors } = useTheme();
-  const params = useLocalSearchParams<{ next?: string }>();
+  const params = useLocalSearchParams<{ next?: string; demoReset?: string }>();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [displayName, setDisplayName] = useState('');
@@ -41,14 +41,15 @@ export default function ProfileSetupScreen() {
     ensureMyProfile()
       .then((profile) => {
         if (!mounted || !profile) return;
-        setDisplayName(profile.display_name || '');
-        setUsername(profile.username || '');
+        const resettingDemo = params.demoReset === '1' && profile.profile_setup_completed === false;
+        setDisplayName(resettingDemo ? '' : profile.display_name || '');
+        setUsername(resettingDemo ? '' : profile.username || '');
         setOriginalUsername(profile.username || '');
         setIsPrivate(profile.is_private !== false);
       })
       .finally(() => { if (mounted) setLoading(false); });
     return () => { mounted = false; };
-  }, []);
+  }, [params.demoReset]);
 
   useEffect(() => {
     const clean = username.trim().replace(/^@+/, '').toLowerCase();

@@ -9,8 +9,10 @@ export type ListenSummary = {
   artist_name: string | null;
   item_type: 'album' | 'track' | 'single';
   artwork_url?: string | null;
+  release_date?: string | null;
   done_at: string | null;
   rating?: number | null;
+  rating_details?: import('./ratingDisplay').RatingDetails | null;
   rated_at?: string | null;
   provider?: 'spotify' | 'apple' | null;
   provider_id?: string | null;
@@ -95,14 +97,14 @@ export async function fetchProfileSnapshot(): Promise<ProfileSnapshot> {
     getUniqueListenedCount(),
     supabase
       .from('listen_list')
-      .select('id,title,artist_name,item_type,provider,provider_id,spotify_id,apple_id,artwork_url,done_at,spotify_url,apple_url')
+      .select('id,title,artist_name,item_type,provider,provider_id,spotify_id,apple_id,artwork_url,release_date,done_at,rating,rating_details,rated_at,spotify_url,apple_url')
       .eq('user_id', user.id)
       .not('done_at', 'is', null)
       .order('done_at', { ascending: false, nullsFirst: false })
       .limit(400),
     supabase
       .from('listen_list')
-      .select('id,title,artist_name,item_type,provider,provider_id,spotify_id,apple_id,artwork_url,done_at,rating,rated_at,spotify_url,apple_url')
+      .select('id,title,artist_name,item_type,provider,provider_id,spotify_id,apple_id,artwork_url,release_date,done_at,rating,rating_details,rated_at,spotify_url,apple_url')
       .eq('user_id', user.id)
       .not('rating', 'is', null)
       .not('done_at', 'is', null)
@@ -111,7 +113,7 @@ export async function fetchProfileSnapshot(): Promise<ProfileSnapshot> {
       .limit(400),
     supabase
       .from('listen_list')
-      .select('id,title,artist_name,item_type,provider,provider_id,spotify_id,apple_id,artwork_url,done_at,rating,rated_at,spotify_url,apple_url')
+      .select('id,title,artist_name,item_type,provider,provider_id,spotify_id,apple_id,artwork_url,release_date,done_at,rating,rating_details,rated_at,spotify_url,apple_url')
       .eq('user_id', user.id)
       .not('rating', 'is', null)
       .not('done_at', 'is', null)

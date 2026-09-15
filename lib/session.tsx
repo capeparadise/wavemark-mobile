@@ -2,6 +2,8 @@ import type { Session, User } from '@supabase/supabase-js';
 import { createContext, useContext, useEffect, useState } from 'react';
 import { ensureMyProfile } from './profileSocial';
 import { supabase } from './supabase';
+import { clearTrackRatings, refreshTrackRatings } from './trackRatingCache';
+import { on, off } from './events';
 
 type SessionCtx = {
   session: Session | null;
@@ -33,6 +35,16 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     if (!session?.user?.id) return;
     ensureMyProfile().catch(() => {});
   }, [session?.user?.id]);
+
+  useEffect(() => {
+    clearTrackRatings();
+    const uid=session?.user?.id;
+    if(!uid)return;
+    let timer:ReturnType<typeof setTimeout> | undefined;
+    const refresh=()=>{clearTimeout(timer);timer=setTimeout(()=>{void refreshTrackRatings(uid).catch(()=>{});},0);};
+    refresh();on('listen:updated',refresh);on('listen:refresh',refresh);
+    return()=>{clearTimeout(timer);off('listen:updated',refresh);off('listen:refresh',refresh);clearTrackRatings();};
+  },[session?.user?.id]);
 
   return (
     <SessionContext.Provider value={{ session, user: session?.user ?? null, loading }}>

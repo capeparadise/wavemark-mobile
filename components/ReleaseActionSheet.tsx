@@ -18,6 +18,10 @@ import {
 import { useTheme } from '../theme/useTheme';
 import { H } from './haptics';
 import RatingModal from './RatingModal';
+import { useAdvancedRatingsEnabled } from '../lib/user';
+import { ratingLabel } from '../lib/ratingDisplay';
+import { fetchCollectionById, fetchTrackById } from '../lib/apple';
+import { router } from 'expo-router';
 
 export type ReleaseActionSheetRow = ListenRow & {
   artist_id?: string | null;
@@ -51,6 +55,7 @@ function spotifyKey(id?: string | null, spotifyUrl?: string | null) {
 
 export default function ReleaseActionSheet({ row, visible, onClose, onRate, onChanged }: ReleaseActionSheetProps) {
   const { colors } = useTheme();
+  const [advancedRatings] = useAdvancedRatingsEnabled();
   const insets = useSafeAreaInsets();
   const [busy, setBusy] = useState(false);
   const [ratingVisible, setRatingVisible] = useState(false);
@@ -165,8 +170,20 @@ export default function ReleaseActionSheet({ row, visible, onClose, onRate, onCh
       return;
     }
 
-    if (ctx.provider !== 'spotify') {
-      Alert.alert('Artist unavailable', 'This item does not have a Spotify artist id.');
+    if (ctx.provider === 'apple') {
+      const appleId = String((row as any).apple_id || ctx.provider_id || '').match(/\d+/)?.[0] || '';
+      if (appleId) {
+        try {
+          const collection = await fetchCollectionById(Number(appleId));
+          const track = collection ? null : await fetchTrackById(Number(appleId));
+          const artistId = collection?.artistId || track?.artistId;
+          if (artistId) {
+            router.push({ pathname: '/artist/[id]', params: { id: String(artistId), name: ctx.artistName || undefined } });
+            return;
+          }
+        } catch {}
+      }
+      Alert.alert('Artist unavailable', 'Could not resolve this Apple Music artist.');
       return;
     }
 
@@ -285,7 +302,7 @@ export default function ReleaseActionSheet({ row, visible, onClose, onRate, onCh
     onPress: () => void | Promise<void>;
     destructive?: boolean;
   }[] = [
-    ...(ctx.artistId || ctx.provider === 'spotify'
+    ...(ctx.artistId || ctx.provider === 'spotify' || ctx.provider === 'apple'
       ? [{ label: 'View artist profile', icon: 'person-outline' as const, onPress: () => run(resolveAndOpenArtist) }]
       : []),
     ...(ctx.done
@@ -356,7 +373,7 @@ export default function ReleaseActionSheet({ row, visible, onClose, onRate, onCh
               {!!ctx.artistName && <Text style={{ marginTop: 3, color: colors.text.muted, fontSize: 13 }} numberOfLines={1}>{ctx.artistName}</Text>}
             </View>
             {typeof (row as any).rating === 'number' && !Number.isNaN((row as any).rating) ? (
-              <Text style={{ color: colors.accent.primary, fontWeight: '900' }}>{(row as any).rating}/10</Text>
+              <Text style={{ color: colors.accent.primary, fontWeight: '900', flexShrink: 1 }}>{ratingLabel(row.rating!, row.rating_details, advancedRatings)}</Text>
             ) : null}
           </View>
 
@@ -397,7 +414,7 @@ export default function ReleaseActionSheet({ row, visible, onClose, onRate, onCh
         title={ratingRow ? `Rate ${ratingRow.title}` : 'Rate'}
         initial={ratingRow?.rating ?? 0}
         initialDetails={ratingRow?.rating_details as any}
-        advanced={false}
+        advanced={advancedRatings}
         onCancel={() => {
           setRatingVisible(false);
           onClose();

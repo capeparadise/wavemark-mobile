@@ -6,6 +6,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Dimensions, GestureResponderEvent, Modal, PanResponder, Pressable, ScrollView, Text, View } from 'react-native';
 import { H } from './haptics';
 import { useTheme } from '../theme/useTheme';
+import { advancedRatingTotal } from '../lib/ratingDisplay';
 
 type Props = {
   visible: boolean;
@@ -53,10 +54,17 @@ export default function RatingModal({
   const scrollMaxH = Math.min(560, Math.round(Dimensions.get('window').height * 0.6));
   const [scrollLock, setScrollLock] = useState(false);
 
+  // RatingModal can stay mounted while a different release is selected or the
+  // saved rating changes. Reset the slider whenever it opens so "Change
+  // rating" reflects the stored value rather than the previous/default one.
+  useEffect(() => {
+    if (visible) setValue(initialValue);
+  }, [initialValue, visible]);
+
   // Sync initial details
   useEffect(() => {
-    if (initialDetails) setDetails(initialDetails); else setDetails({});
-  }, [initialDetails]);
+    if (visible) setDetails(initialDetails ?? {});
+  }, [initialDetails, visible]);
 
   // Animate big number
   useEffect(() => {
@@ -208,11 +216,12 @@ export default function RatingModal({
             {/* Big animated number */}
             <View style={{ alignItems: 'center', marginVertical: 8 }}>
               <Animated.Text style={{ fontSize: 44, fontWeight: '900', transform: [{ scale }], color: colors.text.secondary }}>
-                {value}/10
+                {advanced ? `${advancedRatingTotal(value, { production: 7, vocals: 7, lyrics: 7, replay: 7, ...details })}/50` : `${value}/10`}
               </Animated.Text>
             </View>
 
             {/* Slider */}
+            {advanced ? <Text style={{ color: colors.text.secondary, fontWeight: '700', marginTop: 4 }}>Overall impression · {value}/10</Text> : null}
             <View style={{ marginTop: 8, marginBottom: 6 }}>
               <View
                 ref={mainTrackRef}
@@ -263,7 +272,7 @@ export default function RatingModal({
               </Pressable>
             ) : null}
             <Pressable
-              onPress={() => onSubmit(value || 1, advanced ? details : null)}
+              onPress={() => onSubmit(value || 1, advanced ? { production: 7, vocals: 7, lyrics: 7, replay: 7, ...details } : null)}
               style={{ backgroundColor: colors.accent.primary, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12 }}
             >
               <Text style={{ color: colors.text.inverted, fontWeight: '700' }}>Save</Text>

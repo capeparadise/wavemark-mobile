@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, FlatList, Image, Pressable, RefreshControl, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, FlatList, Image, Pressable, RefreshControl, Text, View } from 'react-native';
 import Screen from '../../components/StackScreen';
 import StatusMenu from '../../components/StatusMenu';
 import RatingModal from '../../components/RatingModal';
@@ -11,11 +11,13 @@ import { goToRelease } from '../../lib/navigation';
 import { supabase } from '../../lib/supabase';
 import { getUiColors, ui } from '../../constants/ui';
 import { useTheme } from '../../theme/useTheme';
+import { useAdvancedRatingsEnabled } from '../../lib/user';
 
 export const options = { title: 'Pending Ratings' };
 
 export default function PendingRatingsScreen() {
   const { colors } = useTheme();
+  const [advancedRatings] = useAdvancedRatingsEnabled();
   const [rows, setRows] = useState<ListenRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -40,7 +42,7 @@ export default function PendingRatingsScreen() {
     } catch {}
     const { data, error } = await supabase
       .from('listen_list')
-      .select('id,item_type,provider,provider_id,title,artist_name,artwork_url,release_date,done_at,spotify_url,apple_url,spotify_id,apple_id,rating,rated_at')
+      .select('id,item_type,provider,provider_id,title,artist_name,artwork_url,release_date,done_at,spotify_url,apple_url,spotify_id,apple_id,rating,rated_at,rating_details')
       .eq('user_id', user.id)
       .not('done_at', 'is', null)
       .is('rating', null)
@@ -180,17 +182,22 @@ export default function PendingRatingsScreen() {
         visible={ratingVisible}
         title={ratingRow ? `Rate ${ratingRow.title}` : 'Rate'}
         initial={ratingRow?.rating ?? 0}
+        initialDetails={ratingRow?.rating_details}
+        advanced={advancedRatings}
         onCancel={() => { setRatingVisible(false); setRatingRow(null); }}
         onSubmit={async (stars, details) => {
           if (!ratingRow) return;
-          const res = details && Object.keys(details || {}).length
+          const target = ratingRow;
+          const res = advancedRatings && details
             ? await setRatingDetailed(ratingRow.id, stars, details)
             : await setRating(ratingRow.id, stars);
+          if (!res.ok) {
+            Alert.alert('Could not save rating', res.message || 'Please try again.');
+            return;
+          }
           setRatingVisible(false);
           setRatingRow(null);
-          if ((res as any)?.ok) {
-            setRows(curr => curr.filter(r => r.id !== ratingRow.id));
-          }
+          setRows(curr => curr.filter(r => r.id !== target.id));
         }}
       />
     </Screen>

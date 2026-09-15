@@ -118,8 +118,8 @@ export default function LoginScreen() {
                 <Button title={busy ? 'Signing in…' : 'Sign in'} onPress={signIn} disabled={busy} colors={colors} />
                 <Button
                   variant="ghost"
-                  title="Forgot password"
-                  onPress={() => Alert.alert('Forgot password', 'Not implemented yet.')}
+                  title="Forgot your password?"
+                  onPress={() => router.push('/(auth)/forgot-password')}
                   colors={colors}
                 />
                 <Button variant="ghost" title="Create an account" onPress={() => setMode('signup')} colors={colors} />

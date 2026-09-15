@@ -1,5 +1,6 @@
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { router } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -13,6 +14,8 @@ import {
   View,
 } from 'react-native';
 import Screen from '../../components/Screen';
+import ListenViewSwitcher from '../../components/ListenViewSwitcher';
+import { bulkListenAction } from '../../lib/listenBulk';
 
 import {
   addUpcomingToListen,
@@ -61,6 +64,32 @@ export default function ListenTab() {
   const navigation = useNavigation();
   const { user } = useSession();
   const [rows, setRows] = useState<ListenRow[]>([]);
+  const [selecting, setSelecting] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const bulkLock = useRef(false);
+  useEffect(() => { setSelected(new Set()); setSelecting(false); }, [user?.id]);
+  const toggleSelection = (item: ListenRow) => {
+    if(bulkLock.current || item.done_at)return;
+    setSelected(previous => { const next=new Set(previous); if(next.has(item.id))next.delete(item.id);else if(next.size<100)next.add(item.id); return next; });
+  };
+  const performBulk = (action: 'listened' | 'remove') => {
+    if(bulkLock.current || !selected.size)return;
+    const ids=[...selected];
+    Alert.alert(action==='remove' ? 'Remove selected items?' : 'Mark selected as listened?',
+      action==='remove' ? 'Only saved items without ratings or reviews will be removed. Listening history is protected.' : 'These items will move to History. You can rate them individually later.',
+      [{text:'Cancel',style:'cancel'},{text:action==='remove'?'Remove':'Mark listened',style:action==='remove'?'destructive':'default',onPress:async()=>{
+        if(bulkLock.current)return;bulkLock.current=true;setBulkBusy(true);
+        try {
+          const changed=await bulkListenAction(ids,action);
+          setRows(current=>action==='remove' ? current.filter(row=>!changed.includes(row.id)) : current.map(row=>changed.includes(row.id)?{...row,done_at:new Date().toISOString()}:row));
+          setSelected(new Set());setSelecting(false);
+          toast(`${changed.length} ${action==='remove'?'removed':'marked as listened'}${changed.length<ids.length?' · Other items were kept unchanged':''}`);
+          void load({force:true});
+        }catch(e:any){Alert.alert('Could not update selection',e.message);}
+        finally{bulkLock.current=false;setBulkBusy(false);}
+      }}]);
+  };
   const [upcoming, setUpcoming] = useState<UpcomingItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -122,6 +151,7 @@ export default function ListenTab() {
   type TypeFilter = 'all' | 'album' | 'single';
   const TYPE_FILTER_KEY = 'listen_type_filter';
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
+  useEffect(() => { setSelected(new Set()); }, [typeFilter, filterKey]);
 
   useEffect(() => {
     (async () => {
@@ -397,6 +427,24 @@ export default function ListenTab() {
     return list;
   }, [rows, filterKey, sortKey, typeFilter, singleMap, kindMap]);
 
+  const selectableRows = useMemo(
+    () => visibleRows.filter(row => !row.done_at).slice(0, 100),
+    [visibleRows],
+  );
+  const allVisibleSelected = selectableRows.length > 0
+    && selectableRows.every(row => selected.has(row.id));
+  const toggleSelectAll = () => {
+    if (bulkBusy || !selectableRows.length) return;
+    if (allVisibleSelected) {
+      setSelected(new Set());
+      return;
+    }
+    setSelected(new Set(selectableRows.map(row => row.id)));
+    if (visibleRows.filter(row => !row.done_at).length > 100) {
+      toast('Selected the first 100 items');
+    }
+  };
+
   // Helper: build a stable cache key
   const artKeyFor = (r: ListenRow) => {
     if (r.spotify_id) return `sp:${r.item_type}:${r.spotify_id}`;
@@ -507,11 +555,125 @@ export default function ListenTab() {
               justifyContent: 'space-between',
             }}
           >
-            <Text style={{ fontSize: 22, fontWeight: '700', color: colors.text.secondary }}>Your Listen List</Text>
-            <PlayerToggle value={defaultPlayer} onChange={chooseDefaultPlayer} />
+            <View style={{ flex: 1, marginRight: 12 }}><ListenViewSwitcher value="releases" /></View>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <PlayerToggle value={defaultPlayer} onChange={chooseDefaultPlayer} />
+              <Pressable
+                disabled={bulkBusy}
+                accessibilityRole="button"
+                accessibilityLabel={selecting ? 'Exit multi-select' : 'Select multiple releases'}
+                accessibilityState={{ selected: selecting, disabled: bulkBusy }}
+                onPress={() => { setSelecting(!selecting); setSelected(new Set()); }}
+                hitSlop={6}
+                style={({ pressed }) => ({
+                  width: 44,
+                  height: 44,
+                  borderRadius: 22,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  borderWidth: 1,
+                  borderColor: selecting ? colors.accent.primary : colors.border.subtle,
+                  backgroundColor: selecting ? `${colors.accent.primary}20` : colors.bg.secondary,
+                  opacity: bulkBusy ? 0.5 : pressed ? 0.72 : 1,
+                })}
+              >
+                <Ionicons name={selecting ? 'checkbox' : 'checkbox-outline'} size={22} color={selecting ? colors.accent.primary : colors.text.secondary} />
+              </Pressable>
+            </View>
           </View>
 
           {/* Content-type filter chips */}
+          {selecting && (
+            <View
+              style={{
+                marginVertical: 6,
+                padding: 12,
+                gap: 10,
+                borderRadius: 18,
+                borderWidth: 1,
+                borderColor: colors.border.subtle,
+                backgroundColor: colors.bg.secondary,
+              }}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                <Text style={{ color: colors.text.secondary, fontWeight: '800' }}>
+                  {selected.size} selected
+                </Text>
+                <Pressable
+                  accessibilityRole="checkbox"
+                  accessibilityLabel={allVisibleSelected ? 'Clear all selections' : 'Select all visible items'}
+                  accessibilityState={{ checked: allVisibleSelected, disabled: bulkBusy || !selectableRows.length }}
+                  disabled={bulkBusy || !selectableRows.length}
+                  onPress={toggleSelectAll}
+                  hitSlop={8}
+                  style={({ pressed }) => ({
+                    minHeight: 36,
+                    paddingHorizontal: 8,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 7,
+                    opacity: bulkBusy || !selectableRows.length ? 0.45 : pressed ? 0.68 : 1,
+                  })}
+                >
+                  <Ionicons
+                    name={allVisibleSelected ? 'checkbox' : 'square-outline'}
+                    size={20}
+                    color={colors.accent.primary}
+                  />
+                  <Text style={{ color: colors.accent.primary, fontWeight: '800' }}>
+                    {allVisibleSelected ? 'Clear all' : 'Select all'}
+                  </Text>
+                </Pressable>
+              </View>
+
+              <View style={{ flexDirection: 'row', gap: 10 }}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Mark selected items as listened"
+                  disabled={bulkBusy || !selected.size}
+                  onPress={() => performBulk('listened')}
+                  style={({ pressed }) => ({
+                    flex: 1,
+                    minHeight: 44,
+                    borderRadius: 13,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 7,
+                    backgroundColor: colors.accent.primary,
+                    opacity: bulkBusy || !selected.size ? 0.38 : pressed ? 0.78 : 1,
+                  })}
+                >
+                  <Ionicons name="checkmark-circle-outline" size={19} color={colors.text.inverted} />
+                  <Text style={{ color: colors.text.inverted, fontWeight: '800' }}>
+                    {bulkBusy ? 'Updating…' : 'Mark listened'}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Remove selected items from Listen List"
+                  disabled={bulkBusy || !selected.size}
+                  onPress={() => performBulk('remove')}
+                  style={({ pressed }) => ({
+                    flex: 1,
+                    minHeight: 44,
+                    borderRadius: 13,
+                    borderWidth: 1,
+                    borderColor: '#ff6b6b55',
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 7,
+                    backgroundColor: '#ff6b6b10',
+                    opacity: bulkBusy || !selected.size ? 0.38 : pressed ? 0.72 : 1,
+                  })}
+                >
+                  <Ionicons name="trash-outline" size={18} color="#ff6b6b" />
+                  <Text style={{ color: '#ff6b6b', fontWeight: '800' }}>Remove</Text>
+                </Pressable>
+              </View>
+            </View>
+          )}
           <View style={{ paddingVertical: 10, paddingHorizontal: 4, flexDirection: 'row', gap: 8 }}>
             <Chip label="All" selected={typeFilter === 'all'} onPress={() => setTypeFilter('all')} />
             <Chip label="Albums" selected={typeFilter === 'album'} onPress={() => setTypeFilter('album')} />
@@ -611,15 +773,18 @@ export default function ListenTab() {
                 isDone={!!item.done_at}
                 onToggleDone={() => toggleDone(item)}
                 onRemove={() => removeItem(item)}
-                disabled={!!mutatingRef.current[item.id]}
+                disabled={selecting || bulkBusy || !!mutatingRef.current[item.id]}
                 onHapticTap={H.tap}
                 onHapticSuccess={H.success}
                 onHapticError={H.error}
               >
                 <View style={{ marginHorizontal: 2, borderBottomWidth: 1, borderBottomColor: colors.border.subtle }}>
                   <Pressable
-                    onPress={() => onOpen(item)}
-                    onLongPress={() => setMenuRow(item)}
+                    accessibilityRole={selecting ? 'checkbox' : 'button'}
+                    accessibilityState={selecting ? {checked:selected.has(item.id),disabled:!!item.done_at || bulkBusy} : undefined}
+                    accessibilityLabel={item.title}
+                    onPress={() => selecting ? toggleSelection(item) : onOpen(item)}
+                    onLongPress={() => {if(!selecting)setMenuRow(item);}}
                     delayLongPress={RELEASE_LONG_PRESS_MS}
                     style={({ pressed }) => ({
                       paddingVertical: 14,
@@ -629,6 +794,30 @@ export default function ListenTab() {
                   >
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
                       {/* cover art */}
+                      {selecting ? (
+                        <View
+                          style={{
+                            width: 24,
+                            height: 24,
+                            borderRadius: 7,
+                            borderWidth: item.done_at || selected.has(item.id) ? 0 : 1.5,
+                            borderColor: colors.border.muted,
+                            backgroundColor: item.done_at
+                              ? colors.bg.muted
+                              : selected.has(item.id)
+                                ? colors.accent.primary
+                                : 'transparent',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                          }}
+                        >
+                          {item.done_at ? (
+                            <Ionicons name="remove" size={15} color={colors.text.muted} />
+                          ) : selected.has(item.id) ? (
+                            <Ionicons name="checkmark" size={17} color={colors.text.inverted} />
+                          ) : null}
+                        </View>
+                      ) : null}
                       {(() => {
                         const key = artKeyFor(item);
                         const persistedArtwork = typeof item.artwork_url === 'string' && item.artwork_url.trim()
@@ -670,7 +859,7 @@ export default function ListenTab() {
                           </Text>
                           <Stars value={item.rating} />
                           <Pressable
-                            onPress={() => setMenuRow(item)}
+                            onPress={() => selecting ? toggleSelection(item) : setMenuRow(item)}
                             hitSlop={8}
                             style={{ paddingHorizontal: 6, paddingVertical: 6 }}
                           >

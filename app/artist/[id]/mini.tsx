@@ -7,6 +7,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Animated, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import GlassCard from '../../../components/GlassCard';
 import FollowButton from '../../../components/FollowButton';
+import SaveArtistButton from '../../../components/SaveArtistButton';
 import Screen from '../../../components/Screen';
 import { H } from '../../../components/haptics';
 import { addToListFromSearch } from '../../../lib/listen';
@@ -17,6 +18,7 @@ import { getMarket, spotifyLookup, spotifySearch } from '../../../lib/spotify';
 import { artistPageReleases, artistSearch, fetchArtistDetails } from '../../../lib/spotifyArtist';
 import { supabase } from '../../../lib/supabase';
 import { useTheme } from '../../../theme/useTheme';
+import { matchesArtistRelease, type ArtistReleaseScope } from '../../../lib/artistReleaseFilters';
 
 export default function ArtistMiniScreen() {
   const { colors } = useTheme();
@@ -41,6 +43,8 @@ export default function ArtistMiniScreen() {
   const IMAGE_CACHE_KEY_V2 = 'artistImagesCacheV2';
   const IMAGE_CACHE_KEY_V1 = 'artistImagesCacheV1';
   const [filter, setFilter] = useState<'all' | 'single' | 'project'>('all');
+  const [releaseScope, setReleaseScope] = useState<ArtistReleaseScope>('all');
+  useEffect(()=>{setFilter('all');setReleaseScope('all');},[id]);
   const fadeIn = useRef(new Animated.Value(0)).current;
   const scrollY = useRef(new Animated.Value(0)).current;
 
@@ -362,7 +366,7 @@ export default function ArtistMiniScreen() {
     const badge = isFeature ? 'feature' : presentationType;
     const kind: 'album' | 'track' = presentationType === 'single' ? 'track' : 'album';
     const item = { kind, id: a.id, title: a.title, artist: a.artist, imageUrl: a.imageUrl, releaseDate: a.releaseDate, spotifyUrl: a.spotifyUrl, albumGroup, badge, presentationType, totalTracks };
-    if (!bestById.has(item.id)) bestById.set(item.id, item);
+    if (!bestById.has(item.id) || (bestById.get(item.id)?.badge==='feature' && !isFeature)) bestById.set(item.id, item);
   }
   const deduped = Array.from(bestById.values());
   deduped.sort((a, b) => Date.parse(normDate(b.releaseDate)) - Date.parse(normDate(a.releaseDate)));
@@ -386,11 +390,7 @@ export default function ArtistMiniScreen() {
   const latestReleaseDate = merged.find((m) => !!m.releaseDate)?.releaseDate ?? null;
   const genreLabel = (artistMeta?.genres || []).find(Boolean) || 'Artist';
 
-  const filtered = merged.filter((m) => {
-    if (filter === 'single') return m.presentationType === 'single';
-    if (filter === 'project') return m.presentationType === 'project';
-    return true;
-  });
+  const filtered = merged.filter(m=>matchesArtistRelease(m,releaseScope,filter));
 
   return (
     <Screen>
@@ -465,6 +465,7 @@ export default function ArtistMiniScreen() {
           <GlassCard style={{ marginTop: 12, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 18 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', rowGap: 8, columnGap: 10 }}>
               {artistId ? <FollowButton artistId={artistId} artistName={nameShown} followingLabel="Unfollow" /> : null}
+              {/^[A-Za-z0-9]{22}$/.test(artistId) ? <SaveArtistButton key={artistId} artist={{provider:'spotify',artist_id:artistId,artist_name:nameShown,image_url:heroUrl}}/> : null}
               <View style={{ paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999, backgroundColor: `${colors.accent.primary}22`, borderWidth: 1, borderColor: `${colors.accent.primary}33` }}>
                 <Text style={{ color: colors.accent.primary, fontWeight: '800', fontSize: 11, letterSpacing: 0.4 }}>
                   {String(genreLabel).toUpperCase().slice(0, 18)}
@@ -478,11 +479,19 @@ export default function ArtistMiniScreen() {
             </View>
           </GlassCard>
 
-          <View style={{ marginTop: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+          <View style={{ marginTop: 20, gap: 10 }}>
             <Text style={{ fontSize: 18, fontWeight: '800', color: colors.text.secondary }}>Latest releases</Text>
-            <View style={{ flexDirection: 'row', gap: 8 }}>
+            <View accessibilityRole="tablist" style={{flexDirection:'row',borderBottomWidth:1,borderBottomColor:colors.border.subtle}}>
+              {([{key:'all',label:'All'},{key:'own',label:'Artist releases'},{key:'featured',label:'Featured'}] as const).map(opt=>(
+                <Pressable key={opt.key} accessibilityRole="tab" accessibilityState={{selected:releaseScope===opt.key}}
+                  onPress={()=>setReleaseScope(opt.key)} style={{flex:1,minHeight:44,alignItems:'center',justifyContent:'center',borderBottomWidth:2,borderBottomColor:releaseScope===opt.key?colors.accent.primary:'transparent'}}>
+                  <Text style={{color:releaseScope===opt.key?colors.accent.primary:colors.text.muted,fontWeight:'700',fontSize:13}}>{opt.label}</Text>
+                </Pressable>
+              ))}
+            </View>
+            <View style={{ flexDirection: 'row', gap: 8, flexWrap:'wrap' }}>
               {([
-                { key: 'all' as const, label: 'All' },
+                { key: 'all' as const, label: 'All formats' },
                 { key: 'single' as const, label: 'Singles' },
                 { key: 'project' as const, label: 'Projects' },
               ]).map((opt) => {
@@ -490,6 +499,8 @@ export default function ArtistMiniScreen() {
                 return (
                   <Pressable
                     key={opt.key}
+                    accessibilityRole="button"
+                    accessibilityState={{selected}}
                     onPress={() => setFilter(opt.key)}
                     hitSlop={8}
                     style={({ pressed }) => ({
@@ -511,7 +522,11 @@ export default function ArtistMiniScreen() {
             </View>
           </View>
 
-          <View style={{ marginTop: 12, gap: 10 }}>
+          <View style={{ marginTop: 12 }}>
+            {!loading && filtered.length===0 && <View style={{paddingVertical:24}}>
+              <Text style={{color:colors.text.muted}}>No releases match these filters.</Text>
+              <Pressable onPress={()=>{setFilter('all');setReleaseScope('all');}} style={{minHeight:44,justifyContent:'center'}}><Text style={{color:colors.accent.primary}}>Show all releases</Text></Pressable>
+            </View>}
             {filtered.map(item => {
             const key = spotifyKey(item.id, item.spotifyUrl);
             const stat = key ? listenStatus[key] : undefined;
@@ -530,7 +545,7 @@ export default function ArtistMiniScreen() {
               isAdded ? 'checkmark' :
               'bookmark-outline';
             return (
-              <GlassCard key={item.id} asChild style={{ paddingVertical: 12, paddingHorizontal: 12, borderRadius: 18 }}>
+              <View key={item.id} style={{ paddingVertical: 12, borderBottomWidth:StyleSheet.hairlineWidth,borderBottomColor:colors.border.subtle }}>
                 <Pressable
                   onPress={() => {
                     const releaseId = spotifyKey(item.id, item.spotifyUrl) || item.id;
@@ -570,7 +585,7 @@ export default function ArtistMiniScreen() {
                       <Text style={{ fontWeight: '800', color: colors.text.secondary, flexShrink: 1 }} numberOfLines={1}>
                         {item.title}
                       </Text>
-                      <View style={{ paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999, backgroundColor: `${colors.text.secondary}14`, borderWidth: 1, borderColor: `${colors.text.secondary}22` }}>
+                      <View style={{flexShrink:0}}>
                         <Text style={{ color: colors.text.secondary, fontWeight: '900', fontSize: 10, letterSpacing: 0.5 }}>
                           {badgeLabel}
                         </Text>
@@ -628,7 +643,7 @@ export default function ArtistMiniScreen() {
                     <Ionicons name={iconName as any} size={18} color={actionFg} />
                   </Pressable>
                 </Pressable>
-              </GlassCard>
+              </View>
             );
           })}
           </View>

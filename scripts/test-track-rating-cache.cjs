@@ -1,0 +1,13 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript');
+let data=[{id:'row',provider:'apple',provider_id:'track',rating:8}],fail=false,hold;
+const supabase={from(){const q={select(){return q},eq(){return q},order(){return q},async range(){if(hold)await hold;if(fail) return {error:{message:'offline'}};return {data,error:null};}};return q;}};
+const m={exports:{}};
+new Function('require','module','exports',ts.transpileModule(fs.readFileSync('lib/trackRatingCache.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText)(()=>({supabase}),m,m.exports);
+(async()=>{const c=m.exports;
+await c.refreshTrackRatings('alice');assert.equal(c.trackRatingSnapshot('alice')['apple:track'].rating,8);
+assert.deepEqual(c.trackRatingSnapshot('bob'),{});
+fail=true;await assert.rejects(()=>c.refreshTrackRatings('alice'));assert.equal(c.trackRatingSnapshot('alice')['apple:track'].rating,8,'Offline refresh must retain cache');
+fail=false;let release;hold=new Promise(r=>release=r);const pending=c.refreshTrackRatings('alice');c.clearTrackRatings();release();await pending;
+assert.deepEqual(c.trackRatingSnapshot('alice'),{},'Late response after signout must not repopulate cache');
+console.log('PASS: warm ratings, user isolation, offline retention and signout race');
+})().catch(e=>{console.error(e);process.exitCode=1});

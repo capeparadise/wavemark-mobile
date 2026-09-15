@@ -1,0 +1,12 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const ts = require('typescript');
+const mod = {exports:{}};
+new Function('module','exports',ts.transpileModule(fs.readFileSync('lib/spotifyOpenMatch.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText)(mod,mod.exports);
+const item = {title:'PRIMA',artist_name:'ADÉLA',item_type:'album'};
+const result = {id:'7Ifiyhu4wyMHojKPy2jJlb',title:'PRIMA',artist:'ADELA',type:'album'};
+const match = mod.exports.spotifyOpenMatch;
+assert.equal(match(item,result),'https://open.spotify.com/album/7Ifiyhu4wyMHojKPy2jJlb');
+for(const patch of [{artist:'Someone else'},{title:'PRIMA (Bonus Track)'},{type:'track'},{id:'6807192580'}]) assert.equal(match(item,{...result,...patch}),null);
+assert.equal(match(item,null),null);
+console.log('PASS: exact Spotify counterpart, accents, wrong artist/edition/type/ID rejected');
