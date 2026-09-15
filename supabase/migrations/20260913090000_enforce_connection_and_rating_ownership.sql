@@ -1,4 +1,4 @@
--- Prepared for review; do not deploy before isolated regression verification.
+-- Enforce connection participant integrity and rating ownership.
 CREATE OR REPLACE FUNCTION public.guard_friend_request_update()
 RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER
 SET search_path = pg_catalog, public

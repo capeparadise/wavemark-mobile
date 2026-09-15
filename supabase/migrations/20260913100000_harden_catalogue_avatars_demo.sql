@@ -1,4 +1,4 @@
--- Local preparation only. Verify in recovery before production approval.
+-- Harden catalogue writes, avatar storage and demo reset access.
 REVOKE INSERT, UPDATE, DELETE ON public.artists, public.releases FROM anon, authenticated;
 
 -- Public image delivery stays enabled; listing metadata is owner-only.

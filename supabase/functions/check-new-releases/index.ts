@@ -73,7 +73,8 @@ serve(async (req) => {
     if (!bearer) return new Response('Authentication required', { status: 401 });
     // Only the exact server-side credential may scan across accounts. Never
     // trust decoded JWT claims or a caller-supplied user ID.
-    const trustedScheduler = bearer === SUPABASE_SERVICE_ROLE_KEY;
+    const schedulerToken = Deno.env.get('FEED_SCAN_SCHEDULER_TOKEN');
+    const trustedScheduler = bearer === SUPABASE_SERVICE_ROLE_KEY || (!!schedulerToken && bearer === schedulerToken);
     let userId: string | null = null;
     if (!trustedScheduler) {
       const { data, error } = await supabase.auth.getUser(bearer);

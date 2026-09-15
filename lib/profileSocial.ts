@@ -439,6 +439,9 @@ export async function uploadMyAvatar(input: { uri: string; contentType?: string 
     return (m?.[1] || 'jpg').toLowerCase();
   })();
   const contentType = input.contentType || (ext === 'png' ? 'image/png' : 'image/jpeg');
+  if (!['image/jpeg','image/png','image/webp','image/heic','image/heif'].includes(contentType)) {
+    return { ok: false, message: 'Choose a JPEG, PNG, WebP or HEIC photo.' };
+  }
   const path = `${user.id}/${Date.now()}.${ext}`;
 
   let body: ArrayBuffer;
@@ -447,6 +450,7 @@ export async function uploadMyAvatar(input: { uri: string; contentType?: string 
   } catch {
     return { ok: false, message: 'Could not read image' };
   }
+  if (body.byteLength > 10 * 1024 * 1024) return { ok: false, message: 'Choose a photo smaller than 10 MB.' };
 
   const { error: upErr } = await supabase
     .storage

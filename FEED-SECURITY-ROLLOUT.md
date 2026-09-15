@@ -1,5 +1,9 @@
 # Feed-refresh security — local preparation, 12 September 2026
 
+## 13 September update
+
+Owner confirms build 20 is live. Tester installation/adoption is not yet verified; publication alone does not satisfy the cutover gate. No production deployment performed. Before cutover, confirm active testers use the compatible client, verify scheduler credentials without exposing them, and obtain approval for the server change. Then verify real-provider refresh plus denied anonymous/unrelated calls. See SECURITY-REVIEW-2026-09-13.md for newly identified privacy issues requiring separate fixes.
+
 ## Status
 
 Prepared locally; production function not deployed and no tester upload performed. Isolated recovery testing used temporary fixtures and grants, subsequently cleaned up. Existing unrelated UI/rating/demo work is preserved. The production authorization gap remains until rollout.
@@ -8,7 +12,7 @@ Prepared locally; production function not deployed and no tester upload performe
 
 - Both Discover's fallback scan and follow-triggered refresh now use a dedicated session-bearing POST request. Public catalog/search helpers are unchanged.
 - The handler verifies ordinary callers with Supabase Auth, then checks the caller's own followed-artist row before a single-artist scan. Anonymous, expired/invalid sessions and unrelated artists fail closed.
-- Only the exact server-side service-role credential retains a multi-artist scan path. Never put this credential in the app. Scans accept at most 200 artists and inspect at most 1,000 follow rows; this bounded scheduler path is not a complete paginated global sweep. A production scheduler needing broader coverage requires a separately reviewed cursor/job design.
+- Only the exact server-side service-role credential or an explicitly configured `FEED_SCAN_SCHEDULER_TOKEN` retains a multi-artist scan path. Never put either credential in the app. Scans accept at most 200 artists and inspect at most 1,000 follow rows; this bounded scheduler path is not a complete paginated global sweep. A production scheduler needing broader coverage requires a separately reviewed cursor/job design.
 - Market and artist-ID inputs are validated. Internal errors are not returned to callers.
 - This is authorization and per-request bounding, not a distributed rate limiter: repeated authorized calls still need quota/caching review.
 
@@ -19,6 +23,12 @@ Prepared locally; production function not deployed and no tester upload performe
 `node scripts/test-listen-save.cjs`, `node scripts/test-rating-display.cjs`, TypeScript checking and diff whitespace checks also passed. These are not a live Supabase integration test or a simulator UI smoke test.
 
 ## Remaining verification and rollout order
+
+### Deployed recovery verification — 12 September
+
+Passed `node scripts/verify-feed-recovery.cjs --deployed` through the recovery Edge gateway with JWT gateway verification disabled and handler authorization enforced. Used an unchanged copy of the real handler behind a recovery-only wrapper that simulated Spotify replies. Real Auth, ownership queries and release/artwork writes passed; anonymous, invalid and unrelated users were rejected. Scheduler authentication passed using a temporary dedicated token. A raw CLI service-role token did not match the runtime-provided service credential in this project; do not assume those representations are interchangeable. The explicit scheduler token avoids that dependency. No production scheduler configuration changed.
+
+Temporary accounts, fixture rows and grants were cleaned up. The test function, dedicated scheduler token and two provider placeholders were removed; function list returned empty and only platform-managed secrets remained. Real Spotify integration and production cutover remain unverified. Production was not deployed.
 
 ### Isolated integration result — 12 September
 
