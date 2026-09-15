@@ -79,6 +79,16 @@ export default function RatingsScreen() {
 
   const renderRow = ({ item }: { item: ListenRow }) => (
     <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`${item.title}${item.artist_name ? `, ${item.artist_name}` : ''}. Rated ${ratingLabel(item.rating ?? 0, item.rating_details, advancedRatings)}${item.review ? `. Note: ${item.review}` : ''}`}
+      accessibilityHint="Tap to open. Use the Change rating action to edit the score or note."
+      accessibilityActions={[{ name: 'changeRating', label: 'Change rating' }]}
+      onAccessibilityAction={({ nativeEvent }) => {
+        if (nativeEvent.actionName === 'changeRating') {
+          setRatingRow(item);
+          setRatingVisible(true);
+        }
+      }}
       onPress={() => goToRelease(item.id)}
       onLongPress={() => { setRatingRow(item); setRatingVisible(true); }}
       delayLongPress={250}
