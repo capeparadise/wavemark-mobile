@@ -29,7 +29,13 @@ export default function ListenViewSwitcher({ value }: { value: ListenView }) {
       <Ionicons name="chevron-down" size={18} color={colors.accent.primary} />
     </Pressable>
     <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
-      <Pressable accessibilityRole="button" accessibilityLabel="Close list selection" onPress={() => setOpen(false)} style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.42)' }}>
+      <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.42)' }}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Close list selection"
+          onPress={() => setOpen(false)}
+          style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 }}
+        />
         <View style={{ marginTop: 92, marginHorizontal: 20, borderRadius: 18, padding: 8, backgroundColor: colors.bg.elevated, borderWidth: 1, borderColor: colors.border.subtle }}>
           {([
             { key: 'releases' as const, label: 'Your Listen List', detail: 'Music saved for later' },
@@ -51,7 +57,7 @@ export default function ListenViewSwitcher({ value }: { value: ListenView }) {
             </Pressable>;
           })}
         </View>
-      </Pressable>
+      </View>
     </Modal>
   </>;
 }
