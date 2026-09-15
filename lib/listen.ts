@@ -7,6 +7,7 @@ import { openInApple } from './openApple';
 import { getMarket, spotifyLookup, spotifyResolveRelease } from './spotify';
 import { spotifyOpenMatch } from './spotifyOpenMatch';
 import { supabase } from './supabase';
+import { normalizeReview } from './review';
 
 const debug = debugNS('listen');
 export const APPLE_ENABLED = process.env.EXPO_PUBLIC_ENABLE_APPLE !== 'false';
@@ -1213,7 +1214,7 @@ function normalizeRating(r: number): RatingValue {
   return clamped as RatingValue;
 }
 
-export async function setRating(id: string, rating: number, review?: string, options?: { doneAt: string }) {
+export async function setRating(id: string, rating: number, review?: string | null, options?: { doneAt: string }) {
   try {
     const { data: auth } = await supabase.auth.getUser();
     const user = auth?.user;
@@ -1225,7 +1226,7 @@ export async function setRating(id: string, rating: number, review?: string, opt
     const attemptUpdate = async (value: number) => {
       const payload: any = {
         rating: value,
-        review: review ?? null,
+        review: normalizeReview(review),
         rated_at: new Date().toISOString(),
         ...(options ? { done_at: options.doneAt } : {}),
       };
@@ -1273,7 +1274,7 @@ export async function setRatingDetailed(
   id: string,
   rating: number,
   details: { production?: number; vocals?: number; lyrics?: number; replay?: number; [k: string]: number | undefined },
-  review?: string,
+  review?: string | null,
   options?: { doneAt: string }
 ) {
   try {
@@ -1298,7 +1299,7 @@ export async function setRatingDetailed(
 
     const basePayload = {
       rating: r,
-      review: review ?? null,
+      review: normalizeReview(review),
       rated_at: new Date().toISOString(),
       ...(options ? { done_at: options.doneAt } : {}),
     };

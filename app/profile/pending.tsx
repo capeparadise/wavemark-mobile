@@ -42,7 +42,7 @@ export default function PendingRatingsScreen() {
     } catch {}
     const { data, error } = await supabase
       .from('listen_list')
-      .select('id,item_type,provider,provider_id,title,artist_name,artwork_url,release_date,done_at,spotify_url,apple_url,spotify_id,apple_id,rating,rated_at,rating_details')
+      .select('id,item_type,provider,provider_id,title,artist_name,artwork_url,release_date,done_at,spotify_url,apple_url,spotify_id,apple_id,rating,rated_at,rating_details,review')
       .eq('user_id', user.id)
       .not('done_at', 'is', null)
       .is('rating', null)
@@ -183,14 +183,15 @@ export default function PendingRatingsScreen() {
         title={ratingRow ? `Rate ${ratingRow.title}` : 'Rate'}
         initial={ratingRow?.rating ?? 0}
         initialDetails={ratingRow?.rating_details}
+        initialReview={ratingRow?.review}
         advanced={advancedRatings}
         onCancel={() => { setRatingVisible(false); setRatingRow(null); }}
-        onSubmit={async (stars, details) => {
+        onSubmit={async (stars, details, review) => {
           if (!ratingRow) return;
           const target = ratingRow;
           const res = advancedRatings && details
-            ? await setRatingDetailed(ratingRow.id, stars, details)
-            : await setRating(ratingRow.id, stars);
+            ? await setRatingDetailed(ratingRow.id, stars, details, review)
+            : await setRating(ratingRow.id, stars, review);
           if (!res.ok) {
             Alert.alert('Could not save rating', res.message || 'Please try again.');
             return;

@@ -45,7 +45,7 @@ export default function RatingsScreen() {
     } catch {}
     const { data, error } = await supabase
       .from('listen_list')
-      .select('id,item_type,provider,provider_id,title,artist_name,artwork_url,release_date,done_at,spotify_url,apple_url,spotify_id,apple_id,rating,rated_at,rating_details')
+      .select('id,item_type,provider,provider_id,title,artist_name,artwork_url,release_date,done_at,spotify_url,apple_url,spotify_id,apple_id,rating,rated_at,rating_details,review')
       .eq('user_id', user.id)
       .not('rating', 'is', null)
       .order('rated_at', { ascending: false, nullsFirst: false })
@@ -116,6 +116,11 @@ export default function RatingsScreen() {
         </View>
         {!!item.artist_name && <Text style={{ color: colors.text.muted }} numberOfLines={1}>{item.artist_name}</Text>}
         <Text style={{ color: colors.text.muted, marginTop: 4 }}>Rated {ratingLabel(item.rating ?? 0, item.rating_details, advancedRatings)}{item.rated_at ? ` · ${formatDate(item.rated_at)}` : ''}</Text>
+        {!!item.review && (
+          <Text style={{ color: colors.text.secondary, marginTop: 5, fontSize: 13, lineHeight: 18 }} numberOfLines={2}>
+            “{item.review}”
+          </Text>
+        )}
       </View>
       <Pressable onPress={() => setMenuRow(item)} hitSlop={8} style={{ padding: 6 }}>
         <Text style={{ fontSize: 18, color: colors.text.muted }}>⋯</Text>
@@ -214,13 +219,14 @@ export default function RatingsScreen() {
         title={ratingRow ? `Rate ${ratingRow.title}` : 'Rate'}
         initial={ratingRow?.rating ?? 0}
         initialDetails={ratingRow?.rating_details}
+        initialReview={ratingRow?.review}
         advanced={advancedRatings}
         onCancel={() => { setRatingVisible(false); setRatingRow(null); }}
-        onSubmit={async (stars, details) => {
+        onSubmit={async (stars, details, review) => {
           if (!ratingRow) return;
           const res = details && Object.keys(details || {}).length
-            ? await setRatingDetailed(ratingRow.id, stars, details)
-            : await setRating(ratingRow.id, stars);
+            ? await setRatingDetailed(ratingRow.id, stars, details, review)
+            : await setRating(ratingRow.id, stars, review);
           if (!res.ok) {
             Alert.alert('Could not save rating', res.message || 'Please try again.');
             return;

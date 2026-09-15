@@ -122,8 +122,8 @@ export default function TrackRatingButton({ track, artworkUrl, artist, releaseDa
       </View>
     </Modal>
     <RatingModal visible={visible} title={track.title} initial={row?.rating ?? 0}
-      advanced={advanced} initialDetails={row?.rating_details} onCancel={() => {if(!locked.current)setVisible(false);}}
-      onSubmit={async (score,details) => {
+      advanced={advanced} initialDetails={row?.rating_details} initialReview={row?.review} onCancel={() => {if(!locked.current)setVisible(false);}}
+      onSubmit={async (score,details,review) => {
         if(locked.current)return;locked.current=true;setBusy(true);
         try {
           let current=await lookup();
@@ -138,8 +138,8 @@ export default function TrackRatingButton({ track, artworkUrl, artist, releaseDa
           if(!current || current.item_type !== 'track')throw new Error('Could not identify the individual track.');
           const options={doneAt:current.done_at || new Date().toISOString()};
           const result=advanced && details
-            ? await setRatingDetailed(current.id,score,details,current.review ?? undefined,options)
-            : await setRating(current.id,score,current.review ?? undefined,options);
+            ? await setRatingDetailed(current.id,score,details,review,options)
+            : await setRating(current.id,score,review,options);
           if(!result.ok || !result.row)throw new Error(result.message || 'Could not save rating.');
           setRow({...current,...result.row,done_at:options.doneAt});setVisible(false);
           emit('listen:updated');emit('listen:refresh');toast('Track rated and marked as listened');

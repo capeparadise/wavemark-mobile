@@ -3,19 +3,21 @@
   PURPOSE: Cross-platform rating modal (1–10 slider with haptics & animation).
   ======================================================================== */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Dimensions, GestureResponderEvent, Modal, PanResponder, Pressable, ScrollView, Text, View } from 'react-native';
+import { Animated, Dimensions, GestureResponderEvent, Modal, PanResponder, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { H } from './haptics';
 import { useTheme } from '../theme/useTheme';
 import { advancedRatingTotal } from '../lib/ratingDisplay';
+import { normalizeReview, REVIEW_MAX_LENGTH } from '../lib/review';
 
 type Props = {
   visible: boolean;
   title?: string;
   initial?: number;           // 1..10
   initialDetails?: { production?: number; vocals?: number; lyrics?: number; replay?: number } | null;
+  initialReview?: string | null;
   advanced?: boolean;
   onCancel: () => void;
-  onSubmit: (stars: number, details?: { production?: number; vocals?: number; lyrics?: number; replay?: number } | null) => void;
+  onSubmit: (stars: number, details?: { production?: number; vocals?: number; lyrics?: number; replay?: number } | null, review?: string | null) => void;
   onRateLater?: () => void;
   statusLabel?: string; // optional status text (e.g., Marked as listened)
   onUndoStatus?: () => void; // optional undo handler (e.g., mark not listened)
@@ -26,6 +28,7 @@ export default function RatingModal({
   title = 'Rate',
   initial = 0,
   initialDetails = null,
+  initialReview = null,
   advanced = false,
   onCancel,
   onSubmit,
@@ -51,6 +54,8 @@ export default function RatingModal({
   const scale = useRef(new Animated.Value(1)).current;
   const lastHaptic = useRef<number | null>(null);
   const [details, setDetails] = useState<{ production?: number; vocals?: number; lyrics?: number; replay?: number }>({});
+  const [review, setReview] = useState('');
+  const [reviewOpen, setReviewOpen] = useState(false);
   const scrollMaxH = Math.min(560, Math.round(Dimensions.get('window').height * 0.6));
   const [scrollLock, setScrollLock] = useState(false);
 
@@ -65,6 +70,13 @@ export default function RatingModal({
   useEffect(() => {
     if (visible) setDetails(initialDetails ?? {});
   }, [initialDetails, visible]);
+
+  useEffect(() => {
+    if (!visible) return;
+    const nextReview = String(initialReview ?? '').slice(0, REVIEW_MAX_LENGTH);
+    setReview(nextReview);
+    setReviewOpen(Boolean(nextReview.trim()));
+  }, [initialReview, visible]);
 
   // Animate big number
   useEffect(() => {
@@ -259,6 +271,52 @@ export default function RatingModal({
                 <CategorySlider label="Replay value" keyName="replay" />
               </View>
             ) : null}
+
+            <View style={{ marginTop: 18 }}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={reviewOpen ? 'Hide optional note' : 'Add an optional note'}
+                onPress={() => setReviewOpen(open => !open)}
+                style={({ pressed }) => ({
+                  alignSelf: 'flex-start',
+                  paddingVertical: 6,
+                  opacity: pressed ? 0.65 : 1,
+                })}
+              >
+                <Text style={{ color: colors.accent.primary, fontWeight: '800' }}>
+                  {reviewOpen ? 'Hide note' : review.trim() ? 'Edit note' : 'Add a note'}
+                </Text>
+              </Pressable>
+              {reviewOpen ? (
+                <View style={{ marginTop: 6 }}>
+                  <TextInput
+                    accessibilityLabel="Rating note"
+                    value={review}
+                    onChangeText={setReview}
+                    placeholder="What stood out? (optional)"
+                    placeholderTextColor={colors.text.muted}
+                    multiline
+                    maxLength={REVIEW_MAX_LENGTH}
+                    textAlignVertical="top"
+                    style={{
+                      minHeight: 82,
+                      borderRadius: 14,
+                      borderWidth: 1,
+                      borderColor: colors.border.subtle,
+                      backgroundColor: colors.bg.secondary,
+                      color: colors.text.secondary,
+                      paddingHorizontal: 12,
+                      paddingVertical: 11,
+                      fontSize: 15,
+                      lineHeight: 21,
+                    }}
+                  />
+                  <Text style={{ color: colors.text.muted, fontSize: 11, textAlign: 'right', marginTop: 5 }}>
+                    {review.length}/{REVIEW_MAX_LENGTH}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
           </ScrollView>
 
           {/* Actions */}
@@ -272,7 +330,11 @@ export default function RatingModal({
               </Pressable>
             ) : null}
             <Pressable
-              onPress={() => onSubmit(value || 1, advanced ? { production: 7, vocals: 7, lyrics: 7, replay: 7, ...details } : null)}
+              onPress={() => onSubmit(
+                value || 1,
+                advanced ? { production: 7, vocals: 7, lyrics: 7, replay: 7, ...details } : null,
+                normalizeReview(review),
+              )}
               style={{ backgroundColor: colors.accent.primary, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12 }}
             >
               <Text style={{ color: colors.text.inverted, fontWeight: '700' }}>Save</Text>

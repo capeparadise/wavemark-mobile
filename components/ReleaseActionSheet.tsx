@@ -414,20 +414,21 @@ export default function ReleaseActionSheet({ row, visible, onClose, onRate, onCh
         title={ratingRow ? `Rate ${ratingRow.title}` : 'Rate'}
         initial={ratingRow?.rating ?? 0}
         initialDetails={ratingRow?.rating_details as any}
+        initialReview={ratingRow?.review}
         advanced={advancedRatings}
         onCancel={() => {
           setRatingVisible(false);
           onClose();
         }}
-        onSubmit={async (stars, details) => {
+        onSubmit={async (stars, details, review) => {
           setRatingVisible(false);
           const target = ratingRow || (row as ListenRow);
           setBusy(true);
           try {
             const options = { doneAt: target.done_at || new Date().toISOString() };
             const result = details && Object.keys(details || {}).length
-              ? await setRatingDetailed(target.id, stars, details, undefined, options)
-              : await setRating(target.id, stars, undefined, options);
+              ? await setRatingDetailed(target.id, stars, details, review, options)
+              : await setRating(target.id, stars, review, options);
             if (!result.ok) throw new Error(result.message || 'Could not save rating');
             const updated = { ...target, ...(result.row || {}), rating: stars, done_at: options.doneAt } as ListenRow;
             onChanged?.({ type: 'rate', row: updated, done: true });

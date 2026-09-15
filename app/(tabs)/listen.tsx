@@ -879,9 +879,10 @@ export default function ListenTab() {
           />
       <RatingModal
         visible={ratingVisible}
-        title={ratingTarget ? `Rate ${ratingTarget.title}` : 'Rate'}
+        title={ratingTarget ? `Rate ${ratingTarget.title}` : 'Rate'}
         initial={ratingTarget?.rating ?? 0}
         initialDetails={ratingTarget?.rating_details as any}
+        initialReview={ratingTarget?.review}
         advanced={advancedRatings}
         statusLabel={ratingTarget?.done_at ? 'Marked as listened' : undefined}
         onUndoStatus={ratingTarget?.done_at ? async () => {
@@ -905,14 +906,14 @@ export default function ListenTab() {
           // eslint-disable-next-line no-console
           console.log('[rating] rate_later');
         }}
-        onSubmit={async (stars, details) => {
+        onSubmit={async (stars, details, review) => {
           if (!ratingTarget) return closeRating();
           const target = ratingTarget;
           const options = { doneAt: ratingTarget.done_at || new Date().toISOString() };
           const { setRating, setRatingDetailed } = await import('../../lib/listen');
           const res = advancedRatings && details
-            ? await setRatingDetailed(target.id, stars, details, undefined, options)
-            : await setRating(target.id, stars, undefined, options);
+            ? await setRatingDetailed(target.id, stars, details, review, options)
+            : await setRating(target.id, stars, review, options);
           if (!res.ok) {
             Alert.alert('Could not save rating', res.message || 'Try again.');
             return;
