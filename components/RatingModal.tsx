@@ -272,52 +272,54 @@ export default function RatingModal({
               </View>
             ) : null}
 
-            <View style={{ marginTop: 18 }}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={reviewOpen ? 'Hide optional note' : 'Add an optional note'}
-                onPress={() => setReviewOpen(open => !open)}
-                style={({ pressed }) => ({
-                  alignSelf: 'flex-start',
-                  paddingVertical: 6,
-                  opacity: pressed ? 0.65 : 1,
-                })}
-              >
-                <Text style={{ color: colors.accent.primary, fontWeight: '800' }}>
-                  {reviewOpen ? 'Hide note' : review.trim() ? 'Edit note' : 'Add a note'}
-                </Text>
-              </Pressable>
-              {reviewOpen ? (
-                <View style={{ marginTop: 6 }}>
-                  <TextInput
-                    accessibilityLabel="Rating note"
-                    value={review}
-                    onChangeText={setReview}
-                    placeholder="What stood out? (optional)"
-                    placeholderTextColor={colors.text.muted}
-                    multiline
-                    maxLength={REVIEW_MAX_LENGTH}
-                    textAlignVertical="top"
-                    style={{
-                      minHeight: 82,
-                      borderRadius: 14,
-                      borderWidth: 1,
-                      borderColor: colors.border.subtle,
-                      backgroundColor: colors.bg.secondary,
-                      color: colors.text.secondary,
-                      paddingHorizontal: 12,
-                      paddingVertical: 11,
-                      fontSize: 15,
-                      lineHeight: 21,
-                    }}
-                  />
-                  <Text style={{ color: colors.text.muted, fontSize: 11, textAlign: 'right', marginTop: 5 }}>
-                    {review.length}/{REVIEW_MAX_LENGTH}
-                  </Text>
-                </View>
-              ) : null}
-            </View>
           </ScrollView>
+
+          <View style={{ marginTop: 8 }}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={reviewOpen ? 'Hide optional note' : 'Add an optional note'}
+              onPress={() => setReviewOpen(open => !open)}
+              style={({ pressed }) => ({
+                alignSelf: 'flex-start',
+                minHeight: 36,
+                justifyContent: 'center',
+                opacity: pressed ? 0.65 : 1,
+              })}
+            >
+              <Text style={{ color: colors.accent.primary, fontWeight: '800' }}>
+                {reviewOpen ? 'Hide note' : review.trim() ? 'Edit note' : 'Add a note'}
+              </Text>
+            </Pressable>
+            {reviewOpen ? (
+              <View style={{ marginTop: 4 }}>
+                <TextInput
+                  accessibilityLabel="Rating note"
+                  value={review}
+                  onChangeText={setReview}
+                  placeholder="What stood out? (optional)"
+                  placeholderTextColor={colors.text.muted}
+                  multiline
+                  maxLength={REVIEW_MAX_LENGTH}
+                  textAlignVertical="top"
+                  style={{
+                    minHeight: 82,
+                    borderRadius: 14,
+                    borderWidth: 1,
+                    borderColor: colors.border.subtle,
+                    backgroundColor: colors.bg.secondary,
+                    color: colors.text.secondary,
+                    paddingHorizontal: 12,
+                    paddingVertical: 11,
+                    fontSize: 15,
+                    lineHeight: 21,
+                  }}
+                />
+                <Text style={{ color: colors.text.muted, fontSize: 11, textAlign: 'right', marginTop: 5 }}>
+                  {review.length}/{REVIEW_MAX_LENGTH}
+                </Text>
+              </View>
+            ) : null}
+          </View>
 
           {/* Actions */}
           <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 12, marginTop: 10 }}>
