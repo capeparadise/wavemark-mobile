@@ -239,9 +239,9 @@ export default function ProfileSettingsPage() {
           <ProfileDestination label="Ratings" detail="See everything you’ve rated" icon="star-outline" onPress={() => router.push('/profile/ratings')} />
           <ProfileDestination label="To rate" detail="Finish ratings for listened music" icon="alert-circle-outline" onPress={() => router.push('/profile/pending')} />
           <ProfileDestination label="Insights" detail="Explore your listening patterns" icon="stats-chart-outline" onPress={() => router.push('/profile/insights')} />
-          <ProfileDestination label="People" detail="Manage requests and the listeners you follow" icon="people-outline" dot={requestsHasDot} onPress={() => router.push('/profile/people')} />
+          <ProfileDestination label="People" detail="Manage requests, followers and following" icon="people-outline" dot={requestsHasDot} onPress={() => router.push('/profile/people')} />
           <ProfileDestination label="Share profile" detail="Create your listener profile card" icon="share-outline" onPress={() => router.push('/profile/share-card')} />
-          <ProfileDestination label="Reviews" detail="Coming soon" icon="chatbubble-ellipses-outline" onPress={() => Alert.alert('Reviews', 'Coming soon')} />
+          <ProfileDestination label="Notes" detail="See thoughts you added to ratings" icon="chatbubble-ellipses-outline" onPress={() => router.push('/profile/reviews')} />
         </View>
 
         <View style={{ marginBottom: 24 }}>

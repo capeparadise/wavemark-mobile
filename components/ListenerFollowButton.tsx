@@ -43,6 +43,8 @@ export default function ListenerFollowButton({
       const next = result.status === 'following' ? 'following' : 'requested';
       update(next);
       H.success();
+    } catch {
+      Alert.alert('Could not confirm follow', 'Please check your connection and try again.');
     } finally {
       setBusy(false);
     }
@@ -69,6 +71,8 @@ export default function ListenerFollowButton({
               }
               update('none');
               H.tap();
+            } catch {
+              Alert.alert('Could not confirm change', 'Please check your connection and try again.');
             } finally {
               setBusy(false);
             }

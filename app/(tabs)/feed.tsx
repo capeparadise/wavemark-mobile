@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Animated, FlatList, Image, LayoutAnimation, Platform, Pressable, ScrollView, SectionList, Text, UIManager, View } from 'react-native';
 import Avatar from '../../components/Avatar';
@@ -37,6 +37,7 @@ type SocialActivityItem = {
   title: string;
   artistName?: string | null;
   rating?: number | null;
+  review?: string | null;
   spotifyUrl?: string | null;
   appleUrl?: string | null;
   artworkUrl?: string | null;
@@ -105,6 +106,10 @@ const musicIdentityKeys = (item: any): string[] => {
 
 const FEED_MODE_KEY = (uid: string) => `wavemark:feed-mode:${uid}`;
 
+const SOCIAL_RELEASE_ART = { width: 48, height: 48, borderRadius: 10, flexShrink: 0 } as const;
+const SOCIAL_RELEASE_TITLE = { fontWeight: '800', fontSize: 14 } as const;
+const SOCIAL_RELEASE_ARTIST = { marginTop: 2, fontSize: 12 } as const;
+
 const spotifyAlbumIdForFeedItem = (item: Item): string | null => {
   const match = item.spotify_url?.match(/open\.spotify\.com\/album\/([A-Za-z0-9]{22})/i);
   if (match?.[1]) return match[1];
@@ -145,12 +150,14 @@ export default function FeedTab() {
   const [refreshing, setRefreshing] = useState(false);
   const [added, setAdded] = useState<Record<string, boolean>>({});
   const [mode, setMode] = useState<FeedMode>('artist');
+  const { tab: requestedTab } = useLocalSearchParams<{ tab?: string }>();
   const [modeHydrated, setModeHydrated] = useState(false);
   const [socialLoading, setSocialLoading] = useState(false);
   const [socialRows, setSocialRows] = useState<SocialActivityItem[]>([]);
   const [socialRefreshing, setSocialRefreshing] = useState(false);
   const [socialError, setSocialError] = useState<string | null>(null);
   const [expandedSocialGroupIds, setExpandedSocialGroupIds] = useState<Set<string>>(() => new Set());
+  const [expandedSocialNoteIds, setExpandedSocialNoteIds] = useState<Set<string>>(() => new Set());
   const [followedCount, setFollowedCount] = useState<number | null>(null);
   const [filter, setFilter] = useState<'all' | 'album' | 'single' | 'new'>('all');
   const [doneKeys, setDoneKeys] = useState<string[]>([]);
@@ -206,6 +213,13 @@ export default function FeedTab() {
   const onChangeMode = useCallback((next: FeedMode) => {
     setMode(next);
   }, []);
+
+  // Consume only after saved preferences load, so they cannot override the link.
+  useEffect(() => {
+    if (!modeHydrated || requestedTab !== 'releases') return;
+    setMode('artist');
+    router.setParams({ tab: undefined });
+  }, [modeHydrated, requestedTab]);
 
   const scrollToOffset = useCallback((listRef: any, offset: number) => {
     const inst = listRef?.current;
@@ -302,6 +316,7 @@ export default function FeedTab() {
         title: it.title,
         artistName: it.artistName ?? null,
         rating: it.rating ?? null,
+        review: it.review ?? null,
         spotifyUrl: it.spotifyUrl ?? null,
         appleUrl: it.appleUrl ?? null,
         artworkUrl: it.artworkUrl ?? null,
@@ -621,21 +636,6 @@ export default function FeedTab() {
     return listenedPart || ratedPart || 'Activity';
   };
 
-  const ratingStarsFor = (rating?: number | null) => {
-    if (typeof rating !== 'number' || Number.isNaN(rating)) return null;
-    const bounded = Math.max(0, Math.min(10, rating));
-    const stars = Math.max(0, Math.min(5, Math.round(bounded / 2)));
-    return `${'★'.repeat(stars)}${'☆'.repeat(5 - stars)}`;
-  };
-
-  const contextLineForItem = (item: SocialActivityItem) => {
-    if (item.kind === 'rated') {
-      const stars = ratingStarsFor(item.rating);
-      return stars ? `Rated ${stars}` : 'Rated';
-    }
-    return 'Listened to';
-  };
-
   const socialItemKey = useCallback((item: SocialActivityItem) => {
     if (item.spotifyUrl) return item.spotifyUrl;
     if (item.appleUrl) return item.appleUrl;
@@ -830,9 +830,9 @@ export default function FeedTab() {
                         })}
                       >
                         <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
-                          <View style={{ width: 52, height: 52, borderRadius: 10, overflow: 'hidden', backgroundColor: colors.bg.muted }}>
+                          <View style={{ ...SOCIAL_RELEASE_ART, overflow: 'hidden', backgroundColor: colors.bg.muted }}>
                             {!!it.artworkUrl ? (
-                              <Image source={{ uri: it.artworkUrl }} style={{ width: 52, height: 52 }} />
+                              <Image source={{ uri: it.artworkUrl }} style={SOCIAL_RELEASE_ART} />
                             ) : (
                               <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
                                 <Text style={{ color: colors.text.muted, fontWeight: '900' }}>♪</Text>
@@ -840,18 +840,15 @@ export default function FeedTab() {
                             )}
                           </View>
                           <View style={{ flex: 1, minWidth: 0 }}>
-                            <Text style={{ color: colors.text.secondary, fontWeight: '800', fontSize: 14 }} numberOfLines={1} ellipsizeMode="tail">
+                            <Text style={{ ...SOCIAL_RELEASE_TITLE, color: colors.text.secondary }} numberOfLines={1} ellipsizeMode="tail">
                               {it.title || 'Untitled'}
                             </Text>
                             {!!it.artistName && (
-                                <Text style={{ marginTop: 2, color: colors.text.muted, fontSize: 12 }} numberOfLines={1} ellipsizeMode="tail">
+                                <Text style={{ ...SOCIAL_RELEASE_ARTIST, color: colors.text.muted }} numberOfLines={1} ellipsizeMode="tail">
                                 {it.artistName}
                               </Text>
                             )}
-                            <View style={{ marginTop: 5, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                              <Text style={{ color: colors.text.muted, fontSize: 11 }}>
-                                {contextLineForItem(it)}
-                              </Text>
+                          </View>
                               <Pressable
                                 accessibilityRole="button"
                                 accessibilityLabel={isInList ? 'Added to listen list' : 'Add to listen list'}
@@ -867,9 +864,9 @@ export default function FeedTab() {
                                   return {
                                     flexDirection: 'row',
                                     alignItems: 'center',
-                                    gap: 4,
-                                    paddingHorizontal: 8,
-                                    paddingVertical: 4,
+                                    gap: 6,
+                                    paddingHorizontal: 10,
+                                    paddingVertical: 6,
                                     borderRadius: 999,
                                     borderWidth: 1,
                                     borderColor: focused ? colors.accent.primary : colors.border.subtle,
@@ -879,12 +876,10 @@ export default function FeedTab() {
                                 }}
                               >
                                 <Ionicons name={isInList ? 'checkmark' : 'add'} size={12} color={colors.text.secondary as any} />
-                                <Text style={{ color: colors.text.secondary, fontSize: 10, fontWeight: '800' }}>
+                                <Text style={{ color: colors.text.secondary, fontSize: 11, fontWeight: '800' }}>
                                   {isInList ? 'Added' : 'Add'}
                                 </Text>
                               </Pressable>
-                            </View>
-                          </View>
                         </View>
                       </Pressable>
                     )})}
@@ -899,38 +894,40 @@ export default function FeedTab() {
                     {ratedItems.map((it) => {
                       const key = socialItemKey(it);
                       const isInList = !!(key && inListSet.has(key));
+                      const note = it.review?.trim();
+                      const noteExpanded = expandedSocialNoteIds.has(it.id);
                       return (
+                      <View key={it.id} style={{ borderTopWidth: 1, borderTopColor: colors.border.subtle }}>
                       <Pressable
-                        key={it.id}
                         onPress={() => openSocialItem(it)}
                         onLongPress={() => openSocialItemMenu(it)}
                         delayLongPress={RELEASE_LONG_PRESS_MS}
                         style={({ pressed }) => ({
                           flexDirection: 'row',
-                          gap: 12,
+                          gap: 10,
                           alignItems: 'center',
-                          paddingVertical: 11,
-                          borderTopWidth: 1,
-                          borderTopColor: colors.border.subtle,
+                          paddingTop: 11,
+                          paddingBottom: note ? 0 : 11,
                           opacity: pressed ? 0.9 : 1,
                           transform: [{ scale: pressed ? 0.992 : 1 }],
                         })}
                       >
-                        <View style={{ width: 38, height: 38, borderRadius: 10, overflow: 'hidden', backgroundColor: colors.bg.muted }}>
-                          {!!it.artworkUrl && <Image source={{ uri: it.artworkUrl }} style={{ width: 38, height: 38 }} />}
+                        <View style={{ ...SOCIAL_RELEASE_ART, overflow: 'hidden', backgroundColor: colors.bg.muted }}>
+                          {!!it.artworkUrl ? <Image source={{ uri: it.artworkUrl }} style={SOCIAL_RELEASE_ART} /> : (
+                            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+                              <Text style={{ color: colors.text.muted, fontWeight: '900' }}>♪</Text>
+                            </View>
+                          )}
                         </View>
                         <View style={{ flex: 1, minWidth: 0 }}>
-                          <Text style={{ color: colors.text.secondary, fontWeight: '800' }} numberOfLines={1} ellipsizeMode="tail">
+                          <Text style={{ ...SOCIAL_RELEASE_TITLE, color: colors.text.secondary }} numberOfLines={1} ellipsizeMode="tail">
                             {it.title || 'Untitled'}
                           </Text>
                           {!!it.artistName && (
-                            <Text style={{ marginTop: 2, color: colors.text.muted }} numberOfLines={1} ellipsizeMode="tail">
+                            <Text style={{ ...SOCIAL_RELEASE_ARTIST, color: colors.text.muted }} numberOfLines={1} ellipsizeMode="tail">
                               {it.artistName}
                             </Text>
                           )}
-                          <Text style={{ marginTop: 2, color: colors.text.muted, fontSize: 11 }}>
-                            {contextLineForItem(it)}
-                          </Text>
                         </View>
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                           {typeof it.rating === 'number' && (
@@ -971,6 +968,33 @@ export default function FeedTab() {
                           </Pressable>
                         </View>
                       </Pressable>
+                      {note ? (
+                        <View style={{ paddingBottom: noteExpanded ? 8 : 0 }}>
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel={`${noteExpanded ? 'Hide' : 'Show'} note for ${it.title}`}
+                            accessibilityState={{ expanded: noteExpanded }}
+                            onPress={() => setExpandedSocialNoteIds(previous => {
+                              const next = new Set(previous);
+                              if (next.has(it.id)) next.delete(it.id);
+                              else next.add(it.id);
+                              return next;
+                            })}
+                            style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', marginLeft: SOCIAL_RELEASE_ART.width + 10, minHeight: 44, paddingRight: 12, opacity: pressed ? 0.7 : 1 })}
+                          >
+                            <Ionicons name={noteExpanded ? 'chevron-up' : 'chevron-down'} size={18} color={colors.accent.primary as any} />
+                            <Text style={{ color: colors.accent.primary, fontSize: 15, fontWeight: '700' }}>
+                              {noteExpanded ? 'Hide note' : 'Show note'}
+                            </Text>
+                          </Pressable>
+                          {noteExpanded ? (
+                            <Text selectable style={{ marginTop: 4, marginBottom: 6, color: colors.text.primary, fontSize: 16, lineHeight: 24 }}>
+                              {note}
+                            </Text>
+                          ) : null}
+                        </View>
+                      ) : null}
+                      </View>
                     )})}
                   </View>
                 </View>

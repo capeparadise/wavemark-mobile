@@ -19,15 +19,18 @@ export default function InsightsScreen() {
   const { colors } = useTheme();
   const [snapshot, setSnapshot] = useState<ProfileSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
 
   useEffect(() => {
     let mounted = true;
     (async () => {
       const cached = await loadCachedProfileSnapshot();
-      if (cached && mounted) setSnapshot(cached);
-      const snap = await fetchProfileSnapshot();
+      if (cached && mounted) { setSnapshot(cached); setLoading(false); }
+      const snap = await fetchProfileSnapshot(snapshot => {
+        if (mounted) { setSnapshot(snapshot); setLoading(false); }
+      });
       if (mounted) { setSnapshot(snap); setLoading(false); }
-    })();
+    })().catch(() => { if (mounted) { setLoadError(true); setLoading(false); } });
     return () => { mounted = false; };
   }, []);
 
@@ -85,7 +88,7 @@ export default function InsightsScreen() {
     return (
       <Screen edges={['left', 'right']}>
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-          <ActivityIndicator />
+          {loadError ? <Text style={{ color: colors.text.muted }}>Couldn’t load insights. Reopen this screen to retry.</Text> : <ActivityIndicator />}
         </View>
       </Screen>
     );
@@ -93,6 +96,7 @@ export default function InsightsScreen() {
 
   return (
     <Screen edges={['left', 'right']}>
+      {loadError ? <Text style={{ color: colors.text.muted }}>Couldn’t refresh insights. Showing saved data.</Text> : null}
       <View style={{ gap: 16 }}>
         <View>
           <Text style={{ fontSize: 18, fontWeight: '800', color: colors.text.secondary }}>Insights</Text>

@@ -1,5 +1,4 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { getUniqueListenedCount } from './listen';
+import { readAccountCache, writeAccountCache } from './accountCache';
 import { resolveListenerArtwork } from './profileSocial';
 import { supabase } from './supabase';
 
@@ -76,25 +75,18 @@ function computeStreak(listened: ListenSummary[]): number {
   return streak;
 }
 
-export async function loadCachedProfileSnapshot(): Promise<ProfileSnapshot | null> {
-  try {
-    const raw = await AsyncStorage.getItem(CACHE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') return null;
-    return parsed as ProfileSnapshot;
-  } catch {
-    return null;
-  }
+export async function loadCachedProfileSnapshot(userId?: string): Promise<ProfileSnapshot | null> {
+  const uid = userId ?? (await supabase.auth.getSession()).data.session?.user.id;
+  return uid ? readAccountCache<ProfileSnapshot>(CACHE_KEY, uid) : null;
 }
 
-export async function fetchProfileSnapshot(): Promise<ProfileSnapshot> {
-  const { data: auth } = await supabase.auth.getUser();
-  const user = auth?.user;
+export async function fetchProfileSnapshot(onReady?: (snapshot: ProfileSnapshot) => void): Promise<ProfileSnapshot> {
+  const { data: auth } = await supabase.auth.getSession();
+  const user = auth?.session?.user;
   if (!user) return { uniqueCount: 0, weekCount: 0, monthCount: 0, streak: 0, ratingsCount: 0, listened: [], ratings: [], topRated: [] };
 
-  const [uniqueCount, listenedRes, ratingsRes, topRes] = await Promise.all([
-    getUniqueListenedCount(),
+  const [countRes, listenedRes, ratingsRes, topRes] = await Promise.all([
+    supabase.from('listen_list').select('id', { count: 'exact', head: true }).eq('user_id', user.id).not('done_at', 'is', null),
     supabase
       .from('listen_list')
       .select('id,title,artist_name,item_type,provider,provider_id,spotify_id,apple_id,artwork_url,release_date,done_at,rating,rating_details,rated_at,spotify_url,apple_url')
@@ -123,6 +115,10 @@ export async function fetchProfileSnapshot(): Promise<ProfileSnapshot> {
       .limit(10),
   ]);
 
+  for (const result of [countRes, listenedRes, ratingsRes, topRes]) {
+    if (result.error) throw result.error;
+  }
+  const uniqueCount = countRes.count ?? 0;
   const listenedRaw = (listenedRes.data as ListenSummary[] | null) ?? [];
   const ratings = (ratingsRes.data as ListenSummary[] | null) ?? [];
   const topRatedRaw = (topRes.data as ListenSummary[] | null) ?? [];
@@ -150,11 +146,7 @@ export async function fetchProfileSnapshot(): Promise<ProfileSnapshot> {
     return { ...item, artwork_url: artworkUrl };
   }));
 
-  const [recentPreview, topRated] = await Promise.all([
-    hydrateArtwork(listenedRaw.slice(0, 6)),
-    hydrateArtwork(topRatedRaw),
-  ]);
-  const listened = [...recentPreview, ...listenedRaw.slice(recentPreview.length)];
+  const listened = listenedRaw;
 
   const weekStart = startOfWeek(new Date());
   const monthStart = startOfNDaysAgo(30);
@@ -171,10 +163,19 @@ export async function fetchProfileSnapshot(): Promise<ProfileSnapshot> {
     ratingsCount,
     listened,
     ratings,
-    topRated,
+    topRated: topRatedRaw,
   };
 
-  try { await AsyncStorage.setItem(CACHE_KEY, JSON.stringify(snapshot)); } catch {}
+  // Publish the actual profile content before optional catalogue artwork lookups.
+  onReady?.(snapshot);
+  await writeAccountCache(CACHE_KEY, user.id, snapshot);
+  const [recentPreview, topRated] = await Promise.all([
+    hydrateArtwork(listenedRaw.slice(0, 6)),
+    hydrateArtwork(topRatedRaw),
+  ]);
+  snapshot.listened = [...recentPreview, ...listenedRaw.slice(recentPreview.length)];
+  snapshot.topRated = topRated;
+  await writeAccountCache(CACHE_KEY, user.id, snapshot);
 
   return snapshot;
 }

@@ -35,6 +35,9 @@ import {
   sortDiscoverReleasesByFreshness,
 } from '../../lib/discoverFreshness';
 import { supabase } from '../../lib/supabase';
+import { createListenRefreshGuard } from '../../lib/listenRefreshGuard';
+import { useSession } from '../../lib/session';
+import { readAccountCache, writeAccountCache } from '../../lib/accountCache';
 import { useOffline } from '../../components/useOffline';
 import { useTheme } from '../../theme/useTheme';
 import { useAdvancedRatingsEnabled } from '../../lib/user';
@@ -343,6 +346,14 @@ type DiscoverLoad = (opts?: {
 }) => Promise<void>;
 
 export default function DiscoverTab() {
+  const { user } = useSession();
+  if (!user) return <Screen><ActivityIndicator accessibilityLabel="Loading your session" /></Screen>;
+  return <DiscoverContent key={user?.id ?? 'signed-out'} userId={user?.id ?? null} />;
+}
+
+function DiscoverContent({ userId }: { userId: string | null }) {
+  const activeRef = useRef(true);
+  useEffect(() => { activeRef.current = true; return () => { activeRef.current = false; }; }, []);
   const { colors } = useTheme();
   const [advancedRatings] = useAdvancedRatingsEnabled();
   const insets = useSafeAreaInsets();
@@ -428,6 +439,8 @@ export default function DiscoverTab() {
   const artistImageMapRef = useRef<Record<string, string>>({});
   const updatesLastDeepScanAtRef = useRef<number>(0);
   const savePendingRef = useRef<Set<string>>(new Set());
+  const listenRefreshGuard = useRef(createListenRefreshGuard());
+  const updatesReadyRef = useRef(false);
   const forYouItemsRef = useRef<typeof forYouItems>([]);
   const yourUpdatesReleasesRef = useRef<typeof yourUpdatesReleases>([]);
   const currentFollowedIdsRef = useRef<Set<string>>(new Set());
@@ -1204,23 +1217,22 @@ export default function DiscoverTab() {
   }, [buildTasteRecommendations]);
 
   const refreshListenStatus = useCallback(async () => {
+    const read = listenRefreshGuard.current.read();
     try {
-      const { data: auth } = await supabase.auth.getUser();
-      const user = auth?.user;
-      if (!user) { setListenStatus({}); return; }
+      if (!userId) { setListenStatus({}); setAddedIds({}); return; }
       let { data, error } = await supabase
         .from('listen_list')
-        .select('id, spotify_id, provider_id, done_at, rating, rating_details');
+        .select('id, spotify_id, provider_id, done_at, rating, rating_details').eq('user_id', userId);
       if (error && ((error as any)?.code === '42703' || (error as any)?.code === 'PGRST204')) {
         const fallback = await supabase
           .from('listen_list')
-          .select('id, spotify_id, provider_id, done_at, rating');
+          .select('id, spotify_id, provider_id, done_at, rating').eq('user_id', userId);
         data = fallback.data
           ? (fallback.data as any[]).map(r => ({ ...r, rating_details: null }))
           : fallback.data;
         error = fallback.error;
       }
-      if (error || !data) return;
+      if (!activeRef.current || error || !data || !listenRefreshGuard.current.accepts(read)) return;
       const map: Record<string, { rating?: number | null; done?: boolean; details?: any }> = {};
       (data || []).forEach((row: any) => {
         const key = spotifyKey(row.spotify_id || row.provider_id, null);
@@ -1233,7 +1245,50 @@ export default function DiscoverTab() {
       // Replace addedIds with the authoritative list from listen_list
       setAddedIds(addedFromListen);
     } catch {}
-  }, []);
+  }, [userId]);
+
+  // Personal updates have their own fast path; do not wait for genre/top-pick requests.
+  useEffect(() => {
+    if (!userId) return;
+    let cancelled = false;
+    const invalidate = () => {
+      cancelled = true;
+      void AsyncStorage.removeItem(`${YOUR_UPDATES_RELEASE_CACHE_KEY}_${userId}`).catch(() => {});
+    };
+    on('follow:changed', invalidate);
+    const publish = (artists: UpdateAttributionArtist[], items: YourUpdatesRelease[]) => {
+      if (cancelled || updatesReadyRef.current) return;
+      const filtered = finalizeYourUpdates(items, artists, discoverWindowCutoff(UPDATES_DAYS));
+      setFollowedArtistCount(artists.length);
+      setFollowedArtistsLoaded(true);
+      setFollowedArtistRows(artists.map(artist => ({ ...artist, imageUrl: null })));
+      setYourUpdatesReleases(filtered);
+      yourUpdatesReleasesRef.current = filtered;
+      if (filtered.length) setYourUpdatesStatus('populated');
+    };
+    void (async () => {
+      const cached = await readAccountCache<{ artists: UpdateAttributionArtist[]; items: YourUpdatesRelease[] }>(YOUR_UPDATES_RELEASE_CACHE_KEY, userId);
+      if (cached && Array.isArray(cached.artists) && Array.isArray(cached.items)) publish(cached.artists, cached.items);
+      const followed = await listFollowedArtists();
+      if (cancelled || updatesReadyRef.current) return;
+      const artists = followed.filter(artist => isValidSpotifyArtistId(artist.id)).map(artist => ({ id: artist.id, name: artist.name || 'Unknown' }));
+      const ids = new Set(artists.map(artist => artist.id));
+      publish(artists, cached?.items || []);
+      if (!artists.length) { setYourUpdatesStatus('no-followed-artists'); return; }
+      const feed = await fetchFeedForArtists({ artistIds: [...ids], limit: 250 });
+      const items = feed.filter(item => isAllowedUpdateFeedRow(item, ids)).flatMap((item): YourUpdatesRelease[] => {
+        const id = spotifyKey(null, item.spotify_url);
+        const artist = artists.find(artist => artist.id === item.artist_id);
+        if (!id || !artist) return [];
+        return [{ id, title: item.title, artist: item.artist_name || artist.name, artistId: artist.id,
+          releaseDate: item.release_date, spotifyUrl: item.spotify_url, imageUrl: item.image_url || item.artwork_url,
+          type: String(item.release_type || item.item_type).toLowerCase() === 'single' ? 'single' : 'album',
+          responsibleArtistIds: [artist.id], creditedArtists: [artist] }];
+      });
+      publish(artists, [...items, ...(cached?.items || [])]);
+    })().catch(() => { /* The full refresh owns error and retry UI; keep cached content. */ });
+    return () => { cancelled = true; off('follow:changed', invalidate); };
+  }, [userId]);
 
   const markAddedKey = useCallback((id?: string | null, spotifyUrl?: string | null) => {
     const key = spotifyKey(id, spotifyUrl);
@@ -1246,6 +1301,7 @@ export default function DiscoverTab() {
     const key = spotifyKey(id, spotifyUrl);
     const pendingKey = key || spotifyUrl || id;
     if (pendingKey && savePendingRef.current.has(pendingKey)) return null;
+    if (pendingKey && !listenRefreshGuard.current.begin(pendingKey)) return null;
     if (pendingKey) savePendingRef.current.add(pendingKey);
 
     const wasAdded = key ? !!addedIds[key] : false;
@@ -1264,6 +1320,8 @@ export default function DiscoverTab() {
       key,
       finish: () => {
         if (pendingKey) savePendingRef.current.delete(pendingKey);
+        if (pendingKey) listenRefreshGuard.current.finish(pendingKey);
+        void refreshListenStatus();
       },
       rollback: () => {
         if (!key) return;
@@ -1281,11 +1339,12 @@ export default function DiscoverTab() {
         });
       },
     };
-  }, [addedIds, listenStatus, markAddedKey]);
+  }, [addedIds, listenStatus, markAddedKey, refreshListenStatus]);
 
   const onUnsave = async (id?: string | null, spotifyUrl?: string | null) => {
     const key = spotifyKey(id, spotifyUrl);
     if (!key || savePendingRef.current.has(key)) return;
+    if (!listenRefreshGuard.current.begin(key)) return;
     savePendingRef.current.add(key);
     const wasAdded = !!addedIds[key];
     const previousStatus = listenStatus[key];
@@ -1314,6 +1373,8 @@ export default function DiscoverTab() {
       Alert.alert('Could not remove', error?.message || 'Please try again.');
     } finally {
       savePendingRef.current.delete(key);
+      listenRefreshGuard.current.finish(key);
+      void refreshListenStatus();
     }
   };
 
@@ -1697,9 +1758,12 @@ export default function DiscoverTab() {
           UPDATES_REQUEST_TIMEOUT_MS,
           'followed artists'
         );
+        if (!activeRef.current) return;
         setFollowedArtistsLoaded(true);
         setFollowedArtistCount(followed.length);
         if (!followed || followed.length === 0) {
+          updatesReadyRef.current = true;
+          if (userId) void AsyncStorage.removeItem(`${YOUR_UPDATES_RELEASE_CACHE_KEY}_${userId}`).catch(() => {});
           currentFollowedIdsRef.current = new Set();
           catalogCheckedAtRef.current = {};
           setFollowedDetails({});
@@ -1716,7 +1780,7 @@ export default function DiscoverTab() {
             name: artist.name || 'Unknown',
             imageUrl: null,
           })));
-          if (!preserveExisting) {
+          if (!preserveExisting && !yourUpdatesReleasesRef.current.length) {
             setForYouItems([]);
             setRecentByArtist({});
             setYourUpdatesReleases([]);
@@ -1737,8 +1801,7 @@ export default function DiscoverTab() {
             let catalogCheckedAt: Record<string, number> = {};
             let cachedReleases: YourUpdatesRelease[] = [];
             try {
-              const raw = await AsyncStorage.getItem(YOUR_UPDATES_RELEASE_CACHE_KEY);
-              const parsed = raw ? JSON.parse(raw) : null;
+              const parsed = userId ? await readAccountCache<{ items: YourUpdatesRelease[]; catalogCheckedAt: Record<string, number> }>(YOUR_UPDATES_RELEASE_CACHE_KEY, userId) : null;
               if (parsed?.catalogCheckedAt && typeof parsed.catalogCheckedAt === 'object') {
                 catalogCheckedAt = Object.entries(parsed.catalogCheckedAt)
                   .reduce<Record<string, number>>((valid, [artistId, checkedAt]) => {
@@ -1908,12 +1971,12 @@ export default function DiscoverTab() {
             setFollowedDetails(detObj);
             setRecentByArtist(recObj);
             setForYouItems(items);
+            if (!activeRef.current) return;
+            updatesReadyRef.current = true;
             setYourUpdatesReleases(finalReleases);
             setFollowedArtistRows(followedRefs.map((artist) => ({ ...artist, ...itemById.get(artist.id) })));
-            await AsyncStorage.setItem(
-              YOUR_UPDATES_RELEASE_CACHE_KEY,
-              JSON.stringify({ items: finalReleases, ts: Date.now(), catalogCheckedAt })
-            ).catch(() => {});
+            if (userId) await writeAccountCache(YOUR_UPDATES_RELEASE_CACHE_KEY, userId,
+              { items: finalReleases, artists: followedRefs, ts: Date.now(), catalogCheckedAt });
             if (items.length) await cacheForYou(items, FOR_YOU_UPDATES_CACHE_KEY);
             else await AsyncStorage.removeItem(FOR_YOU_UPDATES_CACHE_KEY).catch(() => {});
 
@@ -2527,7 +2590,7 @@ export default function DiscoverTab() {
       const waiters = loadWaitersRef.current.splice(0);
       waiters.forEach((resolve) => resolve());
     }
-  }, [cacheArtistImagesV2, cacheDiscoverFeed, debugSetNewReleases, hydrateFollowedArtistImages, markDiscoverRefreshSuccessful, refreshListenStatus]);
+  }, [cacheArtistImagesV2, cacheDiscoverFeed, debugSetNewReleases, hydrateFollowedArtistImages, markDiscoverRefreshSuccessful, refreshListenStatus, userId]);
 
   useEffect(() => {
     loadRef.current = load;
@@ -2797,10 +2860,11 @@ export default function DiscoverTab() {
     try {
       const res = await addToListFromSearch({
         type: itemType,
+        providerId: key,
         title: a.title,
         artist: a.artist,
         releaseDate: a.releaseDate ?? null,
-        spotifyUrl: a.spotifyUrl ?? null,
+        spotifyUrl: a.spotifyUrl || (key && /^[A-Za-z0-9]{22}$/.test(key) ? `https://open.spotify.com/${itemType === 'track' ? 'track' : 'album'}/${key}` : null),
         isrc: a.isrc ?? null,
         appleUrl: null,
         imageUrl: a.imageUrl ?? null,
@@ -2833,10 +2897,11 @@ export default function DiscoverTab() {
     try {
       const res = await addToListFromSearch({
         type: r.type === 'album' ? 'album' : 'track',
+        providerId: newKey,
         title: r.title,
         artist: r.artist ?? null,
         releaseDate: r.releaseDate ?? null,
-        spotifyUrl: r.spotifyUrl ?? null,
+        spotifyUrl: r.spotifyUrl || (newKey && /^[A-Za-z0-9]{22}$/.test(newKey) ? `https://open.spotify.com/${r.type === 'album' ? 'album' : 'track'}/${newKey}` : null),
         isrc: r.isrc ?? null,
         appleUrl: null,
         imageUrl: r.imageUrl ?? null,
@@ -2989,7 +3054,7 @@ export default function DiscoverTab() {
     </View>
   ) : null;
 
-  if (initialLoading && !newReleases.length && !fallbackFeed.length) {
+  if (initialLoading && !newReleases.length && !fallbackFeed.length && !yourUpdatesReleases.length) {
     return (
       <Screen>
         {offlineBanner}

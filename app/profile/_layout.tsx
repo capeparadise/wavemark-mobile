@@ -27,11 +27,13 @@ export default function ProfileStackLayout() {
     >
       <Stack.Screen name="history" options={{ title: 'History' }} />
       <Stack.Screen name="ratings" options={{ title: 'Ratings' }} />
+      <Stack.Screen name="reviews" options={{ title: 'Notes' }} />
+      <Stack.Screen name="notifications" options={{ title: 'Notifications' }} />
       <Stack.Screen name="pending" options={{ title: 'Pending Ratings' }} />
       <Stack.Screen name="top-rated" options={{ title: 'Top Rated' }} />
       <Stack.Screen name="insights" options={{ title: 'Insights' }} />
       <Stack.Screen name="share-card" options={{ title: 'Share Card' }} />
-      <Stack.Screen name="friend-requests" options={{ title: 'Following' }} />
+      <Stack.Screen name="friend-requests" options={{ title: 'People' }} />
       <Stack.Screen name="people" options={{ title: 'Find people' }} />
       <Stack.Screen name="setup" options={{ title: 'Profile setup' }} />
       <Stack.Screen name="listener/[username]" options={{ title: '' }} />

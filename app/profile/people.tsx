@@ -125,6 +125,9 @@ export default function PeopleSearchScreen() {
           <Pressable onPress={() => router.push({ pathname: '/profile/friend-requests', params: { tab: 'following' } })} style={({ pressed }) => ({ flex: 1, paddingVertical: 11, borderRadius: 13, borderWidth: 1, borderColor: colors.border.subtle, backgroundColor: colors.bg.secondary, opacity: pressed ? 0.84 : 1 })}>
             <Text style={{ color: colors.text.secondary, textAlign: 'center', fontWeight: '800' }}>Following</Text>
           </Pressable>
+          <Pressable onPress={() => router.push({ pathname: '/profile/friend-requests', params: { tab: 'followers' } })} style={({ pressed }) => ({ flex: 1, paddingVertical: 11, borderRadius: 13, borderWidth: 1, borderColor: colors.border.subtle, backgroundColor: colors.bg.secondary, opacity: pressed ? 0.84 : 1 })}>
+            <Text style={{ color: colors.text.secondary, textAlign: 'center', fontWeight: '800' }}>Followers</Text>
+          </Pressable>
         </View>
 
         {error ? <Text style={{ color: '#ff453a', lineHeight: 20 }}>{error}</Text> : null}

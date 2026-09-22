@@ -22,6 +22,9 @@ function userStorageKeys(userId: string) {
     `pending_cache_v1_${userId}`,
     `ratings_cache_v1_${userId}`,
     `top_rated_cache_v1_${userId}`,
+    `profile_snapshot_v1_${userId}`,
+    `profile_identity_v1_${userId}`,
+    `discover_your_updates_releases_v2_${userId}`,
     `wavemark:feed-mode:${userId}`,
     `wavemark:first-login-seen:${userId}`,
   ];

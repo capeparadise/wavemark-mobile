@@ -20,6 +20,7 @@ const snapshotKey = (userId: string) => `rppl:demo-profile-snapshot:v1:${userId}
 
 const RESET_CACHE_KEYS = [
   'profile_snapshot_v1',
+  'profile_identity_v1',
   'listen_cache_v1',
   'listen_upcoming_cache_v1',
   'history_cache_v1',

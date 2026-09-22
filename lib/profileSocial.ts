@@ -403,6 +403,36 @@ export async function listMyFollowingProfiles(): Promise<FollowingProfile[]> {
   }));
 }
 
+export type FollowerProfile = Omit<ListenerSearchResult, 'relationship_status'> & {
+  relationship_status: 'none' | 'following' | 'requested';
+  created_at: string | null;
+};
+
+export async function listMyFollowersProfiles(): Promise<FollowerProfile[]> {
+  const { data, error } = await supabase.rpc('list_my_followers_profiles');
+  if (error) throw new Error(error.message || 'Could not load followers');
+  if (!Array.isArray(data)) return [];
+  return data.map((row: any) => ({
+    user_id: String(row.user_id),
+    display_name: String(row.display_name || 'Listener'),
+    username: row.username ? String(row.username) : null,
+    avatar_url: row.avatar_url ?? null,
+    is_private: row.is_private !== false,
+    relationship_status: row.relationship_status === 'following'
+      ? 'following'
+      : row.relationship_status === 'requested'
+        ? 'requested'
+        : 'none',
+    created_at: row.created_at ?? null,
+  }));
+}
+
+export async function removeMyFollower(followerId: string): Promise<{ ok: boolean; message?: string }> {
+  const { data, error } = await supabase.rpc('remove_my_follower', { p_follower_id: followerId });
+  if (error) return { ok: false, message: error.message || 'Could not remove follower' };
+  return data === true ? { ok: true } : { ok: false, message: 'This listener is no longer following you.' };
+}
+
 export type IncomingFollowRequest = Pick<PublicProfile, 'user_id' | 'display_name' | 'username' | 'avatar_url'> & {
   created_at: string | null;
 };
@@ -721,6 +751,7 @@ export type SocialActivityItem = {
   title: string;
   artistName?: string | null;
   rating?: number | null;
+  review?: string | null;
   spotifyUrl?: string | null;
   appleUrl?: string | null;
   artworkUrl?: string | null;
@@ -814,6 +845,7 @@ export async function fetchSocialActivity(): Promise<SocialActivityItem[]> {
       title: String(r.title || ''),
       artistName: r.artist_name ?? null,
       rating: rating ?? null,
+      review: typeof r.review === 'string' && r.review.trim() ? r.review.trim() : null,
       spotifyUrl: r.spotify_url ?? null,
       appleUrl: r.apple_url ?? null,
       artworkUrl: r.artwork_url ?? null,

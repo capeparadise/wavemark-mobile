@@ -11,23 +11,27 @@ export default function AchievementsScreen() {
   const { colors } = useTheme();
   const [items, setItems] = useState<ReturnType<typeof computeAchievements>>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
 
   useEffect(() => {
     let mounted = true;
     (async () => {
       const cached = await loadCachedProfileSnapshot();
-      if (cached && mounted) setItems(computeAchievements(cached));
-      const snap = await fetchProfileSnapshot();
+      if (cached && mounted) { setItems(computeAchievements(cached)); setLoading(false); }
+      const snap = await fetchProfileSnapshot(snapshot => {
+        if (mounted) { setItems(computeAchievements(snapshot)); setLoading(false); }
+      });
       if (mounted) {
         setItems(computeAchievements(snap));
         setLoading(false);
       }
-    })();
+    })().catch(() => { if (mounted) { setLoadError(true); setLoading(false); } });
     return () => { mounted = false; };
   }, []);
 
   return (
     <Screen edges={['left', 'right']}>
+      {loadError ? <Text style={{ color: colors.text.muted }}>Couldn’t refresh achievements. Reopen this screen to retry.</Text> : null}
       {loading ? (
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
           <ActivityIndicator />

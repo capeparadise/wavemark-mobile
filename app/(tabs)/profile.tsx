@@ -2,10 +2,10 @@
    File: app/(tabs)/profile.tsx
    PURPOSE: User summary: quick stats + links to History, Ratings, Settings.
    ======================================================================== */
-import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { Alert, Image, Pressable, ScrollView, Text, View } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import Avatar from '../../components/Avatar';
@@ -13,7 +13,9 @@ import Screen from '../../components/Screen';
 import { computeAchievements } from '../../lib/achievements';
 import { fetchProfileSnapshot, loadCachedProfileSnapshot, type ListenSummary, type ProfileSnapshot } from '../../lib/stats';
 import { getUiColors, ui, icon } from '../../constants/ui';
-import { ensureMyProfile, uploadMyAvatar } from '../../lib/profileSocial';
+import { countIncomingPendingRequests, ensureMyProfile, uploadMyAvatar, type PublicProfile } from '../../lib/profileSocial';
+import { useSession } from '../../lib/session';
+import { readAccountCache, writeAccountCache } from '../../lib/accountCache';
 import { useTheme } from '../../theme/useTheme';
 import { goToRelease } from '../../lib/navigation';
 import { useAdvancedRatingsEnabled } from '../../lib/user';
@@ -42,12 +44,20 @@ const profileActionRow = (item: ListenSummary): ReleaseActionSheetRow => ({
 });
 
 export default function ProfileTab() {
+  const { user } = useSession();
+  return <ProfileContent key={user?.id ?? 'signed-out'} userId={user?.id ?? null} />;
+}
+
+function ProfileContent({ userId }: { userId: string | null }) {
   const { colors } = useTheme();
   const [advancedRatings] = useAdvancedRatingsEnabled();
-  const navigation = useNavigation();
   const [loading, setLoading] = useState(true);
   const [stats, setStats] = useState({ total: 0, avgRating: 0, week: 0, month: 0, streak: 0 });
-  const [displayName, setDisplayName] = useState<string>('Listener');
+  const [displayName, setDisplayName] = useState<string>('');
+  const [identityReady, setIdentityReady] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  const [hasSnapshot, setHasSnapshot] = useState(false);
+  const loadGeneration = useRef(0);
   const [username, setUsername] = useState<string | null>(null);
   const [profileSetupCompleted, setProfileSetupCompleted] = useState(false);
   const [profileIsPrivate, setProfileIsPrivate] = useState(true);
@@ -57,32 +67,27 @@ export default function ProfileTab() {
   const [topRated, setTopRated] = useState<ProfileSnapshot['topRated']>([]);
   const [recentListening, setRecentListening] = useState<ProfileSnapshot['listened']>([]);
   const [menuRow, setMenuRow] = useState<ReleaseActionSheetRow | null>(null);
+  const [notificationDot, setNotificationDot] = useState(false);
 
   const load = useCallback(async () => {
-      const profile = await ensureMyProfile();
+    if (!userId) return;
+    const generation = ++loadGeneration.current;
+    const current = () => generation === loadGeneration.current;
+    setLoadError(false);
+    let freshIdentity = false;
+    let freshSnapshot = false;
+    const applyIdentity = (profile: PublicProfile) => {
+      if (!current()) return;
       setDisplayName(profile?.display_name || 'Listener');
       setUsername(profile?.username ?? null);
       setProfileSetupCompleted(profile?.profile_setup_completed === true);
       setProfileIsPrivate(profile?.is_private !== false);
       setAvatarUrl(profile?.avatar_url ?? null);
-
-      const cached = await loadCachedProfileSnapshot();
-      if (cached) {
-    const ratedCached = (cached.ratings || []).filter(r => typeof r.rating === 'number' && !!r.done_at);
-        const avgCached = ratedCached.length ? ratedCached.reduce((s,r)=> s + (r.rating ?? 0), 0) / ratedCached.length : 0;
-        setStats({
-          total: cached.uniqueCount,
-          avgRating: avgCached,
-          week: cached.weekCount,
-          month: cached.monthCount,
-          streak: cached.streak,
-        });
-        setTopRated(cached.topRated || []);
-        setRecentListening(cached.listened || []);
-        setAchievements(computeAchievements(cached).map(a => ({ id: a.id, title: a.title, unlocked: a.unlocked })));
-      }
-
-      const snap = await fetchProfileSnapshot();
+      setIdentityReady(true);
+    };
+    const applySnapshot = (snap: ProfileSnapshot) => {
+      if (!current()) return;
+      setHasSnapshot(true);
       const rated = (snap.ratings || []).filter(r => typeof r.rating === 'number' && !!r.done_at);
       const avg = rated.length
         ? rated.reduce((s, r) => s + (r.rating ?? 0), 0) / rated.length
@@ -98,15 +103,32 @@ export default function ProfileTab() {
       setRecentListening(snap.listened || []);
       setAchievements(computeAchievements(snap).map(a => ({ id: a.id, title: a.title, unlocked: a.unlocked })));
       setLoading(false);
-  }, []);
-  useEffect(() => { load(); }, [load]);
+    };
+    // Local identity and music hydrate independently of remote validation and artwork.
+    void readAccountCache<PublicProfile>('profile_identity_v1', userId).then(profile => {
+      if (profile && !freshIdentity) applyIdentity(profile);
+    });
+    void loadCachedProfileSnapshot(userId).then(snapshot => {
+      if (snapshot && !freshSnapshot) applySnapshot(snapshot);
+    });
+    await Promise.allSettled([
+      ensureMyProfile().then(profile => {
+        if (!profile || profile.user_id !== userId) throw new Error('Profile unavailable');
+        freshIdentity = true;
+        applyIdentity(profile);
+        if (current()) void writeAccountCache('profile_identity_v1', userId, profile);
+      }).catch(() => { if (current()) setLoadError(true); }),
+      fetchProfileSnapshot(snapshot => { freshSnapshot = true; applySnapshot(snapshot); })
+        .then(applySnapshot)
+        .catch(() => { if (current()) { setLoadError(true); setLoading(false); } }),
+    ]);
+  }, [userId]);
   useFocusEffect(useCallback(() => {
-    load();
+    void load();
+    let active = true;
+    countIncomingPendingRequests().then((count) => { if (active) setNotificationDot(count > 0); }).catch(() => {});
+    return () => { active = false; ++loadGeneration.current; };
   }, [load]));
-  useEffect(() => {
-    const unsub = (navigation as any).addListener('tabPress', () => { load(); });
-    return unsub;
-  }, [navigation, load]);
 
   const LEVELS = useMemo(() => ([
     { name: 'Listener', threshold: 0 },
@@ -205,30 +227,42 @@ export default function ProfileTab() {
                 <Avatar uri={avatarUrl} size={52} borderColor={colors.border.muted} backgroundColor={colors.bg.muted} />
               </Pressable>
               <View style={{ flex: 1, minWidth: 0 }}>
-                <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text.secondary }}>{displayName}</Text>
+                <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text.secondary }}>{identityReady ? displayName : 'Your profile'}</Text>
                 <View style={{ marginTop: 2, flexDirection: 'row', alignItems: 'center', gap: 5 }}>
                   <Text style={{ color: colors.text.muted }} numberOfLines={1}>
-                    {avatarBusy ? 'Updating photo…' : username ? `@${username}` : 'Your life in music'}
+                    {!identityReady ? 'Loading your details…' : avatarBusy ? 'Updating photo…' : username ? `@${username}` : 'Your life in music'}
                   </Text>
-                  <Text style={{ color: colors.text.muted }}>·</Text>
-                  <Text style={{ color: colors.accent.primary, fontWeight: '800' }}>{levelName}</Text>
+                  {!loading && identityReady ? <Text style={{ color: colors.accent.primary, fontWeight: '800' }}>· {levelName}</Text> : null}
                   {username && profileIsPrivate ? <Ionicons name="lock-closed" size={11} color={colors.text.muted} /> : null}
                 </View>
               </View>
             </View>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Open profile settings"
-              onPress={goSettings}
-              hitSlop={8}
-              style={{ width: icon.button, height: icon.button, flexShrink: 0, alignItems: 'center', justifyContent: 'center' }}
-            >
-              <Ionicons name="settings-outline" size={20} color={colors.text.secondary} />
-            </Pressable>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Open notifications"
+                onPress={() => router.push('/profile/notifications')}
+                hitSlop={8}
+                style={{ width: icon.button, height: icon.button, flexShrink: 0, alignItems: 'center', justifyContent: 'center' }}
+              >
+                <Ionicons name="notifications-outline" size={20} color={colors.text.secondary} />
+                {notificationDot ? <View style={{ position: 'absolute', top: 8, right: 8, width: 7, height: 7, borderRadius: 4, backgroundColor: colors.accent.primary }} /> : null}
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Open profile settings"
+                onPress={goSettings}
+                hitSlop={8}
+                style={{ width: icon.button, height: icon.button, flexShrink: 0, alignItems: 'center', justifyContent: 'center' }}
+              >
+                <Ionicons name="settings-outline" size={20} color={colors.text.secondary} />
+              </Pressable>
+            </View>
           </View>
         </View>
 
-        {!loading && (!profileSetupCompleted || !username) ? (
+        {loadError ? <Pressable accessibilityRole="button" onPress={() => void load()}><Text style={{ color: colors.text.muted }}>Couldn’t refresh your profile. Tap to retry.</Text></Pressable> : null}
+        {identityReady && (!profileSetupCompleted || !username) ? (
           <Pressable
             accessibilityRole="button"
             onPress={() => router.push('/profile/setup')}
@@ -264,7 +298,7 @@ export default function ProfileTab() {
             </View>
             <View style={{ height: 140, borderRadius: ui.radius.lg, backgroundColor: colors.bg.muted, borderWidth: 1, borderColor: colors.border.subtle }} />
           </View>
-        ) : (
+        ) : !hasSnapshot ? null : (
           <View style={{ gap: 18 }}>
             <MusicPreview title="Recently listened" items={recentListening} onViewAll={() => router.push('/profile/history')} empty="Your listening story starts here. Mark a release as listened to see it on your profile." />
             <MusicPreview title="Top rated" items={topRated} onViewAll={() => router.push('/profile/top-rated')} empty="Rate music you’ve listened to and your favourites will appear here." />

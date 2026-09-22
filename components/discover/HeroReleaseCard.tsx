@@ -81,7 +81,7 @@ export default function HeroReleaseCard({
         />
 
         <Pressable
-          onPress={onSave}
+          onPress={(event) => { event.stopPropagation(); onSave?.(); }}
           disabled={!onSave}
           hitSlop={10}
           style={({ pressed }) => ({

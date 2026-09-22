@@ -4,6 +4,7 @@ import { ensureMyProfile } from './profileSocial';
 import { supabase } from './supabase';
 import { clearTrackRatings, refreshTrackRatings } from './trackRatingCache';
 import { on, off } from './events';
+import { writeAccountCache } from './accountCache';
 
 type SessionCtx = {
   session: Session | null;
@@ -33,7 +34,13 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!session?.user?.id) return;
-    ensureMyProfile().catch(() => {});
+    let active = true;
+    ensureMyProfile().then(profile => {
+      if (active && profile?.user_id === session.user.id) {
+        void writeAccountCache('profile_identity_v1', session.user.id, profile);
+      }
+    }).catch(() => {});
+    return () => { active = false; };
   }, [session?.user?.id]);
 
   useEffect(() => {
