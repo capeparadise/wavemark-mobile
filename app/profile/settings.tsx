@@ -1,16 +1,12 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import * as AppleAuthentication from 'expo-apple-authentication';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import { ActivityIndicator, Alert, Pressable, ScrollView, Switch, Text, View } from 'react-native';
-import PlayerToggle from '../../components/PlayerToggle';
+import { ActivityIndicator, Alert, Pressable, ScrollView, Text, View } from 'react-native';
 import Screen from '../../components/StackScreen';
 import { deleteAccount } from '../../lib/accountDeletion';
-import { emit } from '../../lib/events';
 import { supabase } from '../../lib/supabase';
-import { getAdvancedRatingsEnabled, setAdvancedRatingsEnabled } from '../../lib/user';
-import { isHapticsEnabled, setHapticsEnabled } from '../../components/haptics';
 import { countIncomingPendingRequests } from '../../lib/profileSocial';
 import { getDemoSnapshotSummary, resetDemoProfile, restoreDemoProfile, type DemoSnapshotSummary } from '../../lib/demoProfile';
 import { useTheme } from '../../theme/useTheme';
@@ -19,20 +15,10 @@ export default function ProfileSettingsPage() {
   const { colors } = useTheme();
   const [signingOut, setSigningOut] = useState(false);
   const [deletingAccount, setDeletingAccount] = useState(false);
-  const [advEnabled, setAdvEnabled] = useState<boolean>(false);
-  const [advSaving, setAdvSaving] = useState<boolean>(false);
-  const [hapticsEnabled, setHapticsEnabledState] = useState<boolean>(true);
-  const [hapticSaving, setHapticSaving] = useState<boolean>(false);
   const [requestsHasDot, setRequestsHasDot] = useState(false);
   const [demoBusy, setDemoBusy] = useState(false);
   const [demoSnapshot, setDemoSnapshot] = useState<DemoSnapshotSummary | null>(null);
 
-  useEffect(() => {
-    // Load advanced rating preference
-    getAdvancedRatingsEnabled().then(setAdvEnabled).catch(() => setAdvEnabled(false));
-    // Load haptics pref
-    setHapticsEnabledState(isHapticsEnabled());
-  }, []);
 
   useFocusEffect(useCallback(() => {
     countIncomingPendingRequests()
@@ -95,7 +81,6 @@ export default function ProfileSettingsPage() {
     );
   };
 
-  const APPLE_ENABLED = process.env.EXPO_PUBLIC_ENABLE_APPLE === 'true';
 
   const currentUserUsesApple = async () => {
     const { data } = await supabase.auth.getUser();
@@ -234,100 +219,14 @@ export default function ProfileSettingsPage() {
         <Text style={{ fontSize: 22, fontWeight: '700', marginBottom: 8, color: colors.text.secondary }}>Settings</Text>
         <Text style={{ color: colors.text.muted, marginBottom: 18 }}>Manage your profile and app preferences.</Text>
 
-        <View style={{ marginBottom: 28 }}>
-          <Text style={{ fontWeight: '800', fontSize: 17, marginBottom: 4, color: colors.text.secondary }}>Your Ripple</Text>
-          <ProfileDestination label="Ratings" detail="See everything you’ve rated" icon="star-outline" onPress={() => router.push('/profile/ratings')} />
-          <ProfileDestination label="To rate" detail="Finish ratings for listened music" icon="alert-circle-outline" onPress={() => router.push('/profile/pending')} />
+        <View style={{ marginBottom: 24 }}>
+          <ProfileDestination label="Ratings" detail="Your ratings, to rate, notes and preferences" icon="star-outline" onPress={() => router.push('/profile/rating-hub')} />
+          <ProfileDestination label="Edit profile" detail="Display name, username and privacy" icon="person-outline" onPress={() => router.push('/profile/setup')} />
+          <ProfileDestination label="General" detail="Haptics and app preferences" icon="options-outline" onPress={() => router.push('/profile/general-settings')} />
+          <ProfileDestination label="People" detail="Requests, followers and following" icon="people-outline" dot={requestsHasDot} onPress={() => router.push('/profile/people')} />
           <ProfileDestination label="Insights" detail="Explore your listening patterns" icon="stats-chart-outline" onPress={() => router.push('/profile/insights')} />
-          <ProfileDestination label="People" detail="Manage requests, followers and following" icon="people-outline" dot={requestsHasDot} onPress={() => router.push('/profile/people')} />
           <ProfileDestination label="Share profile" detail="Create your listener profile card" icon="share-outline" onPress={() => router.push('/profile/share-card')} />
-          <ProfileDestination label="Notes" detail="See thoughts you added to ratings" icon="chatbubble-ellipses-outline" onPress={() => router.push('/profile/reviews')} />
         </View>
-
-        <View style={{ marginBottom: 24 }}>
-          <Text style={{ fontWeight: '700', marginBottom: 6, color: colors.text.secondary }}>Listener profile</Text>
-          <Text style={{ color: colors.text.muted, marginBottom: 8 }}>Manage your display name, @username and privacy.</Text>
-          <Pressable
-            onPress={() => router.push('/profile/setup')}
-            style={({ pressed }) => ({
-              padding: 12,
-              borderRadius: 14,
-              backgroundColor: colors.bg.secondary,
-              borderWidth: 1,
-              borderColor: colors.border.subtle,
-              opacity: pressed ? 0.85 : 1,
-            })}
-          >
-            <Text style={{ color: colors.text.secondary, fontSize: 16, fontWeight: '700' }}>Edit listener profile</Text>
-          </Pressable>
-        </View>
-
-      {APPLE_ENABLED ? (
-        <View style={{ marginBottom: 24 }}>
-          <Text style={{ fontWeight: '700', marginBottom: 6, color: colors.text.secondary }}>Default player</Text>
-          <Text style={{ color: colors.text.muted, marginBottom: 8 }}>Choose where releases open.</Text>
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 8 }}>
-            <Text style={{ fontSize: 16, color: colors.text.secondary }}>Player</Text>
-            <PlayerToggle />
-          </View>
-        </View>
-      ) : null}
-
-      {/* Advanced rating mode */}
-      <View style={{ marginBottom: 24 }}>
-        <Text style={{ fontWeight: '700', marginBottom: 6, color: colors.text.secondary }}>Advanced rating mode</Text>
-        <Text style={{ color: colors.text.muted, marginBottom: 8 }}>Enable detailed category sliders when rating songs.</Text>
-        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 8 }}>
-          <Text style={{ fontSize: 16, color: colors.text.secondary }}>Enable</Text>
-          <Switch
-            value={advEnabled}
-            onValueChange={async (v) => {
-              if (advSaving) return;
-              setAdvSaving(true);
-              setAdvEnabled(v);
-              const ok = await setAdvancedRatingsEnabled(v);
-              if (!ok) {
-                setAdvEnabled(!v);
-                Alert.alert('Could not save preference');
-              }
-              if (ok) {
-                // notify app so listeners can update immediately
-                try { emit('prefs:advanced_ratings', v); } catch {}
-              }
-              setAdvSaving(false);
-            }}
-            trackColor={{ false: colors.border.subtle, true: colors.accent.primary }}
-            thumbColor={advEnabled ? colors.text.inverted : colors.bg.primary}
-            ios_backgroundColor={colors.border.subtle}
-          />
-        </View>
-      </View>
-
-        <View style={{ marginBottom: 24 }}>
-          <Text style={{ fontWeight: '700', marginBottom: 6, color: colors.text.secondary }}>Haptics</Text>
-          <Text style={{ color: colors.text.muted, marginBottom: 8 }}>Turn on/off haptic feedback.</Text>
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 8 }}>
-            <Text style={{ fontSize: 16, color: colors.text.secondary }}>Enable</Text>
-            <Switch
-              value={hapticsEnabled}
-              onValueChange={async (v) => {
-                if (hapticSaving) return;
-                setHapticSaving(true);
-                setHapticsEnabledState(v);
-                try {
-                  await setHapticsEnabled(v);
-                } catch {
-                  setHapticsEnabledState(!v);
-                  Alert.alert('Could not save preference');
-                }
-                setHapticSaving(false);
-              }}
-              trackColor={{ false: colors.border.subtle, true: colors.accent.primary }}
-              thumbColor={hapticsEnabled ? colors.text.inverted : colors.bg.primary}
-              ios_backgroundColor={colors.border.subtle}
-            />
-          </View>
-      </View>
 
         {__DEV__ ? (
           <View style={{ marginTop: 8, marginBottom: 26, paddingTop: 18, borderTopWidth: 1, borderTopColor: colors.border.subtle }}>

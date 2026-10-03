@@ -19,8 +19,24 @@ import { artistPageReleases, artistSearch, fetchArtistDetails } from '../../../l
 import { supabase } from '../../../lib/supabase';
 import { useTheme } from '../../../theme/useTheme';
 import { matchesArtistRelease, type ArtistReleaseScope } from '../../../lib/artistReleaseFilters';
+import { peekArtistPage, readArtistPage, writeArtistPage } from '../../../lib/artistPageCache';
+
+const sortArtistReleases = (items: Awaited<ReturnType<typeof artistPageReleases>>) => [...items].sort((a, b) => {
+  const timestamp = (value?: string | null) => {
+    let date = value || '1970-01-01';
+    if (/^\d{4}$/.test(date)) date += '-07-01';
+    else if (/^\d{4}-\d{2}$/.test(date)) date += '-15';
+    return Date.parse(date) || 0;
+  };
+  return timestamp(b.releaseDate) - timestamp(a.releaseDate);
+});
 
 export default function ArtistMiniScreen() {
+  const { id, name, highlight } = useLocalSearchParams();
+  return <ArtistMiniContent key={`${id}:${name ?? ''}:${highlight ?? ''}`} />;
+}
+
+function ArtistMiniContent() {
   const { colors } = useTheme();
   const { id, name, highlight } = useLocalSearchParams<{
     id: string;
@@ -30,12 +46,13 @@ export default function ArtistMiniScreen() {
   let artistId = (id as string) || '';
   const displayName = (name || '').toString();
   const highlightId = (highlight || '').toString();
+  const cachedPage = peekArtistPage(artistId, getMarket());
   const [loading, setLoading] = useState(true);
-  const [albums, setAlbums] = useState<Awaited<ReturnType<typeof artistPageReleases>>>([]);
+  const [albums, setAlbums] = useState<Awaited<ReturnType<typeof artistPageReleases>>>(cachedPage?.albums || []);
   // no separate tracks list now; focusing on latest releases
-  const [heroUrl, setHeroUrl] = useState<string | null>(null);
-  const [resolvedName, setResolvedName] = useState<string>('');
-  const [artistMeta, setArtistMeta] = useState<{ followers?: number; genres?: string[] } | null>(null);
+  const [heroUrl, setHeroUrl] = useState<string | null>(cachedPage?.imageUrl || null);
+  const [resolvedName, setResolvedName] = useState<string>(cachedPage?.name || '');
+  const [artistMeta, setArtistMeta] = useState<{ followers?: number; genres?: string[] } | null>(cachedPage || null);
   // Track items added during this session for visual feedback
   const [addedIds, setAddedIds] = useState<Set<string>>(new Set());
   const [listenStatus, setListenStatus] = useState<Record<string, { done?: boolean; rating?: number | null }>>({});
@@ -104,12 +121,12 @@ export default function ArtistMiniScreen() {
   useEffect(() => { refreshListenStatus(); }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    let freshReleases = false;
+    let freshDetails = false;
     (async () => {
       setLoading(true);
-  // Avoid showing a stale hero image while navigating between artists
-  setHeroUrl(null);
-  setArtistMeta(null);
-  setResolvedName('');
+  // This component is keyed by artist, so another artist's state cannot flash.
   setFilter('all');
       try {
   // Resolve artistId from name if needed (handle punctuation like trailing '..')
@@ -149,6 +166,34 @@ export default function ArtistMiniScreen() {
         }
         // Still not a valid spotify id? Abort gracefully
   if (!/^[A-Za-z0-9]{22}$/i.test(artistId)) throw new Error('Artist not found');
+        if (cancelled) return;
+        void readArtistPage(artistId, getMarket()).then(page => {
+          if (!page || cancelled) return;
+          if (!freshReleases) setAlbums(page.albums);
+          if (!freshDetails) {
+            setHeroUrl(page.imageUrl);
+            setResolvedName(page.name);
+            setArtistMeta({ followers: page.followers, genres: page.genres });
+          }
+        });
+        // Independent requests start together; neither blocks release rendering.
+        const detailsPromise = fetchArtistDetails(artistId).catch(() => null).then(details => {
+          if (!cancelled && details) {
+            freshDetails = true;
+            setResolvedName(details.name);
+            setArtistMeta({ followers: details.followers, genres: details.genres || [] });
+            if (details.imageUrl) setHeroUrl(previous => previous || details.imageUrl!);
+          }
+          return details;
+        });
+        const imagePromise = (async () => {
+          const qName = displayName || (await detailsPromise)?.name || '';
+          if (!qName) return null;
+          const matches = await artistSearch(qName, 'GB', 'precise').catch(() => []);
+          const image = matches.find(item => item.id === artistId)?.imageUrl || null;
+          if (!cancelled && image) { freshDetails = true; setHeroUrl(image); }
+          return image;
+        })();
 
   // Keep artistId fixed (do not override with highlight's primary artist); we will only inject highlights that match this artist
         // Use cached hero image first (24h TTL)
@@ -178,9 +223,15 @@ export default function ArtistMiniScreen() {
         // Fetch albums with market fallbacks (device, GB, US)
         const mkList = Array.from(new Set([getMarket(), 'GB', 'US'].filter(Boolean)));
         let albs: Awaited<ReturnType<typeof artistPageReleases>> = [];
+        let releaseRequestSucceeded = false;
         for (const mk of mkList) {
           try {
-            const res = await artistPageReleases(artistId, mk);
+            const res = await artistPageReleases(artistId, mk, page => {
+              if (cancelled || !page.length) return;
+              freshReleases = true;
+              setAlbums(sortArtistReleases(page));
+            });
+            releaseRequestSucceeded = true;
             albs = res;
             if (albs.length > 0) break;
           } catch {}
@@ -191,6 +242,7 @@ export default function ArtistMiniScreen() {
             const q = displayName || '';
             if (q) {
               const results = await spotifySearch(`artist:"${q}"`);
+              releaseRequestSucceeded = true;
               const onlyAlbums = results.filter((x) =>
                 x.type === 'album' &&
                 x.albumType !== 'compilation' &&
@@ -213,20 +265,16 @@ export default function ArtistMiniScreen() {
             }
           } catch {}
         }
-        // Fetch artist details (non-fatal) then a precise artist search to obtain the canonical profile image (search view expected by user)
-        let det: Awaited<ReturnType<typeof fetchArtistDetails>> = null;
-        try { det = await fetchArtistDetails(artistId); } catch {}
+        if (cancelled) return;
+        if (!releaseRequestSucceeded) throw new Error('Artist releases unavailable');
+        freshReleases = true;
+        setAlbums(sortArtistReleases(albs));
+        setLoading(false);
+        // Details/highlight enrichment no longer holds the visible catalogue back.
+        const [det, preciseSearchImg] = await Promise.all([detailsPromise, imagePromise]);
+        if (cancelled) return;
         if (det?.name) setResolvedName(det.name);
         setArtistMeta({ followers: det?.followers, genres: det?.genres ?? [] });
-        let preciseSearchImg: string | null = null;
-        try {
-          const qName = displayName || det?.name || '';
-          if (qName) {
-            const precise = await artistSearch(qName, 'GB', 'precise');
-            const matched = precise.find(p => p.id === artistId);
-            preciseSearchImg = matched?.imageUrl ?? null;
-          }
-        } catch {}
   const highlightIdLocal = (highlightId || '').trim();
         // If a highlight id is provided but not present, fetch it directly and include
         try {
@@ -284,8 +332,10 @@ export default function ArtistMiniScreen() {
           const tb = Date.parse(normalizeDate(b.releaseDate) ?? '1970-01-01');
           return tb - ta;
         });
-        setAlbums(albs);
+        if (cancelled) return;
+        setAlbums([...albs]);
         const finalImg = preciseSearchImg || det?.imageUrl || null;
+        if (albs.length) writeArtistPage(artistId, getMarket(), { albums: albs, name: det?.name || displayName, imageUrl: finalImg, followers: det?.followers, genres: det?.genres || [] });
         if (finalImg) {
           setHeroUrl(finalImg);
           // Persist hero to V2 cache (kind=artist, src indicates chosen source), but do not downgrade a 'search' image to 'details'
@@ -313,27 +363,18 @@ export default function ArtistMiniScreen() {
           } catch {}
         }
       } catch (e) {
-        Alert.alert('Could not load artist');
+        if (!cancelled) Alert.alert('Could not load artist');
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     })();
+    return () => { cancelled = true; };
   }, [id, name]);
 
   useEffect(() => {
     fadeIn.setValue(0);
     Animated.timing(fadeIn, { toValue: 1, duration: 260, useNativeDriver: true }).start();
   }, [id, fadeIn]);
-
-  if (loading) {
-    return (
-      <Screen>
-        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-          <ActivityIndicator color={colors.text.muted} />
-        </View>
-      </Screen>
-    );
-  }
 
   // Render only this artist's albums/singles (no per-track rows)
   const merged: Array<{
@@ -523,6 +564,7 @@ export default function ArtistMiniScreen() {
           </View>
 
           <View style={{ marginTop: 12 }}>
+            {loading && <ActivityIndicator accessibilityLabel="Loading artist releases" color={colors.text.muted} style={{ marginVertical: 12 }} />}
             {!loading && filtered.length===0 && <View style={{paddingVertical:24}}>
               <Text style={{color:colors.text.muted}}>No releases match these filters.</Text>
               <Pressable onPress={()=>{setFilter('all');setReleaseScope('all');}} style={{minHeight:44,justifyContent:'center'}}><Text style={{color:colors.accent.primary}}>Show all releases</Text></Pressable>

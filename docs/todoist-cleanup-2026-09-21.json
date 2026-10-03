@@ -1,0 +1,111 @@
+{
+  "date": "2026-09-21",
+  "projectId": "6hHg5Q7MXgqGhX27",
+  "reason": "User requested removal of vague monitoring/placeholder tasks; not completed work.",
+  "tasks": [
+    {
+      "id": "6hHg6VHJ6wvpqCX7",
+      "content": "Watch for community-loop drop-off",
+      "description": "Note where testers stop or become confused across profile, following, feed and rating/review flows. Prioritise repeated friction over isolated preferences.",
+      "recurring": false,
+      "priority": "p2",
+      "projectId": "6hHg5Q7MXgqGhX27",
+      "sectionId": "6hHg6VG2q656Cfr7",
+      "labels": [],
+      "checked": false,
+      "addedAt": "2026-08-17T22:48:30.163Z",
+      "comments": []
+    },
+    {
+      "id": "6hHg6VMC26wW7Vm7",
+      "content": "Fix blockers found by current testers",
+      "description": "Fix regressions and high-impact friction only. Keep scope tight so the first founding-listener wave is not delayed by optional polish.",
+      "recurring": false,
+      "priority": "p1",
+      "projectId": "6hHg5Q7MXgqGhX27",
+      "sectionId": "6hHg6VG2q656Cfr7",
+      "labels": [],
+      "checked": false,
+      "addedAt": "2026-08-17T22:48:30.164Z",
+      "comments": []
+    },
+    {
+      "id": "6hHg6VJ57FJv96j7",
+      "content": "Track first-session friction for new listeners",
+      "description": "Pay attention to onboarding, understanding of Ripple’s purpose, profile setup, following and the first useful feed interaction.",
+      "recurring": false,
+      "priority": "p2",
+      "projectId": "6hHg5Q7MXgqGhX27",
+      "sectionId": "6hHg6VFgMxJrW6W7",
+      "labels": [],
+      "checked": false,
+      "addedAt": "2026-08-17T22:48:30.167Z",
+      "comments": []
+    },
+    {
+      "id": "6hHg6VJCf5hMvvrf",
+      "content": "Fix the highest-impact Wave 1 issues",
+      "description": "Focus on issues affecting repeat use, community clarity, profile/feed usefulness or trust. Avoid expanding scope into unrelated feature work.",
+      "recurring": false,
+      "priority": "p1",
+      "projectId": "6hHg5Q7MXgqGhX27",
+      "sectionId": "6hHg6VGWJVmqrhW7",
+      "labels": [],
+      "checked": false,
+      "addedAt": "2026-08-17T22:48:30.171Z",
+      "comments": []
+    },
+    {
+      "id": "6hHg6VGr4rMWX76f",
+      "content": "Compare Wave 2 behaviour with Wave 1",
+      "description": "Look for improvement in understanding, return behaviour and use of profiles/feed/follows/ratings. Use the comparison to guide the next product decision.",
+      "recurring": false,
+      "priority": "p2",
+      "projectId": "6hHg5Q7MXgqGhX27",
+      "sectionId": "6hHg6VGWJVmqrhW7",
+      "labels": [],
+      "checked": false,
+      "addedAt": "2026-08-17T22:48:30.174Z",
+      "comments": []
+    },
+    {
+      "id": "6hHg6VJx7c2Wm6f7",
+      "content": "Maintain a light Ripple content rhythm",
+      "description": "Use screenshots, screen recordings, mockups and short explanations of what is changing and why. One strong post in an active week is enough; a second is optional when there is genuinely something worth sharing.",
+      "recurring": false,
+      "priority": "p3",
+      "projectId": "6hHg5Q7MXgqGhX27",
+      "sectionId": "6hHg6VM72GF2Vj9f",
+      "labels": [],
+      "checked": false,
+      "addedAt": "2026-08-17T22:48:30.180Z",
+      "comments": []
+    },
+    {
+      "id": "6hHg6VM4Pc3jfcp7",
+      "content": "Give the waitlist one or two light nudges per week maximum",
+      "description": "Use a Ripple post/story or a personal reshare. If interest is weak, improve the message rather than increasing posting frequency.",
+      "recurring": false,
+      "priority": "p3",
+      "projectId": "6hHg5Q7MXgqGhX27",
+      "sectionId": "6hHg6VM72GF2Vj9f",
+      "labels": [],
+      "checked": false,
+      "addedAt": "2026-08-17T22:48:30.184Z",
+      "comments": []
+    },
+    {
+      "id": "6hHg6VJJqjVxcVgf",
+      "content": "Capture useful questions from founder events",
+      "description": "After each event, note repeated questions, objections, useful contacts and anything that changes how Ripple should be explained. The goal right now is learning and network-building, not closing funding.",
+      "recurring": false,
+      "priority": "p3",
+      "projectId": "6hHg5Q7MXgqGhX27",
+      "sectionId": "6hHg6VM72GF2Vj9f",
+      "labels": [],
+      "checked": false,
+      "addedAt": "2026-08-17T22:48:30.187Z",
+      "comments": []
+    }
+  ]
+}

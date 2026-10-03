@@ -8,6 +8,7 @@ import { getMarket, spotifyLookup, spotifyResolveRelease } from './spotify';
 import { spotifyOpenMatch } from './spotifyOpenMatch';
 import { supabase } from './supabase';
 import { normalizeReview } from './review';
+import { forgetListenedActivityRow } from './listenedActivity';
 
 const debug = debugNS('listen');
 export const APPLE_ENABLED = process.env.EXPO_PUBLIC_ENABLE_APPLE !== 'false';
@@ -386,7 +387,8 @@ export async function addToListenList(
 
 export async function fetchListenList(): Promise<ListenRow[]> {
   const { data: { user }, error: userErr } = await supabase.auth.getUser();
-  if (userErr || !user) return [];
+  if (userErr) throw userErr;
+  if (!user) return [];
   const { data, error } = await supabase
     .from('listen_list')
     .select('id,item_type,provider,provider_id,title,artist_name,artwork_url,release_date,apple_url,apple_id,apple_track_id,apple_album_id,apple_storefront,spotify_url,spotify_id,rating,review,rated_at,done_at,upcoming,created_at')
@@ -394,7 +396,8 @@ export async function fetchListenList(): Promise<ListenRow[]> {
     .is('done_at', null)
     .order('id', { ascending: false });
 
-  if (error || !data) return [];
+  if (error) throw error;
+  if (!data) return [];
   return data as ListenRow[];
 }
 
@@ -479,10 +482,11 @@ export async function addToListFromSearch(input: {
   providerId?: string | null,
   isrc?: string | null,
   upc?: string | null,
-}): Promise<{ ok: boolean; id?: string; upcoming?: boolean; message?: string; alreadySaved?: boolean; row?: any }> {
+}, expectedUserId?: string): Promise<{ ok: boolean; id?: string; upcoming?: boolean; message?: string; alreadySaved?: boolean; row?: any }> {
   const { data: { user }, error: userErr } = await supabase.auth.getUser();
   if (userErr) return { ok: false, message: userErr.message };
   if (!user) return { ok: false, message: 'Not signed in' };
+  if (expectedUserId && user.id !== expectedUserId) return { ok: false, message: 'Your account changed. Please try again.' };
 
   const today = new Date().toISOString().slice(0,10);
   const upcoming = !!(input.releaseDate && input.releaseDate > today);
@@ -791,14 +795,16 @@ export async function ensureListenRowForSearch(
 
 export async function markDone(
   id: string,
-  makeDone: boolean
+  makeDone: boolean,
+  context?: { userId: string; doneAt: string | null }
 ): Promise<{ ok: boolean; message?: string }> {
   const { data: auth, error: authErr } = await supabase.auth.getUser();
   const user = auth?.user;
   if (authErr) return { ok: false, message: authErr.message };
   if (!user) return { ok: false, message: 'Not signed in' };
 
-  const patch = { done_at: makeDone ? new Date().toISOString() : null };
+  if (context && context.userId !== user.id) return { ok: false, message: 'Your account changed. Please try again.' };
+  const patch = { done_at: context ? context.doneAt : makeDone ? new Date().toISOString() : null };
 
   const { data, error } = await supabase
     .from('listen_list')
@@ -813,6 +819,7 @@ export async function markDone(
   console.log('[markDone]', { id, makeDone, patch, data, error });
 
   if (error) return { ok: false, message: error.message };
+  if (!data) return { ok: false, message: 'Could not find this saved item. Please refresh and try again.' };
   return { ok: true };
 }
 
@@ -858,6 +865,7 @@ export async function removeListenByProvider(
 
   if (error) return { ok: false, removed: 0, message: error.message };
   const removed = Array.isArray(data) ? data.length : 0;
+  if (Array.isArray(data)) data.forEach(row => forgetListenedActivityRow(row.id));
   return { ok: true, removed };
 }
 
@@ -866,6 +874,7 @@ export async function removeListen(
 ): Promise<{ ok: boolean; message?: string }> {
   const { error } = await supabase.from('listen_list').delete().eq('id', id);
   if (error) return { ok: false, message: error.message };
+  forgetListenedActivityRow(id);
   return { ok: true };
 }
 
@@ -1291,7 +1300,7 @@ export async function setRatingDetailed(
     };
     const r = normalizeRating(rating);
     const det: any = {};
-    const keys = ['production','vocals','lyrics','replay'];
+    const keys = ['production','vocals','lyrics','replay','artwork'];
     for (const k of keys) {
       const v = norm((details as any)[k]);
       if (typeof v === 'number') det[k] = v;

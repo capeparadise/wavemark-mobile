@@ -6,19 +6,30 @@ import StatusMenu from '../../components/StatusMenu';
 import RatingModal from '../../components/RatingModal';
 import { formatDate } from '../../lib/date';
 import type { ListenRow } from '../../lib/listen';
-import { markDone, removeListen, setRating, setRatingDetailed } from '../../lib/listen';
+import { setRating, setRatingDetailed } from '../../lib/listen';
 import { goToRelease } from '../../lib/navigation';
 import { supabase } from '../../lib/supabase';
 import { getUiColors, ui } from '../../constants/ui';
 import { useTheme } from '../../theme/useTheme';
 import { useAdvancedRatingsEnabled } from '../../lib/user';
+import { useSession } from '../../lib/session';
+import { useListenedActivity } from '../../hooks/useListenedActivity';
+import { listenedActivityRevision, mergeListenedActivity, isListenedActivityPending } from '../../lib/listenedActivity';
 
 export const options = { title: 'History' };
 
 export default function HistoryScreen() {
+  const { user } = useSession();
+  return <HistoryContent key={user?.id ?? 'signed-out'} userId={user?.id} />;
+}
+
+function HistoryContent({ userId }: { userId?: string }) {
   const { colors } = useTheme();
   const [advancedRatings] = useAdvancedRatingsEnabled();
   const [rows, setRows] = useState<ListenRow[]>([]);
+  useListenedActivity();
+  const [activityRead, setActivityRead] = useState(-1);
+  const visibleRows = mergeListenedActivity(userId, rows, 'history', activityRead);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [menuRow, setMenuRow] = useState<ListenRow | null>(null);
@@ -29,15 +40,16 @@ export default function HistoryScreen() {
   const uiColors = useMemo(() => getUiColors(colors), [colors]);
 
   const load = useCallback(async () => {
+    const readRevision = listenedActivityRevision();
     const { data: auth } = await supabase.auth.getUser();
     const user = auth?.user;
-    if (!user) { setRows([]); setLoading(false); return; }
+    if (!user || user.id !== userId) { setRows([]); setLoading(false); return; }
     // Show cached immediately
     try {
       const raw = await AsyncStorage.getItem(`${CACHE_KEY}_${user.id}`);
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) setRows(parsed as ListenRow[]);
+        if (Array.isArray(parsed)) { setRows(parsed as ListenRow[]); setActivityRead(-1); }
       }
     } catch {}
     setLoading(true);
@@ -54,10 +66,11 @@ export default function HistoryScreen() {
       console.log('[history] load error', error);
     } else if (data) {
       setRows(data as ListenRow[]);
+      setActivityRead(readRevision);
       try { await AsyncStorage.setItem(`${CACHE_KEY}_${user.id}`, JSON.stringify(data)); } catch {}
     }
     setLoading(false);
-  }, []);
+  }, [userId]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -86,6 +99,7 @@ export default function HistoryScreen() {
     }
     return (
       <Pressable
+        disabled={isListenedActivityPending(userId, item)}
         onPress={() => openRow(item)}
         style={{
           padding: 12,
@@ -114,7 +128,7 @@ export default function HistoryScreen() {
           {!!item.artist_name && <Text style={{ color: colors.text.muted }} numberOfLines={1}>{item.artist_name}</Text>}
           {!!item.done_at && <Text style={{ color: colors.text.muted, marginTop: 2 }}>Listened {formatDate(item.done_at)}</Text>}
         </View>
-        <Pressable onPress={() => setMenuRow(item)} hitSlop={8} style={{ padding: 6 }}>
+        <Pressable disabled={isListenedActivityPending(userId, item)} onPress={() => setMenuRow(item)} hitSlop={8} style={{ padding: 6 }}>
           <Text style={{ fontSize: 18, color: colors.text.muted }}>⋯</Text>
         </Pressable>
       </Pressable>
@@ -134,13 +148,13 @@ export default function HistoryScreen() {
 
   return (
     <Screen edges={['left', 'right']}>
-      {loading && rows.length === 0 ? (
+      {loading && visibleRows.length === 0 ? (
         <View style={{ flex: 1, paddingTop: 10 }}>
           {Array.from({ length: 6 }).map((_, i) => <View key={i}>{skeleton}</View>)}
         </View>
       ) : (
         <FlatList
-          data={rows}
+          data={visibleRows}
           keyExtractor={(r) => r.id}
           renderItem={renderRow}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
@@ -189,6 +203,7 @@ export default function HistoryScreen() {
         initial={ratingRow?.rating ?? 0}
         initialDetails={ratingRow?.rating_details}
         initialReview={ratingRow?.review}
+        itemType={ratingRow?.item_type}
         advanced={advancedRatings}
         onCancel={() => { setRatingVisible(false); setRatingRow(null); }}
         onSubmit={async (stars, details, review) => {

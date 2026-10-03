@@ -7,8 +7,6 @@ import { parseSpotifyUrlOrId, spotifyLookup } from '../lib/spotify';
 import { emit } from '../lib/events';
 import {
   ensureListenRowForSearch,
-  markDone,
-  markDoneByProvider,
   removeListen,
   removeListenByProvider,
   setRating,
@@ -22,6 +20,8 @@ import { useAdvancedRatingsEnabled } from '../lib/user';
 import { ratingLabel } from '../lib/ratingDisplay';
 import { fetchCollectionById, fetchTrackById } from '../lib/apple';
 import { router } from 'expo-router';
+import { useSession } from '../lib/session';
+import { markListened } from '../lib/markListened';
 
 export type ReleaseActionSheetRow = ListenRow & {
   artist_id?: string | null;
@@ -54,6 +54,7 @@ function spotifyKey(id?: string | null, spotifyUrl?: string | null) {
 }
 
 export default function ReleaseActionSheet({ row, visible, onClose, onRate, onChanged }: ReleaseActionSheetProps) {
+  const { user } = useSession();
   const { colors } = useTheme();
   const [advancedRatings] = useAdvancedRatingsEnabled();
   const insets = useSafeAreaInsets();
@@ -239,39 +240,15 @@ export default function ReleaseActionSheet({ row, visible, onClose, onRate, onCh
   };
 
   const onMark = async (done: boolean) => {
-    const providerId = ctx.provider_id;
-    if (!isUuid(row.id) && providerId) {
-      await run(async () => {
-        const { data: mdData, error: mdErr } = await markDoneByProvider({ provider: ctx.provider, provider_id: providerId, makeDone: done });
-        if (mdErr) throw new Error(mdErr.message || 'Could not update item');
-        if (!mdData) {
-          const created = await ensureRow();
-          await markDone(created.id, done);
-          onChanged?.({ type: 'mark', row: { ...created, done_at: done ? new Date().toISOString() : null } as any, done });
-        } else {
-          onChanged?.({ type: 'mark', row: { ...(row as any), done_at: done ? new Date().toISOString() : null } as any, done });
-        }
-        emit('listen:updated');
-        emit('listen:refresh');
-      });
+    await run(async () => {
+      const result = await markListened({ ...row, provider: ctx.provider, provider_id: ctx.provider_id }, user?.id, done, ensureRow);
+      if (!result.ok || !result.row) throw new Error(result.message || 'Could not update item');
+      onChanged?.({ type: 'mark', row: result.row, done });
       if (done) {
-        const r = await ensureRow();
-        setRatingRow({ ...r, done_at: new Date().toISOString() });
+        setRatingRow(result.row);
         setRatingVisible(true);
       }
-      return;
-    }
-
-    const r = await ensureRow();
-      await run(async () => {
-        await markDone(r.id, done);
-        onChanged?.({ type: 'mark', row: { ...r, done_at: done ? new Date().toISOString() : null } as ListenRow, done });
-        emit('listen:updated');
-      });
-    if (done) {
-      setRatingRow({ ...r, done_at: new Date().toISOString() });
-      setRatingVisible(true);
-    }
+    });
   };
 
   const onRemove = async () => {
@@ -415,6 +392,7 @@ export default function ReleaseActionSheet({ row, visible, onClose, onRate, onCh
         initial={ratingRow?.rating ?? 0}
         initialDetails={ratingRow?.rating_details as any}
         initialReview={ratingRow?.review}
+        itemType={ratingRow?.item_type}
         advanced={advancedRatings}
         onCancel={() => {
           setRatingVisible(false);

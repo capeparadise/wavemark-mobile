@@ -16,6 +16,7 @@ const REQUEST_TIMEOUT_MS = 45_000;
 function userStorageKeys(userId: string) {
   return [
     `adv_ratings:${userId}`,
+    `rating_preferences_v1:${userId}`,
     `listen_cache_v1_${userId}`,
     `listen_upcoming_cache_v1_${userId}`,
     `history_cache_v1_${userId}`,

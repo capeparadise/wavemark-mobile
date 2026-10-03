@@ -1,0 +1,26 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const ts = require('typescript');
+const storage = new Map();
+const events = [];
+let fail = false;
+const mod = { exports: {} };
+const code = ts.transpileModule(fs.readFileSync('lib/ratingPreferences.ts', 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
+new Function('require', 'module', 'exports', code)(name => name.includes('async-storage') ? { default: { setItem: async (key, value) => { if (fail) throw Error('storage'); storage.set(key, value); } } } : name === './events' ? { emit: (...args) => events.push(args) } : {}, mod, mod.exports);
+const { parseRatingPreferences, saveRatingPreferences, ratingPreferencesKey } = mod.exports;
+(async () => {
+  assert.deepEqual(parseRatingPreferences(null), { artwork: false, notes: true });
+  assert.deepEqual(parseRatingPreferences('{"artwork":true,"notes":false}'), { artwork: true, notes: false });
+  assert.deepEqual(parseRatingPreferences('{"artwork":"false"}'), { artwork: false, notes: true });
+  await saveRatingPreferences('A', { artwork: true, notes: false });
+  assert(storage.has(ratingPreferencesKey('A')));
+  assert(!storage.has(ratingPreferencesKey('B')));
+  assert.equal(events[0][1].id, 'A');
+  fail = true;
+  await assert.rejects(saveRatingPreferences('A', { artwork: false, notes: true }));
+  assert.equal(events.length, 1, 'Failed writes must not publish new preferences');
+  const modal = fs.readFileSync('components/RatingModal.tsx', 'utf8');
+  assert(modal.includes('preferences.notes ? normalizeReview(review) : initialReview'));
+  assert(modal.includes('initialDetails?.artwork != null'));
+  console.log('PASS: rating preference defaults, account-scoped persistence, failure handling and hidden-value preservation wiring.');
+})().catch(error => { console.error(error); process.exitCode = 1; });

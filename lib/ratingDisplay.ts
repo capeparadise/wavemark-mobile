@@ -1,4 +1,17 @@
-export type RatingDetails = { production?: number; vocals?: number; lyrics?: number; replay?: number };
+export type RatingDetails = { production?: number; vocals?: number; lyrics?: number; replay?: number; artwork?: number };
+
+export function offersArtworkRating(itemType?: string, individualTrack = false): boolean {
+  // Singles share the stored 'track' type; tracklist controls explicitly opt out.
+  return !individualTrack && ['album', 'single', 'track'].includes(itemType || '');
+}
+
+// Artwork is optional and never participates in the music total.
+export function ratingDetailsForSubmit(details: RatingDetails, advanced: boolean, artworkEnabled: boolean): RatingDetails | null {
+  const next = advanced ? { production: 7, vocals: 7, lyrics: 7, replay: 7, ...details } : { ...details };
+  if (!artworkEnabled) delete next.artwork;
+  // Keep the key for releases even when cleared: callers must persist removal.
+  return advanced || artworkEnabled ? { ...next, ...(artworkEnabled ? { artwork: details.artwork } : {}) } : null;
+}
 
 // The overall rating remains the canonical sorting/statistics value.
 // Never manufacture category scores for legacy/simple ratings.

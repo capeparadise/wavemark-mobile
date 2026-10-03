@@ -9,6 +9,7 @@ import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { Alert, Image, Pressable, ScrollView, Text, View } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import Avatar from '../../components/Avatar';
+import WeeklyTopFive from '../../components/WeeklyTopFive';
 import Screen from '../../components/Screen';
 import { computeAchievements } from '../../lib/achievements';
 import { fetchProfileSnapshot, loadCachedProfileSnapshot, type ListenSummary, type ProfileSnapshot } from '../../lib/stats';
@@ -22,6 +23,8 @@ import { useAdvancedRatingsEnabled } from '../../lib/user';
 import { ratingLabel } from '../../lib/ratingDisplay';
 import ReleaseActionSheet, { type ReleaseActionSheetRow } from '../../components/ReleaseActionSheet';
 import { RELEASE_LONG_PRESS_MS } from '../../hooks/useReleaseActions';
+import { useListenedActivity } from '../../hooks/useListenedActivity';
+import { listenedActivityRevision, mergeListenedActivity, isListenedActivityPending } from '../../lib/listenedActivity';
 
 const profileActionRow = (item: ListenSummary): ReleaseActionSheetRow => ({
   id: item.id,
@@ -66,12 +69,17 @@ function ProfileContent({ userId }: { userId: string | null }) {
   const [achievements, setAchievements] = useState<{ id: string; title: string; unlocked: boolean }[]>([]);
   const [topRated, setTopRated] = useState<ProfileSnapshot['topRated']>([]);
   const [recentListening, setRecentListening] = useState<ProfileSnapshot['listened']>([]);
+  useListenedActivity();
+  const [activityRead, setActivityRead] = useState(-1);
+  const visibleRecentListening = mergeListenedActivity(userId, recentListening, 'history', activityRead);
   const [menuRow, setMenuRow] = useState<ReleaseActionSheetRow | null>(null);
   const [notificationDot, setNotificationDot] = useState(false);
+  const [weeklyRevision, setWeeklyRevision] = useState(0);
 
   const load = useCallback(async () => {
     if (!userId) return;
     const generation = ++loadGeneration.current;
+    const activityReadRevision = listenedActivityRevision();
     const current = () => generation === loadGeneration.current;
     setLoadError(false);
     let freshIdentity = false;
@@ -85,7 +93,7 @@ function ProfileContent({ userId }: { userId: string | null }) {
       setAvatarUrl(profile?.avatar_url ?? null);
       setIdentityReady(true);
     };
-    const applySnapshot = (snap: ProfileSnapshot) => {
+    const applySnapshot = (snap: ProfileSnapshot, remote = false) => {
       if (!current()) return;
       setHasSnapshot(true);
       const rated = (snap.ratings || []).filter(r => typeof r.rating === 'number' && !!r.done_at);
@@ -101,6 +109,7 @@ function ProfileContent({ userId }: { userId: string | null }) {
       });
       setTopRated(snap.topRated || []);
       setRecentListening(snap.listened || []);
+      setActivityRead(remote ? activityReadRevision : -1);
       setAchievements(computeAchievements(snap).map(a => ({ id: a.id, title: a.title, unlocked: a.unlocked })));
       setLoading(false);
     };
@@ -118,8 +127,8 @@ function ProfileContent({ userId }: { userId: string | null }) {
         applyIdentity(profile);
         if (current()) void writeAccountCache('profile_identity_v1', userId, profile);
       }).catch(() => { if (current()) setLoadError(true); }),
-      fetchProfileSnapshot(snapshot => { freshSnapshot = true; applySnapshot(snapshot); })
-        .then(applySnapshot)
+      fetchProfileSnapshot(snapshot => { freshSnapshot = true; applySnapshot(snapshot, true); })
+        .then(snapshot => applySnapshot(snapshot, true))
         .catch(() => { if (current()) { setLoadError(true); setLoading(false); } }),
     ]);
   }, [userId]);
@@ -196,7 +205,7 @@ function ProfileContent({ userId }: { userId: string | null }) {
       {items.length ? (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 12 }}>
           {items.slice(0, 6).map(item => (
-            <Pressable key={item.id} accessibilityRole="button" accessibilityLabel={`${item.title}, ${item.artist_name || 'Unknown artist'}`} accessibilityHint="Tap to open. Hold for release options." onPress={() => goToRelease(item.id)} onLongPress={() => setMenuRow(profileActionRow(item))} delayLongPress={RELEASE_LONG_PRESS_MS} style={{ width: 112, gap: 5 }}>
+            <Pressable key={item.id} disabled={isListenedActivityPending(userId, profileActionRow(item))} accessibilityRole="button" accessibilityLabel={`${item.title}, ${item.artist_name || 'Unknown artist'}`} accessibilityHint="Tap to open. Hold for release options." onPress={() => goToRelease(item.id)} onLongPress={() => setMenuRow(profileActionRow(item))} delayLongPress={RELEASE_LONG_PRESS_MS} style={{ width: 112, gap: 5 }}>
               {item.artwork_url ? (
                 <Image source={{ uri: item.artwork_url }} style={{ width: 112, height: 112, borderRadius: ui.radius.lg }} />
               ) : (
@@ -289,6 +298,9 @@ function ProfileContent({ userId }: { userId: string | null }) {
           </Pressable>
         ) : null}
 
+        {(hasSnapshot || visibleRecentListening.length > 0) && (
+          <MusicPreview title="Recently listened" items={visibleRecentListening} onViewAll={() => router.push('/profile/history')} empty="Your listening story starts here. Mark a release as listened to see it on your profile." />
+        )}
         {loading ? (
           <View style={{ gap: 14, paddingVertical: 4 }}>
             <View style={{ flexDirection: 'row', gap: 10, flexWrap: 'wrap' }}>
@@ -300,7 +312,6 @@ function ProfileContent({ userId }: { userId: string | null }) {
           </View>
         ) : !hasSnapshot ? null : (
           <View style={{ gap: 18 }}>
-            <MusicPreview title="Recently listened" items={recentListening} onViewAll={() => router.push('/profile/history')} empty="Your listening story starts here. Mark a release as listened to see it on your profile." />
             <MusicPreview title="Top rated" items={topRated} onViewAll={() => router.push('/profile/top-rated')} empty="Rate music you’ve listened to and your favourites will appear here." />
             {/* Stats row */}
             <View style={{ flexDirection: 'row', gap: 18, paddingVertical: 4 }}>
@@ -308,6 +319,8 @@ function ProfileContent({ userId }: { userId: string | null }) {
               <View style={{ width: 1, backgroundColor: colors.border.subtle }} />
               <StatCard label="Avg rating" value={avgRatingDisplay} sub="overall scores · out of 10" />
             </View>
+
+            {userId ? <WeeklyTopFive key={`${userId}:${weeklyRevision}`} userId={userId} onOptions={item => setMenuRow(profileActionRow(item))} /> : null}
 
             {/* Achievements preview */}
             <View style={{ gap: 8 }}>
@@ -333,7 +346,7 @@ function ProfileContent({ userId }: { userId: string | null }) {
         row={menuRow}
         visible={!!menuRow}
         onClose={() => setMenuRow(null)}
-        onChanged={() => { setMenuRow(null); void load(); }}
+        onChanged={() => { setMenuRow(null); setWeeklyRevision(value => value + 1); void load(); }}
       />
     </Screen>
   );

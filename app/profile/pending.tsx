@@ -6,7 +6,9 @@ import StatusMenu from '../../components/StatusMenu';
 import RatingModal from '../../components/RatingModal';
 import { formatDate } from '../../lib/date';
 import type { ListenRow } from '../../lib/listen';
-import { markDone, setRating, setRatingDetailed } from '../../lib/listen';
+import { setRating, setRatingDetailed } from '../../lib/listen';
+import { markListened } from '../../lib/markListened';
+import { useSession } from '../../lib/session';
 import { goToRelease } from '../../lib/navigation';
 import { supabase } from '../../lib/supabase';
 import { getUiColors, ui } from '../../constants/ui';
@@ -16,6 +18,7 @@ import { useAdvancedRatingsEnabled } from '../../lib/user';
 export const options = { title: 'Pending Ratings' };
 
 export default function PendingRatingsScreen() {
+  const { user } = useSession();
   const { colors } = useTheme();
   const [advancedRatings] = useAdvancedRatingsEnabled();
   const [rows, setRows] = useState<ListenRow[]>([]);
@@ -111,7 +114,8 @@ export default function PendingRatingsScreen() {
           </Pressable>
           <Pressable
             onPress={async () => {
-              await markDone(item.id, false);
+              const result = await markListened(item, user?.id, false);
+              if (!result.ok) { Alert.alert('Could not undo', result.message); return; }
               setRows(curr => curr.filter(r => r.id !== item.id));
             }}
             style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, backgroundColor: colors.bg.muted, borderWidth: 1, borderColor: colors.border.subtle }}
@@ -184,12 +188,13 @@ export default function PendingRatingsScreen() {
         initial={ratingRow?.rating ?? 0}
         initialDetails={ratingRow?.rating_details}
         initialReview={ratingRow?.review}
+        itemType={ratingRow?.item_type}
         advanced={advancedRatings}
         onCancel={() => { setRatingVisible(false); setRatingRow(null); }}
         onSubmit={async (stars, details, review) => {
           if (!ratingRow) return;
           const target = ratingRow;
-          const res = advancedRatings && details
+          const res = details
             ? await setRatingDetailed(ratingRow.id, stars, details, review)
             : await setRating(ratingRow.id, stars, review);
           if (!res.ok) {

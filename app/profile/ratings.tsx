@@ -1,3 +1,4 @@
+import ReviewText from '../../components/ReviewText';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, FlatList, Image, Pressable, RefreshControl, Text, View } from 'react-native';
@@ -127,9 +128,7 @@ export default function RatingsScreen() {
         {!!item.artist_name && <Text style={{ color: colors.text.muted }} numberOfLines={1}>{item.artist_name}</Text>}
         <Text style={{ color: colors.text.muted, marginTop: 4 }}>Rated {ratingLabel(item.rating ?? 0, item.rating_details, advancedRatings)}{item.rated_at ? ` · ${formatDate(item.rated_at)}` : ''}</Text>
         {!!item.review && (
-          <Text style={{ color: colors.text.secondary, marginTop: 5, fontSize: 13, lineHeight: 18 }} numberOfLines={2}>
-            “{item.review}”
-          </Text>
+          <ReviewText key={item.review} text={item.review} />
         )}
       </View>
       <Pressable onPress={() => setMenuRow(item)} hitSlop={8} style={{ padding: 6 }}>
@@ -230,6 +229,7 @@ export default function RatingsScreen() {
         initial={ratingRow?.rating ?? 0}
         initialDetails={ratingRow?.rating_details}
         initialReview={ratingRow?.review}
+        itemType={ratingRow?.item_type}
         advanced={advancedRatings}
         onCancel={() => { setRatingVisible(false); setRatingRow(null); }}
         onSubmit={async (stars, details, review) => {

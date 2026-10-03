@@ -1,3 +1,4 @@
+import ReviewText from '../../components/ReviewText';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
@@ -987,11 +988,7 @@ export default function FeedTab() {
                               {noteExpanded ? 'Hide note' : 'Show note'}
                             </Text>
                           </Pressable>
-                          {noteExpanded ? (
-                            <Text selectable style={{ marginTop: 4, marginBottom: 6, color: colors.text.primary, fontSize: 16, lineHeight: 24 }}>
-                              {note}
-                            </Text>
-                          ) : null}
+                          {noteExpanded ? <ReviewText key={note} text={note} /> : null}
                         </View>
                       ) : null}
                       </View>

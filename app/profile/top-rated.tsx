@@ -208,6 +208,7 @@ export default function TopRatedScreen() {
         initial={ratingRow?.rating ?? 0}
         initialDetails={ratingRow?.rating_details}
         initialReview={ratingRow?.review}
+        itemType={ratingRow?.item_type}
         advanced={advancedRatings}
         onCancel={() => { setRatingVisible(false); setRatingRow(null); }}
         onSubmit={async (stars, details, review) => {

@@ -33,6 +33,7 @@ export type ArtistAlbum = {
 
 type ArtistAlbumsOptions = {
   fetchAll?: boolean;
+  onPage?: (items: ArtistAlbum[]) => void;
 };
 
 const FN_ENV = process.env.EXPO_PUBLIC_FN_BASE ?? '';
@@ -179,6 +180,7 @@ export async function artistAlbums(
         visited.add(nextUrl);
         const page = await fetchWithInspect(nextUrl);
         items.push(...page.items);
+        options.onPage?.(mapItems(items));
         total = page.total ?? total;
         nextUrl = options.fetchAll ? (page.next ?? null) : null;
       }
@@ -231,6 +233,7 @@ export async function artistAlbums(
       if (pageItems.length > 0) seenPages.add(pageSignature);
       total = data?.total ?? data?.data?.total ?? data?.albums?.total ?? total;
       items.push(...pageItems);
+      options.onPage?.(mapItems(items));
       offset += pageItems.length;
       hasNextPage = !!options.fetchAll && pageItems.length > 0 && (
         !!(data?.next ?? data?.data?.next ?? data?.albums?.next) ||
@@ -251,8 +254,15 @@ export async function artistAlbums(
   }
 }
 
-export async function artistPageReleases(artistId: string, market = 'GB'): Promise<ArtistAlbum[]> {
-  const releases = await artistAlbums(artistId, market, 'album,single,appears_on', { fetchAll: true });
+export async function artistPageReleases(artistId: string, market = 'GB', onPage?: (items: ArtistAlbum[]) => void): Promise<ArtistAlbum[]> {
+  const releases = await artistAlbums(artistId, market, 'album,single,appears_on', {
+    fetchAll: true,
+    onPage: onPage ? items => onPage(filterArtistPageReleases(items, artistId)) : undefined,
+  });
+  return filterArtistPageReleases(releases, artistId);
+}
+
+export function filterArtistPageReleases(releases: ArtistAlbum[], artistId: string): ArtistAlbum[] {
   const eligible = releases.filter((release) => {
     const itemType = String(release.spotifyItemType || '').toLowerCase();
     const albumType = String(release.albumType || '').toLowerCase();

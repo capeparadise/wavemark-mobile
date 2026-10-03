@@ -22,7 +22,6 @@ import {
   fetchListenList,
   fetchUpcomingClient,
   getDefaultPlayer,
-  markDone,
   reconcileListenUpcoming,
   removeListen,
   setDefaultPlayer as saveDefaultPlayer,
@@ -43,6 +42,10 @@ import SwipeRow from '../../components/SwipeRow';
 import { RELEASE_LONG_PRESS_MS } from '../../hooks/useReleaseActions';
 import { off as offEvent, on as onEvent } from '../../lib/events';
 import { useSession } from '../../lib/session';
+import { markListened } from '../../lib/markListened';
+import { beginListenedActivity, listenedActivityRevision, mergeListenedActivity, forgetListenedActivityRow } from '../../lib/listenedActivity';
+import { useListenedActivity } from '../../hooks/useListenedActivity';
+import { isSavePending, listenSaveRevision, mergeListenSavePreviews } from '../../lib/listenSavePreview';
 import { spotifyLookup, spotifySearch } from '../../lib/spotify';
 import { toast } from '../../lib/toast';
 import { getAdvancedRatingsEnabled } from '../../lib/user';
@@ -60,17 +63,28 @@ function Stars({ value }: { value?: number | null }) {
 }
 
 export default function ListenTab() {
+  const { user } = useSession();
+  return <ListenContent key={user?.id ?? 'signed-out'} />;
+}
+
+function ListenContent() {
   const { colors } = useTheme();
   const navigation = useNavigation();
   const { user } = useSession();
-  const [rows, setRows] = useState<ListenRow[]>([]);
+  const [rows, setRows] = useState<ListenRow[]>(() => user?.id ? mergeListenSavePreviews(user.id, []) : []);
+  const activityRevision = useListenedActivity();
+  const [activityRead, setActivityRead] = useState(-1);
+  const activeUserRef = useRef(user?.id);
+  activeUserRef.current = user?.id;
+  useEffect(() => () => { activeUserRef.current = undefined; }, []);
+  const loadedUserRef = useRef<string | undefined>(undefined);
   const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
   const bulkLock = useRef(false);
   useEffect(() => { setSelected(new Set()); setSelecting(false); }, [user?.id]);
   const toggleSelection = (item: ListenRow) => {
-    if(bulkLock.current || item.done_at)return;
+    if(bulkLock.current || item.done_at || isSavePending(item))return;
     setSelected(previous => { const next=new Set(previous); if(next.has(item.id))next.delete(item.id);else if(next.size<100)next.add(item.id); return next; });
   };
   const performBulk = (action: 'listened' | 'remove') => {
@@ -80,13 +94,18 @@ export default function ListenTab() {
       action==='remove' ? 'Only saved items without ratings or reviews will be removed. Listening history is protected.' : 'These items will move to History. You can rate them individually later.',
       [{text:'Cancel',style:'cancel'},{text:action==='remove'?'Remove':'Mark listened',style:action==='remove'?'destructive':'default',onPress:async()=>{
         if(bulkLock.current)return;bulkLock.current=true;setBulkBusy(true);
+        const previews = action === 'listened' && user?.id
+          ? rows.filter(row => ids.includes(row.id)).map(row => ({ row, preview: beginListenedActivity(user.id, row, true) }))
+          : [];
         try {
           const changed=await bulkListenAction(ids,action);
+          previews.forEach(({row, preview}) => changed.includes(row.id) ? preview.confirm(row) : preview.rollback());
+          if (action === 'remove') changed.forEach(forgetListenedActivityRow);
           setRows(current=>action==='remove' ? current.filter(row=>!changed.includes(row.id)) : current.map(row=>changed.includes(row.id)?{...row,done_at:new Date().toISOString()}:row));
           setSelected(new Set());setSelecting(false);
           toast(`${changed.length} ${action==='remove'?'removed':'marked as listened'}${changed.length<ids.length?' · Other items were kept unchanged':''}`);
           void load({force:true});
-        }catch(e:any){Alert.alert('Could not update selection',e.message);}
+        }catch(e:any){previews.forEach(({preview}) => preview.rollback());Alert.alert('Could not update selection',e.message);}
         finally{bulkLock.current=false;setBulkBusy(false);}
       }}]);
   };
@@ -180,13 +199,17 @@ export default function ListenTab() {
 
   useEffect(() => {
     let mounted = true;
+    loadedUserRef.current = undefined;
+    lastFetchRef.current = 0;
+    setRows(user?.id ? mergeListenSavePreviews(user.id, []) : []);
+    setUpcoming([]);
     (async () => {
       if (!user?.id) return;
       try {
         const raw = await AsyncStorage.getItem(`${LISTEN_CACHE_KEY}_${user.id}`);
         if (raw && mounted) {
           const parsed = JSON.parse(raw);
-          if (Array.isArray(parsed)) setRows(parsed as ListenRow[]);
+          if (Array.isArray(parsed) && loadedUserRef.current !== user.id) setRows(mergeListenSavePreviews(user.id, parsed as ListenRow[]));
         }
       } catch {}
       try {
@@ -198,6 +221,17 @@ export default function ListenTab() {
       } catch {}
     })();
     return () => { mounted = false; };
+  }, [user?.id]);
+
+  // Stay subscribed even while another tab is visible. Lazy first mounts also
+  // read the same account-scoped overlays above, so no save event can be missed.
+  useEffect(() => {
+    const update = (account?: string) => {
+      if (account && account === user?.id) setRows(current => mergeListenSavePreviews(account, current));
+    };
+    onEvent('listen:save-preview', update);
+    if (user?.id) update(user.id);
+    return () => offEvent('listen:save-preview', update);
   }, [user?.id]);
 
   useEffect(() => {
@@ -217,19 +251,36 @@ export default function ListenTab() {
     const now = Date.now();
     if (!opts?.force && now - lastFetchRef.current < 15000) return;
     inFlightRef.current = true;
+    const account = user?.id;
+    const readRevision = listenSaveRevision();
+    const activityReadRevision = listenedActivityRevision();
     if (rows.length === 0 && !refreshing) setLoading(true);
     try {
-      const [data, soon] = await Promise.all([fetchListenList(), fetchUpcomingClient()]);
-      setRows(data);
-      setUpcoming(soon);
+      // Upcoming-release lookup must not hold the saved list behind another request.
+      void fetchUpcomingClient().then(soon => {
+        if (activeUserRef.current !== account) return;
+        setUpcoming(soon);
+        if (account) void AsyncStorage.setItem(`${UPCOMING_CACHE_KEY}_${account}`, JSON.stringify(soon)).catch(() => {});
+      }).catch(() => {});
+      const data = await fetchListenList();
+      if (activeUserRef.current !== account) return;
+      loadedUserRef.current = account;
+      setRows(account ? mergeListenSavePreviews(account, data, readRevision) : []);
+      setActivityRead(activityReadRevision);
       lastFetchRef.current = Date.now();
       if (user?.id) {
         try { await AsyncStorage.setItem(`${LISTEN_CACHE_KEY}_${user.id}`, JSON.stringify(data)); } catch {}
-        try { await AsyncStorage.setItem(`${UPCOMING_CACHE_KEY}_${user.id}`, JSON.stringify(soon)); } catch {}
       }
+    } catch {
+      // Keep cached rows and pending saves on transient network failure.
     } finally {
       inFlightRef.current = false;
       setLoading(false);
+      // A save can finish while this read is running. Its forced refresh would
+      // otherwise be dropped by the in-flight lock, leaving stale data cached.
+      if (activeUserRef.current === account && (readRevision !== listenSaveRevision() || activityReadRevision !== listenedActivityRevision())) {
+        void load({ force: true });
+      }
     }
   }, [refreshing, rows.length, user?.id]);
 
@@ -308,7 +359,7 @@ export default function ListenTab() {
     setRows(curr => curr.map(r => r.id === row.id ? { ...r, done_at: nextDone ? nowIso : null } : r));
     H.tap();
 
-    const res = await markDone(row.id, nextDone);
+    const res = await markListened(row, user?.id, nextDone);
     mutatingRef.current[row.id] = false;
 
     if (!res.ok) {
@@ -370,7 +421,9 @@ export default function ListenTab() {
 
   // DERIVE filtered + sorted list
   const visibleRows = useMemo(() => {
-    let list = rows.slice();
+    // The external-store revision invalidates this memo when another screen acts.
+    void activityRevision;
+    let list = mergeListenedActivity(user?.id, rows, filterKey === 'done' ? 'history' : 'list', activityRead);
 
     // Filter
     switch (filterKey) {
@@ -425,10 +478,10 @@ export default function ListenTab() {
     });
 
     return list;
-  }, [rows, filterKey, sortKey, typeFilter, singleMap, kindMap]);
+  }, [rows, filterKey, sortKey, typeFilter, singleMap, kindMap, user?.id, activityRead, activityRevision]);
 
   const selectableRows = useMemo(
-    () => visibleRows.filter(row => !row.done_at).slice(0, 100),
+    () => visibleRows.filter(row => !row.done_at && !isSavePending(row)).slice(0, 100),
     [visibleRows],
   );
   const allVisibleSelected = selectableRows.length > 0
@@ -773,13 +826,14 @@ export default function ListenTab() {
                 isDone={!!item.done_at}
                 onToggleDone={() => toggleDone(item)}
                 onRemove={() => removeItem(item)}
-                disabled={selecting || bulkBusy || !!mutatingRef.current[item.id]}
+                disabled={selecting || bulkBusy || isSavePending(item) || !!mutatingRef.current[item.id]}
                 onHapticTap={H.tap}
                 onHapticSuccess={H.success}
                 onHapticError={H.error}
               >
                 <View style={{ marginHorizontal: 2, borderBottomWidth: 1, borderBottomColor: colors.border.subtle }}>
                   <Pressable
+                    disabled={isSavePending(item)}
                     accessibilityRole={selecting ? 'checkbox' : 'button'}
                     accessibilityState={selecting ? {checked:selected.has(item.id),disabled:!!item.done_at || bulkBusy} : undefined}
                     accessibilityLabel={item.title}
@@ -859,11 +913,12 @@ export default function ListenTab() {
                           </Text>
                           <Stars value={item.rating} />
                           <Pressable
+                            disabled={isSavePending(item)}
                             onPress={() => selecting ? toggleSelection(item) : setMenuRow(item)}
                             hitSlop={8}
                             style={{ paddingHorizontal: 6, paddingVertical: 6 }}
                           >
-                            <Text style={{ fontSize: 18, color: colors.text.muted }}>⋯</Text>
+                            {isSavePending(item) ? <ActivityIndicator size="small" color={colors.text.muted} /> : <Text style={{ fontSize: 18, color: colors.text.muted }}>⋯</Text>}
                           </Pressable>
                         </View>
                         <Text style={{ color: colors.text.muted, marginTop: 4, fontSize: 13 }} numberOfLines={1}>
@@ -883,6 +938,7 @@ export default function ListenTab() {
         initial={ratingTarget?.rating ?? 0}
         initialDetails={ratingTarget?.rating_details as any}
         initialReview={ratingTarget?.review}
+        itemType={ratingTarget?.item_type}
         advanced={advancedRatings}
         statusLabel={ratingTarget?.done_at ? 'Marked as listened' : undefined}
         onUndoStatus={ratingTarget?.done_at ? async () => {
@@ -890,7 +946,7 @@ export default function ListenTab() {
           // Optimistic revert
           optimisticMark(ratingTarget.id, false);
           closeRating();
-          const res = await markDone(ratingTarget.id, false);
+          const res = await markListened(ratingTarget, user?.id, false);
           if (!res.ok) {
             // rollback
             optimisticMark(ratingTarget.id, true);
@@ -911,7 +967,7 @@ export default function ListenTab() {
           const target = ratingTarget;
           const options = { doneAt: ratingTarget.done_at || new Date().toISOString() };
           const { setRating, setRatingDetailed } = await import('../../lib/listen');
-          const res = advancedRatings && details
+          const res = details
             ? await setRatingDetailed(target.id, stars, details, review, options)
             : await setRating(target.id, stars, review, options);
           if (!res.ok) {
@@ -965,7 +1021,7 @@ export default function ListenTab() {
               // optimistic undo locally
               setRows(curr => curr.map(x => x.id === r.id ? { ...x, done_at: null } : x));
               H.tap();
-              const res = await markDone(r.id, false);
+              const res = await markListened(r, user?.id, false);
               if (!res.ok) {
                 // restore listened state if undo fails
                 setRows(curr => curr.map(x => x.id === r.id ? { ...x, done_at: new Date().toISOString() } : x));

@@ -39,6 +39,9 @@ export default function ProfileStackLayout() {
       <Stack.Screen name="listener/[username]" options={{ title: '' }} />
       <Stack.Screen name="achievements" options={{ title: 'Achievements' }} />
       <Stack.Screen name="settings" options={{ title: 'Settings' }} />
+      <Stack.Screen name="rating-settings" options={{ title: 'Rating settings' }} />
+      <Stack.Screen name="rating-hub" options={{ title: 'Ratings' }} />
+      <Stack.Screen name="general-settings" options={{ title: 'General' }} />
     </Stack>
   );
 }

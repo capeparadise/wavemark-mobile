@@ -1,3 +1,4 @@
+import ReviewText from '../../components/ReviewText';
 import React, { useCallback, useRef, useState } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import { ActivityIndicator, FlatList, Image, Pressable, RefreshControl, Text, View } from 'react-native';
@@ -130,7 +131,7 @@ export default function ReviewsScreen() {
                     {ratingLabel(item.rating, item.rating_details, advancedRatings)}{item.rated_at ? ` · ${formatDate(item.rated_at)}` : ''}
                   </Text>
                 ) : null}
-                <Text style={{ marginTop: 7, color: colors.text.secondary, fontSize: 13, lineHeight: 19 }}>“{item.review}”</Text>
+                <ReviewText key={item.review} text={item.review || ''} />
               </View>
             </Pressable>
           )}

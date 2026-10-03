@@ -15,7 +15,11 @@ import HeroReleaseCard from '../../components/discover/HeroReleaseCard';
 import { formatDate } from '../../lib/date';
 import { fetchFeed, fetchFeedForArtists, listFollowedArtists, type FeedItem, type FollowChangedEvent } from '../../lib/follow';
 import { emit, off, on } from '../../lib/events';
-import { addToListFromSearch, removeListenByProvider } from '../../lib/listen';
+import { removeListenByProvider } from '../../lib/listen';
+import { saveFromDiscover } from '../../lib/saveFromDiscover';
+import { forgetListenSavePreview } from '../../lib/listenSavePreview';
+import { createSearchRequestGate } from '../../lib/searchRequestGate';
+import { toast } from '../../lib/toast';
 import { goToRelease } from '../../lib/navigation';
 import { openArtist } from '../../lib/openArtist';
 import { getNewReleasesByGenre, getTopPicks, getWesternNewReleases } from '../../lib/recommend';
@@ -366,6 +370,9 @@ function DiscoverContent({ userId }: { userId: string | null }) {
   const lastScrollYRef = useRef(0);
   const searchInputRef = useRef<TextInput>(null);
   const [q, setQ] = useState('');
+  const [resultsQuery, setResultsQuery] = useState('');
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
+  const searchGate = useRef(createSearchRequestGate());
   const [searchFilter, setSearchFilter] = useState<'all' | 'artists' | 'music'>('all');
   const [busy, setBusy] = useState(false);
   const [searchRows, setSearchRows] = useState<SpotifyResult[]>([]);
@@ -384,7 +391,23 @@ function DiscoverContent({ userId }: { userId: string | null }) {
   const [initialLoading, setInitialLoading] = useState<boolean>(true);
   // Removed upcoming list
   // Genres removed from Discover
-  const [debounceTimer, setDebounceTimer] = useState<any>(null);
+  const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const show = Keyboard.addListener('keyboardDidShow', () => setKeyboardVisible(true));
+    const hide = Keyboard.addListener('keyboardDidHide', () => setKeyboardVisible(false));
+    return () => { show.remove(); hide.remove(); searchGate.current.invalidate(); if (debounceTimer.current) clearTimeout(debounceTimer.current); };
+  }, []);
+  const changeSearchText = (value: string) => {
+    if (value === q) return;
+    searchGate.current.invalidate();
+    if (debounceTimer.current) clearTimeout(debounceTimer.current);
+    setQ(value);
+  };
+  const dismissSearchKeyboard = () => {
+    searchInputRef.current?.blur();
+    Keyboard.dismiss();
+    setKeyboardVisible(false);
+  };
   const [refreshing, setRefreshing] = useState(false);
   const [fallbackFeed, setFallbackFeed] = useState<FeedItem[]>([]);
   const [picked, setPicked] = useState<Array<{ id: string; artistId: string; title: string; artist: string; releaseDate?: string | null; spotifyUrl?: string | null; imageUrl?: string | null; type?: 'album' | 'single' | 'ep' }>>([]);
@@ -684,12 +707,8 @@ function DiscoverContent({ userId }: { userId: string | null }) {
     (async () => {
       const effective = selectedGenres;
       const taken = new Set<string>();
-      const removeSaved = (arr: typeof topPicksRaw) => arr.filter((it) => {
-        const key = spotifyKey(it.id, it.spotifyUrl);
-        if (!key) return true;
-        return !(listenStatus[key] || addedIds[key]);
-      });
-      let top = removeSaved(filterDiscoverEligibleReleases(topPicksRaw));
+      // Saving changes the card's status, not its position in this collection.
+      let top = filterDiscoverEligibleReleases(topPicksRaw);
       if (effective.size) {
         top = await filterReleasesByGenres(top, effective);
       }
@@ -711,7 +730,7 @@ function DiscoverContent({ userId }: { userId: string | null }) {
       setTopPicksLoading(false);
     });
     return () => { cancelled = true; };
-  }, [topPicksRaw, selectedGenres, listenStatus, addedIds]);
+  }, [topPicksRaw, selectedGenres]);
 
   useEffect(() => {
     selectedGenresRef.current = selectedGenres;
@@ -1364,6 +1383,7 @@ function DiscoverContent({ userId }: { userId: string | null }) {
     try {
       const res = await removeListenByProvider({ provider: 'spotify', provider_id: key });
       if (!res.ok || res.removed < 1) throw new Error(res.message || 'Could not remove release');
+      if (userId) forgetListenSavePreview(userId, key);
       emit('listen:updated');
       emit('listen:refresh');
     } catch (error: any) {
@@ -2749,7 +2769,11 @@ function DiscoverContent({ userId }: { userId: string | null }) {
   // No extra image fetching; bubbles use details fetched during load()
 
   const resetSearchState = useCallback(() => {
+    searchGate.current.invalidate();
+    if (debounceTimer.current) clearTimeout(debounceTimer.current);
     setQ('');
+    setResultsQuery('');
+    setBusy(false);
     setSearchFilter('all');
     setSearchRows([]);
     setArtist(null);
@@ -2796,12 +2820,16 @@ function DiscoverContent({ userId }: { userId: string | null }) {
   }, [artist, artistAlbumsRows.length, artistTracksRows.length, offline, q, resetSearchState, runLoadAfterCurrent, searchRows.length]);
 
   const runSearch = useCallback(async (term: string) => {
-    if (!term) { setSearchRows([]); setArtist(null); setArtistAlbumsRows([]); setArtistTracksRows([]); return; }
+    const request = searchGate.current.begin();
+    const current = () => activeRef.current && searchGate.current.accepts(request);
+    if (!term) { setBusy(false); setResultsQuery(''); setSearchRows([]); setArtist(null); setArtistAlbumsRows([]); setArtistTracksRows([]); return; }
     setBusy(true);
     try {
       const direct = parseSpotifyUrlOrId(term);
       if (direct) {
         const one = await spotifyLookup(direct.id, direct.lookupType);
+        if (!current()) return;
+        setResultsQuery(term);
         setArtist(null); setArtistAlbumsRows([]); setArtistTracksRows([]); setSearchRows(one);
         return;
       }
@@ -2813,6 +2841,7 @@ function DiscoverContent({ userId }: { userId: string | null }) {
         spotifySearch(term, 'album'),
       ]);
       const results = [...(tracksOnly || []), ...(albumsOnly || []), ...(artistsOnly || [])];
+      if (!current()) return;
       // Temporary debug to see returned counts
       // eslint-disable-next-line no-console
       console.log('[discover search]', {
@@ -2823,26 +2852,28 @@ function DiscoverContent({ userId }: { userId: string | null }) {
 
       setArtist(null); setArtistAlbumsRows([]); setArtistTracksRows([]);
       setSearchRows(results || []);
+      setResultsQuery(term);
+    } catch {
+      // Keep existing results on transient search errors instead of blanking them.
+      if (current()) toast('Search could not refresh. Please try again.');
     } finally {
-      setBusy(false);
+      if (current()) setBusy(false);
     }
   }, []);
 
   // Debounced global search when typing
   useEffect(() => {
     const term = q.trim();
-    if (debounceTimer) clearTimeout(debounceTimer);
-    if (term.length < 2) { setSearchRows([]); setArtist(null); setArtistAlbumsRows([]); setArtistTracksRows([]); return; }
-    const t = setTimeout(async () => {
-      await runSearch(term);
-    }, 300);
-    setDebounceTimer(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (debounceTimer.current) clearTimeout(debounceTimer.current);
+    if (term.length < 2) { setBusy(false); setResultsQuery(''); setSearchRows([]); setArtist(null); setArtistAlbumsRows([]); setArtistTracksRows([]); return; }
+    debounceTimer.current = setTimeout(() => { void runSearch(term); }, 300);
+    return () => { if (debounceTimer.current) clearTimeout(debounceTimer.current); };
   }, [q, runSearch]);
 
   const onSearch = async () => {
+    if (debounceTimer.current) clearTimeout(debounceTimer.current);
+    dismissSearchKeyboard();
     await runSearch(q.trim());
-    Keyboard.dismiss();
   };
 
   const onAddNew = async (a: { id: string; title: string; artist: string; releaseDate?: string | null; spotifyUrl?: string | null; imageUrl?: string | null; type?: string | null; isrc?: string | null }, _stat?: { done?: boolean | undefined }) => {
@@ -2858,7 +2889,7 @@ function DiscoverContent({ userId }: { userId: string | null }) {
       (a.type === 'ep') ? 'album' :
       (inferredFromUrl === 'album' ? 'album' : 'track');
     try {
-      const res = await addToListFromSearch({
+      const res = await saveFromDiscover({
         type: itemType,
         providerId: key,
         title: a.title,
@@ -2868,7 +2899,7 @@ function DiscoverContent({ userId }: { userId: string | null }) {
         isrc: a.isrc ?? null,
         appleUrl: null,
         imageUrl: a.imageUrl ?? null,
-      });
+      }, userId ?? undefined);
       if (!res.ok) {
         optimistic.rollback();
         H.error();
@@ -2895,7 +2926,7 @@ function DiscoverContent({ userId }: { userId: string | null }) {
     const optimistic = beginOptimisticSave(r.id, r.spotifyUrl);
     if (!optimistic) return;
     try {
-      const res = await addToListFromSearch({
+      const res = await saveFromDiscover({
         type: r.type === 'album' ? 'album' : 'track',
         providerId: newKey,
         title: r.title,
@@ -2905,7 +2936,7 @@ function DiscoverContent({ userId }: { userId: string | null }) {
         isrc: r.isrc ?? null,
         appleUrl: null,
         imageUrl: r.imageUrl ?? null,
-      });
+      }, userId ?? undefined);
       if (!res.ok) {
         optimistic.rollback();
         H.error();
@@ -2965,6 +2996,9 @@ function DiscoverContent({ userId }: { userId: string | null }) {
 
   // Derived, relevance-sorted search results with optional artist intent.
   const groupedSearch = useMemo(() => {
+    // Rank the displayed results against the query that produced them, not an
+    // unfinished edit (or keyboard correction) awaiting a new response.
+    const q = resultsQuery;
     const byRelevance = (items: SpotifyResult[]) => {
       const scored = items.map(r => {
         const label = r.title || r.artist || '';
@@ -2995,7 +3029,7 @@ function DiscoverContent({ userId }: { userId: string | null }) {
     const strongArtists = hasStrongArtist ? matchingArtists : [];
     const artists = hasStrongArtist ? [] : matchingArtists;
     return { music, strongArtists, artists };
-  }, [searchRows, q]);
+  }, [searchRows, resultsQuery]);
 
   useEffect(() => {
     // eslint-disable-next-line no-console
@@ -3165,6 +3199,7 @@ function DiscoverContent({ userId }: { userId: string | null }) {
       : String(spotifyKey(r.id, r.spotifyUrl) || r.providerId || r.id || '').trim();
     const normalizedType = r.type === 'album' ? 'project' : 'single';
     const openSearchRelease = () => {
+      dismissSearchKeyboard();
       if (r.type === 'artist') {
         openArtist(r.id, { name: r.title });
         return;
@@ -3858,7 +3893,7 @@ function DiscoverContent({ userId }: { userId: string | null }) {
   );
 
   const searching = q.trim().length > 0;
-  const searchHeaderHeight = DISCOVER_HEADER_HEIGHT + (searching ? 44 : 0);
+  const searchHeaderHeight = DISCOVER_HEADER_HEIGHT + 44;
   const headerTranslateY = headerAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [-(searchHeaderHeight + insets.top), 0],
@@ -3879,67 +3914,61 @@ function DiscoverContent({ userId }: { userId: string | null }) {
         transform: [{ translateY: headerTranslateY }],
       }}
     >
-      <View style={{ marginHorizontal: 16, borderRadius: 16, overflow: 'hidden', backgroundColor: colors.bg.secondary + 'b8' }}>
-        <BlurView intensity={68} tint="dark" style={{ paddingHorizontal: 8, paddingVertical: 8 }}>
-          <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
-            <TextInput
-              ref={searchInputRef}
-              value={q}
-              onChangeText={setQ}
-              placeholder="Search music: artists, albums, tracks"
-              onSubmitEditing={onSearch}
-              returnKeyType="search"
-              blurOnSubmit
-              placeholderTextColor={colors.text.muted}
-              style={{ flex: 1, height: 42, borderWidth: 1, borderColor: colors.border.subtle, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 0, backgroundColor: colors.bg.primary, color: colors.text.secondary }}
-            />
-            {q.length > 0 && (
-              <Pressable onPress={clearSearch} hitSlop={8} style={{ height: 42, justifyContent: 'center', paddingHorizontal: 10, backgroundColor: colors.bg.muted, borderRadius: 10 }}>
-                <Text style={{ color: colors.text.secondary, fontWeight: '700' }}>Clear</Text>
-              </Pressable>
-            )}
-            <Pressable
-              onPress={toggleViewMode}
-              hitSlop={8}
-              style={({ pressed }) => ({
-                width: 42,
-                height: 42,
-                alignItems: 'center',
-                justifyContent: 'center',
-                borderRadius: 10,
-                backgroundColor: colors.bg.muted,
-                opacity: pressed ? 0.9 : 1,
-              })}
-            >
-              <View>
-                <Ionicons
-                  name={viewMode === 'mixed' ? 'albums' : 'albums-outline'}
-                  size={19}
-                  color={colors.text.secondary}
-                />
-              </View>
+      <View style={{ marginHorizontal: 20 }}>
+        <View style={{ height: 50, flexDirection: 'row', alignItems: 'center', borderRadius: 14, borderWidth: 1, borderColor: colors.border.subtle, backgroundColor: colors.bg.secondary, paddingLeft: 14 }}>
+          <Ionicons name="search-outline" size={20} color={colors.text.muted} />
+          <TextInput
+            ref={searchInputRef}
+            value={q}
+            onChangeText={changeSearchText}
+            autoCorrect={false}
+            spellCheck={false}
+            autoCapitalize="none"
+            onFocus={() => setKeyboardVisible(true)}
+            placeholder="Search artists, albums, songs"
+            accessibilityLabel="Search artists, albums and songs"
+            onSubmitEditing={onSearch}
+            returnKeyType="search"
+            blurOnSubmit
+            placeholderTextColor={colors.text.muted}
+            style={{ flex: 1, minWidth: 0, height: 50, fontSize: 16, paddingHorizontal: 10, paddingVertical: 0, color: colors.text.secondary }}
+          />
+          {busy && <ActivityIndicator size="small" color={colors.text.muted} style={{ marginRight: q ? 0 : 14 }} />}
+          {q.length > 0 && (
+            <Pressable accessibilityRole="button" accessibilityLabel="Clear search" onPress={clearSearch} style={{ width: 44, height: 48, alignItems: 'center', justifyContent: 'center' }}>
+              <Ionicons name="close-circle" size={20} color={colors.text.muted} />
             </Pressable>
-            <Pressable onPress={() => setFilterVisible(true)} hitSlop={8} style={{ width: 42, height: 42, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: colors.bg.muted }}>
-              <Ionicons name="options-outline" size={19} color={colors.text.secondary} />
-            </Pressable>
-          </View>
-          {searching && (
-            <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
-              {(['all', 'artists', 'music'] as const).map(filter => (
-                <Pressable
-                  key={filter}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: searchFilter === filter }}
-                  hitSlop={{ top: 4, bottom: 4 }}
-                  onPress={() => { setSearchFilter(filter); Keyboard.dismiss(); }}
-                  style={{ paddingHorizontal: 12, paddingVertical: 8, justifyContent: 'center', borderRadius: ui.radius.lg, borderWidth: 1, borderColor: searchFilter === filter ? colors.accent.primary : colors.border.subtle, backgroundColor: searchFilter === filter ? accentSoft : colors.bg.muted }}
-                >
-                  <Text style={{ color: searchFilter === filter ? colors.accent.primary : colors.text.secondary, fontWeight: '700' }}>{filter === 'all' ? 'All' : filter === 'artists' ? 'Artists' : 'Music'}</Text>
-                </Pressable>
-              ))}
-            </View>
           )}
-        </BlurView>
+        </View>
+        <View style={{ height: 48, marginTop: 8, flexDirection: 'row', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: colors.border.subtle }}>
+          {searching || keyboardVisible ? (
+            <>
+              <View accessibilityRole="tablist" style={{ flex: 1, height: 48, flexDirection: 'row', gap: 24 }}>
+                {(['all', 'artists', 'music'] as const).map(filter => (
+                  <Pressable
+                    key={filter}
+                    accessibilityRole="tab"
+                    accessibilityState={{ selected: searchFilter === filter }}
+                    onPress={() => { setSearchFilter(filter); dismissSearchKeyboard(); }}
+                    style={{ minWidth: 44, height: 48, alignItems: 'center', justifyContent: 'center', borderBottomWidth: 2, borderBottomColor: searchFilter === filter ? colors.accent.primary : 'transparent' }}
+                  >
+                    <Text style={{ fontSize: 14, color: searchFilter === filter ? colors.accent.primary : colors.text.muted, fontWeight: searchFilter === filter ? '800' : '600' }}>{filter === 'all' ? 'All' : filter === 'artists' ? 'Artists' : 'Music'}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            </>
+          ) : (
+            <>
+              <Text style={{ flex: 1, fontSize: 14, fontWeight: '700', color: colors.text.muted }}>Discover</Text>
+              <Pressable accessibilityRole="button" accessibilityLabel="Change Discover layout" onPress={toggleViewMode} style={{ width: 44, height: 48, alignItems: 'center', justifyContent: 'center' }}>
+                <Ionicons name={viewMode === 'mixed' ? 'albums' : 'albums-outline'} size={20} color={colors.text.secondary} />
+              </Pressable>
+              <Pressable accessibilityRole="button" accessibilityLabel="Filter Discover genres" onPress={() => setFilterVisible(true)} style={{ width: 44, height: 48, alignItems: 'center', justifyContent: 'center' }}>
+                <Ionicons name="options-outline" size={21} color={colors.text.secondary} />
+              </Pressable>
+            </>
+          )}
+        </View>
       </View>
     </Animated.View>
   );
@@ -3950,11 +3979,6 @@ function DiscoverContent({ userId }: { userId: string | null }) {
       {DiscoverHeader}
       {/* Suggestions panel removed; global search results are shown below */}
   {/* Tip removed */}
-      {busy && (
-        <View style={{ paddingVertical: 8 }}>
-          <ActivityIndicator />
-        </View>
-      )}
   {/* artistHeader removed when showing grouped search results */}
       {searching ? (
         <SectionList
