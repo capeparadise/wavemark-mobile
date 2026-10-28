@@ -4,7 +4,7 @@ import { normalizeAdvancedOrder, normalizeRatingOrder, ratingSectionLabels, type
   PURPOSE: Cross-platform rating modal (1–10 slider with haptics & animation).
   ======================================================================== */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Dimensions, GestureResponderEvent, KeyboardAvoidingView, Platform, Modal, PanResponder, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import { Alert, Animated, Dimensions, GestureResponderEvent, KeyboardAvoidingView, Platform, Modal, PanResponder, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { H } from './haptics';
 import { useTheme } from '../theme/useTheme';
 import { advancedRatingTotal, offersArtworkRating, ratingDetailsForSubmit, type RatingDetails } from '../lib/ratingDisplay';
@@ -20,8 +20,9 @@ type Props = {
   individualTrack?: boolean;
   initialReview?: string | null;
   advanced?: boolean;
+  saving?: boolean;
   onCancel: () => void;
-  onSubmit: (stars: number, details?: RatingDetails | null, review?: string | null) => void;
+  onSubmit: (stars: number, details?: RatingDetails | null, review?: string | null) => void | Promise<void>;
   onRateLater?: () => void;
   statusLabel?: string; // optional status text (e.g., Marked as listened)
   onUndoStatus?: () => void; // optional undo handler (e.g., mark not listened)
@@ -34,6 +35,7 @@ export default function RatingModal({
   initialDetails = null,
   initialReview = null,
   advanced = false,
+  saving = false,
   itemType,
   individualTrack = false,
   onCancel,
@@ -44,6 +46,27 @@ export default function RatingModal({
 }: Props) {
   const { colors } = useTheme();
   const { preferences, ready: preferencesReady } = useRatingPreferences();
+  const submittingRef = useRef(false);
+  const [submitting, setSubmitting] = useState(false);
+  const saveBusy = saving || submitting;
+  const cancel = () => { if (!saving && !submittingRef.current) onCancel(); };
+  const submitRating = async () => {
+    if (!preferencesReady || saving || submittingRef.current) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    try {
+      await onSubmit(
+        value || 1,
+        ratingDetailsForSubmit(details, advanced, artworkEnabled || (!individualTrack && initialDetails?.artwork != null)),
+        preferences.notes ? normalizeReview(review) : initialReview,
+      );
+    } catch {
+      Alert.alert('Could not save rating', 'Your rating is still here. Please try again.');
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
+  };
   const artworkEnabled = preferencesReady && preferences.artwork && offersArtworkRating(itemType, individualTrack);
   const DEBUG_TOUCH = true;
   const dbg = (...args: any[]) => { if (DEBUG_TOUCH) console.log('[RatingModal]', ...args); };
@@ -295,7 +318,7 @@ export default function RatingModal({
   };
 
   return (
-    <Modal animationType="slide" transparent visible={visible} onRequestClose={() => editorExpanded ? setEditorExpanded(false) : onCancel()}>
+    <Modal animationType="slide" transparent visible={visible} onRequestClose={() => editorExpanded ? setEditorExpanded(false) : cancel()}>
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1, backgroundColor: colors.overlay.dim, justifyContent: 'flex-end' }}>
         <View
           style={{
@@ -313,7 +336,7 @@ export default function RatingModal({
             <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 6 }}>
               <Text style={{ color: colors.text.muted, fontWeight: '600' }}>{statusLabel}</Text>
               {onUndoStatus ? (
-                <Pressable onPress={onUndoStatus} style={{ marginLeft: 10 }}>
+                <Pressable disabled={saveBusy} onPress={() => { if (!saving && !submittingRef.current) onUndoStatus(); }} style={{ marginLeft: 10 }}>
                   <Text style={{ color: colors.text.secondary, fontWeight: '800' }}>Undo</Text>
                 </Pressable>
               ) : null}
@@ -352,24 +375,20 @@ export default function RatingModal({
 
           {/* Actions */}
           {!editorExpanded ? <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 12, marginTop: 10 }}>
-            <Pressable onPress={onCancel}>
+            <Pressable disabled={saveBusy} onPress={cancel}>
               <Text style={{ padding: 10, color: colors.text.secondary }}>Cancel</Text>
             </Pressable>
             {onRateLater ? (
-              <Pressable onPress={onRateLater} style={{ paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10, backgroundColor: colors.bg.muted }}>
+              <Pressable disabled={saveBusy} onPress={() => { if (!saving && !submittingRef.current) onRateLater(); }} style={{ paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10, backgroundColor: colors.bg.muted }}>
                 <Text style={{ color: colors.text.secondary, fontWeight: '700' }}>Rate later</Text>
               </Pressable>
             ) : null}
             <Pressable
-              disabled={!preferencesReady}
-              onPress={() => onSubmit(
-                value || 1,
-                ratingDetailsForSubmit(details, advanced, artworkEnabled || (!individualTrack && initialDetails?.artwork != null)),
-                preferences.notes ? normalizeReview(review) : initialReview,
-              )}
+              disabled={!preferencesReady || saveBusy}
+              onPress={submitRating}
               style={{ backgroundColor: colors.accent.primary, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12 }}
             >
-              <Text style={{ color: colors.text.inverted, fontWeight: '700' }}>Save</Text>
+              <Text style={{ color: colors.text.inverted, fontWeight: '700' }}>{saveBusy ? 'Saving…' : 'Save'}</Text>
             </Pressable>
           </View> : null}
         </View>

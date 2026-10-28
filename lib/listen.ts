@@ -482,7 +482,7 @@ export async function addToListFromSearch(input: {
   providerId?: string | null,
   isrc?: string | null,
   upc?: string | null,
-}, expectedUserId?: string): Promise<{ ok: boolean; id?: string; upcoming?: boolean; message?: string; alreadySaved?: boolean; row?: any }> {
+}, expectedUserId?: string, preserveListened = false): Promise<{ ok: boolean; id?: string; upcoming?: boolean; message?: string; alreadySaved?: boolean; row?: any }> {
   const { data: { user }, error: userErr } = await supabase.auth.getUser();
   if (userErr) return { ok: false, message: userErr.message };
   if (!user) return { ok: false, message: 'Not signed in' };
@@ -688,7 +688,7 @@ export async function addToListFromSearch(input: {
         try { await supabase.from('listen_list').update(patch).eq('id', existing.id).eq('user_id', user.id); } catch {}
       }
       // If it was marked done and we're re-adding, clear done_at so UI can treat it as active again.
-      if (existing.done_at) {
+      if (existing.done_at && !preserveListened) {
         const { data: updated } = await supabase
           .from('listen_list')
           .update({ done_at: null })
@@ -748,7 +748,8 @@ export async function addToListFromSearch(input: {
 
 // Helper: ensure a listen_list row exists for a search result-like item, returning the row
 export async function ensureListenRowForSearch(
-  input: Partial<ListenRow> & { title?: string | null; artist_name?: string | null; item_type?: 'track' | 'album' | 'single'; spotify_url?: string | null; release_date?: string | null; }
+  input: Partial<ListenRow> & { title?: string | null; artist_name?: string | null; item_type?: 'track' | 'album' | 'single'; spotify_url?: string | null; release_date?: string | null; },
+  options?: { expectedUserId?: string; preserveListened?: boolean }
 ): Promise<{ ok: boolean; row?: ListenRow; message?: string }> {
   // If we already have a UUID id, attempt to hydrate from DB first
   if (input.id && isUuid(input.id)) {
@@ -759,15 +760,17 @@ export async function ensureListenRowForSearch(
   }
 
   const res = await addToListFromSearch({
-    type: input.item_type === 'album' ? 'album' : 'single',
+    type: (input.item_type || (input as any).type) === 'album' ? 'album' : 'single',
+    providerId: input.provider_id || (input as any).providerId || input.spotify_id || (input as any).apple_id,
     title: input.title || 'Untitled',
-    artist: input.artist_name || (input as any).artist || 'Unknown artist',
+    artist: input.artist_name || (input as any).artistName || (input as any).artist || 'Unknown artist',
     releaseDate: (input as any).releaseDate ?? input.release_date ?? null,
-    appleUrl: (input as any).apple_url ?? null,
+    appleUrl: (input as any).apple_url ?? (input as any).appleUrl ?? null,
     spotifyUrl: input.spotify_url ?? (input as any).spotifyUrl ?? null,
     artworkUrl: (input as any).artwork_url ?? (input as any).image_url ?? (input as any).imageUrl ?? null,
-  });
+  }, options?.expectedUserId, options?.preserveListened);
   if (!res.ok || !res.id) return { ok: false, message: res.message || 'Could not add item' };
+  if (res.row) return { ok: true, row: res.row as ListenRow };
   // Return minimal row
   const providerGuess: 'spotify' | 'apple' =
     (input as any).provider === 'apple' || (!!(input as any).apple_url && !(input as any).spotify_url) ? 'apple' : 'spotify';
@@ -1252,25 +1255,14 @@ export async function setRating(id: string, rating: number, review?: string | nu
     };
 
     // First attempt with normalized rating
-    let { data, error } = await attemptUpdate(r);
+    const { data, error } = await attemptUpdate(r);
 
     if (error) {
-      // Column missing: retry without rating_details
-      if ((error as any)?.code === '42703' || (error as any)?.code === 'PGRST204') {
-        const retry = await attemptUpdate(r);
-        if (!retry.error) return { ok: true, row: retry.data };
-        error = retry.error;
-      }
-      if ((error as any)?.code === '23514') {
-        // Retry with safe defaults (first 5, then 1) to satisfy tighter CHECK constraints
-        const retryMid = await attemptUpdate(5);
-        if (!retryMid.error) return { ok: true, row: retryMid.data };
-        const retryLow = await attemptUpdate(1);
-        if (!retryLow.error) return { ok: true, row: retryLow.data };
-      }
+      // Never substitute another score to bypass a server constraint.
       debug('rate:set:error', error);
       return { ok: false, message: 'Could not save rating', error };
     }
+    if (!data) return { ok: false, message: 'This item is no longer available. Please refresh and try again.' };
     debug('rate:set:ok', data);
     return { ok: true, row: data };
   } catch (e) {
@@ -1331,6 +1323,7 @@ export async function setRatingDetailed(
       debug('rate:set:detailed:error', error);
       return { ok: false, message: 'Could not save rating', error };
     }
+    if (!data) return { ok: false, message: 'This item is no longer available. Please refresh and try again.' };
     debug('rate:set:detailed:ok', data);
     return { ok: true, row: data };
   } catch (e) {
@@ -1357,6 +1350,7 @@ export async function clearRating(id: string) {
       debug('rate:clear:error', error);
       return { ok: false, message: 'Could not clear rating', error };
     }
+    if (!data) return { ok: false, message: 'This item is no longer available. Please refresh and try again.' };
     debug('rate:clear:ok', data);
     return { ok: true, row: data };
   } catch (e) {

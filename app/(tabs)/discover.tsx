@@ -3172,7 +3172,7 @@ function DiscoverContent({ userId }: { userId: string | null }) {
       const key = spotifyKey((update.row as any).spotify_id || (update.row as any).provider_id || (update.row as any).id || null, (update.row as any).spotify_url || null);
       if (key) {
         setAddedIds((prev) => ({ ...prev, [key]: true }));
-        setListenStatus((prev) => ({ ...prev, [key]: { ...(prev[key] || {}), rating: (update.row as any).rating ?? null, details: (update.row as any).rating_details ?? null } }));
+        setListenStatus((prev) => ({ ...prev, [key]: { ...(prev[key] || {}), done: update.done ?? !!update.row.done_at, rating: (update.row as any).rating ?? null, details: (update.row as any).rating_details ?? null } }));
       }
     }
     await refreshListenStatus();

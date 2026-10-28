@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, Image, Pressable, RefreshControl, Text, View } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, FlatList, Image, Pressable, RefreshControl, Text, View } from 'react-native';
 import Screen from '../../components/StackScreen';
 import StatusMenu from '../../components/StatusMenu';
 import RatingModal from '../../components/RatingModal';
@@ -28,43 +28,62 @@ export default function PendingRatingsScreen() {
   const [ratingVisible, setRatingVisible] = useState(false);
   const [menuRow, setMenuRow] = useState<ListenRow | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const loadVersion = useRef(0);
   const CACHE_KEY = 'pending_cache_v1';
   const uiColors = useMemo(() => getUiColors(colors), [colors]);
 
   const load = useCallback(async () => {
+    const version = ++loadVersion.current;
+    const active = () => version === loadVersion.current;
     setLoading(true);
-    const { data: auth } = await supabase.auth.getUser();
-    const user = auth?.user;
-    if (!user) { setRows([]); setLoading(false); return; }
+    setError(null);
     try {
-      const raw = await AsyncStorage.getItem(`${CACHE_KEY}_${user.id}`);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) setRows(parsed as ListenRow[]);
+      const { data: auth, error: authError } = await supabase.auth.getUser();
+      if (!active()) return;
+      if (authError) throw authError;
+      const currentUser = auth?.user;
+      if (!currentUser) { setRows([]); return; }
+      if (currentUser.id !== user?.id) return;
+      try {
+        const raw = await AsyncStorage.getItem(`${CACHE_KEY}_${currentUser.id}`);
+        if (!active()) return;
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) setRows(parsed as ListenRow[]);
+        }
+      } catch {}
+      const { data, error } = await supabase
+        .from('listen_list')
+        .select('id,item_type,provider,provider_id,title,artist_name,artwork_url,release_date,done_at,spotify_url,apple_url,spotify_id,apple_id,rating,rated_at,rating_details,review')
+        .eq('user_id', currentUser.id)
+        .not('done_at', 'is', null)
+        .is('rating', null)
+        .order('done_at', { ascending: false, nullsFirst: false })
+        .limit(200);
+      if (!active()) return;
+      if (error) throw error;
+      if (data) {
+        setRows(data as ListenRow[]);
+        try { await AsyncStorage.setItem(`${CACHE_KEY}_${currentUser.id}`, JSON.stringify(data)); } catch {}
       }
-    } catch {}
-    const { data, error } = await supabase
-      .from('listen_list')
-      .select('id,item_type,provider,provider_id,title,artist_name,artwork_url,release_date,done_at,spotify_url,apple_url,spotify_id,apple_id,rating,rated_at,rating_details,review')
-      .eq('user_id', user.id)
-      .not('done_at', 'is', null)
-      .is('rating', null)
-      .order('done_at', { ascending: false, nullsFirst: false })
-      .limit(200);
-    if (error) {
-      setError('Could not load pending');
-      // eslint-disable-next-line no-console
-      console.log('[pending] load error', error);
-    } else if (data) {
-      setRows(data as ListenRow[]);
-      try { await AsyncStorage.setItem(`${CACHE_KEY}_${user.id}`, JSON.stringify(data)); } catch {}
+    } catch {
+      if (active()) setError('Could not load pending');
+    } finally {
+      if (active()) setLoading(false);
     }
-    setLoading(false);
-  }, []);
+  }, [user?.id]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    const requests = loadVersion;
+    setRows([]);
+    void load();
+    return () => { requests.current++; };
+  }, [load]);
 
-  const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
+  const onRefresh = async () => {
+    setRefreshing(true);
+    try { await load(); } finally { setRefreshing(false); }
+  };
 
   const openRow = (row: ListenRow) => {
     goToRelease(row.id);
@@ -153,6 +172,7 @@ export default function PendingRatingsScreen() {
           keyExtractor={(r) => r.id}
           renderItem={renderRow}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+          ListHeaderComponent={error && rows.length > 0 ? <Text accessibilityRole="alert" style={{ padding: 12, color: colors.text.muted }}>Could not refresh. Showing saved items. Pull to retry.</Text> : null}
           ListEmptyComponent={<Text style={{ textAlign: 'center', marginTop: 20, color: colors.text.muted }}>{error ? 'Could not load pending. Pull to retry.' : 'Nothing to rate right now.'}</Text>}
           initialNumToRender={12}
           windowSize={8}

@@ -365,7 +365,9 @@ export default function ReleaseScreen() {
             }
           }
 
-          if (!detail) {
+          // Catalogue metadata does not establish whether this user saved it.
+          // Still look up provider routes when navigation supplied the artwork/title.
+          if (!isUuid(releaseId) || !detail) {
             const { data, error: rowErr } = await supabase
               .from('listen_list')
               .select('*')
@@ -373,7 +375,7 @@ export default function ReleaseScreen() {
               .or(`provider_id.eq.${releaseId},spotify_id.eq.${releaseId},apple_id.eq.${releaseId}`)
               .maybeSingle();
             if (!rowErr && data) {
-              detail = mapListenRow(data);
+              if (!detail) detail = mapListenRow(data);
               if (active) setAdded(true);
             }
           }

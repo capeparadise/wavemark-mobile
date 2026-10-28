@@ -51,9 +51,6 @@ export default function WeeklyTopFive({ userId, onOptions }: {
     <Text style={{ fontSize: 13, lineHeight: 19, color: colors.text.muted }}>
       Week of {new Date(week).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} · Only you
     </Text>
-    <Text style={{ fontSize: 13, lineHeight: 19, color: colors.text.muted }}>
-      Songs logged since Monday, ranked by your overall rating.
-    </Text>
     {loading ? <Text style={{ color: colors.text.muted, paddingVertical: 12 }}>Updating your week…</Text> : error ?
       <Pressable accessibilityRole="button" onPress={() => void load()} style={{ paddingVertical: 12 }}>
         <Text style={{ color: colors.accent.primary }}>Couldn’t load this week. Tap to retry.</Text>

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { Alert, Image, Modal, Pressable, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -59,18 +59,22 @@ export default function ReleaseActionSheet({ row, visible, onClose, onRate, onCh
   const [advancedRatings] = useAdvancedRatingsEnabled();
   const insets = useSafeAreaInsets();
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  const resolvedRatingRow = useRef<ListenRow | null>(null);
   const [ratingVisible, setRatingVisible] = useState(false);
   const [ratingRow, setRatingRow] = useState<ListenRow | null>(null);
 
-  const run = async (fn: () => Promise<any>) => {
-    if (busy) return;
+  const run = async (fn: () => Promise<any>, closeAfter = true) => {
+    if (busyRef.current) return;
+    busyRef.current = true;
     setBusy(true);
     try {
       await fn();
-      onClose();
+      if (closeAfter) onClose();
     } catch (e: any) {
       Alert.alert('Action failed', e?.message || 'Please try again.');
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   };
@@ -146,11 +150,11 @@ export default function ReleaseActionSheet({ row, visible, onClose, onRate, onCh
 
   if (!row || !ctx) return null;
 
-  const ensureRow = async () => {
+  const ensureRow = async (preserveListened = false) => {
     if (isUuid(row.id)) {
       return row as ListenRow;
     }
-    const res = await ensureListenRowForSearch(row);
+    const res = await ensureListenRowForSearch(row, { expectedUserId: user?.id, preserveListened });
     if (!res.ok || !res.row) throw new Error(res.message || 'Could not save item');
     return res.row as ListenRow;
   };
@@ -245,10 +249,11 @@ export default function ReleaseActionSheet({ row, visible, onClose, onRate, onCh
       if (!result.ok || !result.row) throw new Error(result.message || 'Could not update item');
       onChanged?.({ type: 'mark', row: result.row, done });
       if (done) {
+        resolvedRatingRow.current = result.row;
         setRatingRow(result.row);
         setRatingVisible(true);
       }
-    });
+    }, !done);
   };
 
   const onRemove = async () => {
@@ -289,12 +294,14 @@ export default function ReleaseActionSheet({ row, visible, onClose, onRate, onCh
       label: (typeof (row as any).rating === 'number' && !Number.isNaN((row as any).rating)) ? 'Change rating' : 'Rate',
       icon: (typeof (row as any).rating === 'number' && !Number.isNaN((row as any).rating)) ? 'star' : 'star-outline',
       onPress: async () => {
-        const r = await ensureRow();
-        if (onRate) {
-          onRate(r);
+        if (busyRef.current) return;
+        // Opening or cancelling a rating must not create a Listen List item.
+        resolvedRatingRow.current = isUuid(row.id) ? row : null;
+        if (onRate && isUuid(row.id)) {
+          onRate(row);
           return;
         }
-        setRatingRow(r);
+        setRatingRow(row);
         setRatingVisible(true);
       },
     },
@@ -313,8 +320,8 @@ export default function ReleaseActionSheet({ row, visible, onClose, onRate, onCh
 
   return (
     <>
-      <Modal transparent visible={visible && !ratingVisible} animationType="slide" onRequestClose={onClose}>
-        <Pressable style={{ flex: 1, backgroundColor: colors.overlay.dim }} onPress={onClose} />
+      <Modal transparent visible={visible && !ratingVisible} animationType="slide" onRequestClose={() => { if (!busyRef.current) onClose(); }}>
+        <Pressable disabled={busy} style={{ flex: 1, backgroundColor: colors.overlay.dim }} onPress={onClose} />
         <View
           style={{
             position: 'absolute',
@@ -380,7 +387,7 @@ export default function ReleaseActionSheet({ row, visible, onClose, onRate, onCh
             </Pressable>
           ))}
           </View>
-          <Pressable onPress={onClose} style={({ pressed }) => ({ marginTop: 10, paddingVertical: 12, borderRadius: 14, backgroundColor: colors.bg.muted, opacity: pressed ? 0.72 : 1 })}>
+          <Pressable disabled={busy} onPress={onClose} style={({ pressed }) => ({ marginTop: 10, paddingVertical: 12, borderRadius: 14, backgroundColor: colors.bg.muted, opacity: pressed ? 0.72 : 1 })}>
             <Text style={{ textAlign: 'center', fontSize: 15, fontWeight: '800', color: colors.text.secondary }}>Cancel</Text>
           </Pressable>
         </View>
@@ -394,20 +401,26 @@ export default function ReleaseActionSheet({ row, visible, onClose, onRate, onCh
         initialReview={ratingRow?.review}
         itemType={ratingRow?.item_type}
         advanced={advancedRatings}
+        saving={busy}
         onCancel={() => {
+          if (busyRef.current) return;
           setRatingVisible(false);
           onClose();
         }}
         onSubmit={async (stars, details, review) => {
-          setRatingVisible(false);
-          const target = ratingRow || (row as ListenRow);
+          if (busyRef.current) return;
+          busyRef.current = true;
           setBusy(true);
           try {
+            const target = resolvedRatingRow.current || await ensureRow(true);
+            // Keep the resolved id for retries without resetting the user's draft.
+            resolvedRatingRow.current = target;
             const options = { doneAt: target.done_at || new Date().toISOString() };
             const result = details && Object.keys(details || {}).length
               ? await setRatingDetailed(target.id, stars, details, review, options)
               : await setRating(target.id, stars, review, options);
             if (!result.ok) throw new Error(result.message || 'Could not save rating');
+            setRatingVisible(false);
             const updated = { ...target, ...(result.row || {}), rating: stars, done_at: options.doneAt } as ListenRow;
             onChanged?.({ type: 'rate', row: updated, done: true });
             H.success();
@@ -417,6 +430,7 @@ export default function ReleaseActionSheet({ row, visible, onClose, onRate, onCh
           } catch (e: any) {
             Alert.alert('Could not save rating', e?.message || 'Please try again.');
           } finally {
+            busyRef.current = false;
             setBusy(false);
           }
         }}

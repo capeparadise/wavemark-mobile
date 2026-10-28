@@ -23,6 +23,7 @@ function screen(file, extra) {
     '../../components/Avatar': { default: 'Avatar' },
     '../../components/ListenerFollowButton': { default: 'Follow' },
     '../../components/ReleaseActionSheet': { default: 'Sheet' },
+    '../../components/ReviewText': { default: 'ReviewText' },
     '../../components/StackScreen': { default: 'Screen' },
     ...extra,
   };
